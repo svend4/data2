@@ -81,37 +81,71 @@ LCI (Loop Closure Index) как биомаркер. Протоколы для Б
 
 ---
 
-## КНИГИ 11–20: В ПРОЦЕССЕ 🔄
+## КНИГИ 11–20: ЗАВЕРШЕНЫ ✅
 
 ### КНИГА 11 — `VOLUME_11_Music_and_Choreography.md`
-**«Архетипы движения в музыке и хореографии»** *(в работе)*
+**«Архетипы движения в музыке и хореографии»** ✅
+Музыкальная фраза как петля. `musical_lci()`. `TonalResonanceSystem`.
+`ChoreographyAnalyzer` (LCI через ConvexHull mocap-данных).
+`KryukovMusicGenerator` — генератор пьес с нечётными фразами.
 
 ### КНИГА 12 — `VOLUME_12_Architecture_and_Space.md`
-**«Архетипы движения в архитектуре»** *(в работе)*
+**«Архетипы движения в архитектуре»** ✅
+Три сферы пространства (проксемика). `ArchitecturalLCIAnalyzer` (граф + циклы).
+`LightShadowAnalyzer` (1/3-1/3-1/3). `ArchetypeBasedLayoutGenerator`.
 
 ### КНИГА 13 — `VOLUME_13_Financial_Markets.md`
-**«Архетипы движения в финансовых рынках»** *(в работе)*
+**«Архетипы движения в финансовых рынках»** ✅
+LCI через фазовый портрет (P, dP/dt). `KryukovMarketAnalyzer`.
+Три рыночные сферы (тики/дни/кварталы). Волны Эллиотта = нечётность.
+`KryukovPortfolioManager` (10/30/60% трёхсферное распределение).
 
 ### КНИГА 14 — `VOLUME_14_Language_and_Linguistics.md`
-**«Архетипы движения в языке»** *(запланировано)*
+**«Архетипы движения в языке и лингвистике»** ✅
+Предложение как петля (S→V→O→возврат). `PoetryMetricsAnalyzer`.
+Пять риторических уровней. Нарратив = большая петля (A→A').
+Три сферы языка: фонема/предложение/дискурс.
 
 ### КНИГА 15 — `VOLUME_15_Deep_Learning_Architectures.md`
-**«Архетипы в нейронных сетях»** *(запланировано)*
+**«Архетипы в архитектурах глубокого обучения»** ✅
+ResNet skip-connections = петли. `KryukovRNN` (GRU/LSTM/EMA сферы).
+`TransformerResonanceAnalyzer`. `CNNFeatureResonanceAnalyzer`.
+`LoopNet` + `LoopBlock` с нечётным числом петель.
 
 ### КНИГА 16 — `VOLUME_16_Quantum_Computing.md`
-**«Архетипы в квантовых вычислениях»** *(запланировано)*
+**«Архетипы в квантовых вычислениях»** ✅
+Сфера Блоха = МВС/СВС/БВС. `QuantumCircuitArchetypeAnalyzer`.
+Гровер = петлевое усиление, Шор = резонанс периодов.
+VQE с нечётными слоями, три вращения на кубит (RX/RY/RZ).
 
 ### КНИГА 17 — `VOLUME_17_Ecology_and_Evolution.md`
-**«Архетипы в экологии и эволюции»** *(запланировано)*
+**«Архетипы в экологии и эволюции»** ✅
+Биогеохимические циклы как петли. `LotkaVolterraResonanceAnalyzer`.
+`BiodiversityResonanceAnalyzer`. `EcosystemStabilityAnalyzer`.
+Пять уровней сукцессии = пять уровней мастерства.
 
 ### КНИГА 18 — `VOLUME_18_Neuropharmacology.md`
-**«Архетипы в нейрофармакологии»** *(запланировано)*
+**«Архетипы движения в нейрофармакологии»** ✅
+Синаптическая петля (выброс→захват→синтез). `SynapticLoopAnalyzer`.
+`BrainThreeSphereAnalyzer` (синапс/ансамбль/сеть).
+`NeuroplasticityAnalyzer` (STDP). `PsychiatricArchetypeClassifier`.
+`NeurochemicalOptimizer` — подбор терапии через 7 аксиом.
 
 ### КНИГА 19 — `VOLUME_19_Social_Networks.md`
-**«Архетипы в социальных сетях»** *(запланировано)*
+**«Архетипы движения в социальных сетях»** ✅
+SIR-Loop модель распространения контента. `InformationLoopAnalyzer`.
+`GraphLoopDetector`. `SocialThreeSphereAnalyzer` (числа Данбара).
+`MemeEvolutionTracker`. `RecommendationArchetypeAnalyzer`.
+`ViralContentOptimizer`. `SocialMasteryAnalyzer`.
 
 ### КНИГА 20 — `VOLUME_20_Grand_Unified_Theory.md`
-**«Единая теория движения»** *(финальный том)*
+**«Единая теория движения: Великое объединение»** ✅ *(финальный том)*
+7 аксиом в формальной нотации (∃ γ: LCI > 0.5 и т.д.).
+`UnifiedMotionTheory` — анализ системы по всем аксиомам.
+`ArchetypeIsomorphismMapper` — изоморфизм 12 архетипов × 20 доменов.
+`UniversalKryukovOptimizer` — универсальный оптимизатор.
+`KryukovNet` — нейросеть, воплощающая все 7 аксиом в архитектуре.
+Манифест Единой Теории Движения.
 
 ---
 
