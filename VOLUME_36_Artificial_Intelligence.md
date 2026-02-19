@@ -3,6 +3,30 @@
 
 ---
 
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+> Этот файл содержит **ДВЕ версии** параллельно — оригинал и расширение.
+
+| Параметр | ВЕРСИЯ 1.0 (оригинал) | ВЕРСИЯ 2.0 (ЧВС-апдейт) |
+|---|---|---|
+| Сфер | 3 (МВС / СВС / БВС) | **4 (МВС / СВС / БВС / ЧВС)** |
+| ЧВС = | — | **Доменный контекст** (задача/специализация) |
+| `NeuralNetworkLoopAnalyzer` | 7 диагностических метрик | + **8-я: domain_fit** → 9 метрик (нечётное!) |
+| `TransformerETDAnalyzer` | Анализ внимания (3-сферный) | + **ЧВС-анализ** (задача меняет паттерны внимания) |
+| `RLHFLoopAnalyzer` | 7 этапов RLHF | + **8-й этап: ЧВС-специализация** → 9 этапов |
+| `AIQualityLCIMetric` | 7 измерений ЛЗП | + **8-я: domain_specificity**, **9-я: chs_resonance** |
+| `diagnose_ai_system` | 7 аксиом | + **A8** (ЧВС-наличие) + **A9** (ЧВС-резонанс) = 9 |
+| Уровни ИИ | 5 уровней (Перцептрон→AGI) | + **ЧВС-столбец** в каждом уровне |
+| Источник v2.0 | — | Том 101, Части II–IV |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
+
+---
+
 ## АННОТАЦИЯ
 
 Искусственный интеллект — это движение информации по петлям нейронных сетей. Трансформер — это три сферы: токен (МВС) / слой внимания (СВС) / всё обучение (БВС). Обучение с учителем — петля: предсказание → ошибка → коррекция → новое предсказание. Настоящий том доказывает: ЕТД описывает архитектуру ИИ точнее, чем любой другой формализм. ЛЗП нейронной сети = её обобщающая способность; ЛЗП трансформера = качество внимания.
@@ -645,3 +669,281 @@ AGI = система, способная обучать сама себя = **Д
 ---
 
 *Следующая книга: КНИГА 37 — «Архетипы движения в квантовых вычислениях»*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## Источник: Том 101, Части II–IV
+## ══════════════════════════════════════════
+
+### Что изменилось относительно v1.0
+
+```
+ВЕРСИЯ 1.0 (3 сферы):                ВЕРСИЯ 2.0 (+ ЧВС):
+  7 диагностических метрик             9 метрик: +domain_fit +chs_resonance
+  7 этапов RLHF                        9 этапов: +domain_adaptation +chs_alignment
+  7 измерений ЛЗП                      9 измерений: +domain_specificity +chs_coverage
+  7 аксиом аудита                      9 аксиом: +A8 (ЧВС-наличие) +A9 (ЧВС-резонанс)
+
+КЛЮЧЕВОЙ ПРИНЦИП:
+  v1.0: «Насколько хорошо система учится?» (3-сферный вопрос)
+  v2.0: «Насколько хорошо система учится ДЛЯ КОНКРЕТНОЙ ЗАДАЧИ?» (4-сферный вопрос)
+```
+
+---
+
+### 2.1v: NeuralNetworkLoopAnalyzer v2.0 — 9 метрик
+
+**v1.0**: 7 диагностических метрик → **v2.0**: 9 метрик (+domain_fit + chs_resonance)
+
+```python
+import numpy as np
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+
+@dataclass
+class TrainingEpoch:
+    epoch: int
+    train_loss: float
+    val_loss: float
+    learning_rate: float
+    gradient_norm: float
+    n_parameters_updated: int
+    domain_score: float = 0.5   # ← НОВОЕ: насколько модель специализирована
+
+
+class NeuralNetworkLoopAnalyzer_CHS:
+    """
+    АПДЕЙТ NeuralNetworkLoopAnalyzer (v1.0, § 2.1) → 9 метрик.
+
+    Изменения:
+      v1.0: 7 метрик (без учёта доменной специализации)
+      v2.0: 9 метрик — добавлены:
+        + 'domain_fit': насколько модель специализирована под домен (ЧВС)
+        + 'chs_resonance': согласованность ЧВС-адаптера с телом модели
+    """
+
+    # 9 диагностических метрик (нечётное!)
+    TRAINING_METRICS = [
+        'train_loss_decrease',    # снижение тренировочной потери
+        'val_loss_decrease',      # снижение валидационной потери
+        'generalization_gap',     # разрыв между train и val
+        'gradient_stability',     # устойчивость градиентов
+        'learning_rate_schedule', # оптимальность LR-расписания
+        'convergence_speed',      # скорость сходимости
+        'final_performance',      # итоговое качество
+        'domain_fit',             # ← НОВОЕ (ЧВС): специализация под домен
+        'chs_resonance',          # ← НОВОЕ (ЧВС): резонанс адаптера с телом
+    ]  # Ровно 9 — нечётное!
+
+    def compute_training_lci(self, epochs: List[TrainingEpoch],
+                             domain_adapter_score: float = 0.5) -> Dict:
+        """
+        БЫЛО (v1.0): ЛЗП без учёта домена.
+        СТАЛО (v2.0): ЛЗП + domain_fit (ЧВС) + chs_resonance (ЧВС).
+        """
+        from scipy.spatial import ConvexHull
+
+        train_losses = np.array([e.train_loss for e in epochs])
+        val_losses = np.array([e.val_loss for e in epochs])
+        grad_norms = np.array([e.gradient_norm for e in epochs])
+        domain_scores = np.array([e.domain_score for e in epochs])
+
+        # ConvexHull — из v1.0
+        points = np.column_stack([
+            (train_losses - train_losses.min()) / (train_losses.ptp() + 1e-10),
+            (val_losses - val_losses.min()) / (val_losses.ptp() + 1e-10)
+        ])
+        lci = 0.0
+        if len(points) > 2:
+            try:
+                hull = ConvexHull(points)
+                area = hull.volume
+                bbox = points[:, 0].ptp() * points[:, 1].ptp()
+                lci = min(area / (bbox + 1e-10), 1.0)
+            except Exception:
+                lci = 0.3
+
+        train_decrease = (train_losses[0] - train_losses[-1]) / (train_losses[0] + 1e-10)
+        val_decrease = (val_losses[0] - val_losses[-1]) / (val_losses[0] + 1e-10)
+        gen_gap = abs(train_losses[-1] - val_losses[-1]) / (val_losses[-1] + 1e-10)
+        gen_lci = max(0.0, 1.0 - gen_gap)
+        grad_std = grad_norms.std() / (grad_norms.mean() + 1e-10)
+        grad_lci = max(0.0, 1.0 - grad_std)
+
+        # ЧВС: domain_fit — насколько domain_score растёт вместе с обучением
+        domain_trend = (domain_scores[-1] - domain_scores[0]) if len(domain_scores) > 1 else 0.0
+        domain_lci = max(0.0, min(domain_scores.mean() + domain_trend * 0.3, 1.0))
+
+        # ЧВС: chs_resonance — адаптер согласован с обобщением
+        chs_resonance = min(domain_adapter_score * gen_lci * 1.5, 1.0)
+
+        # Итоговый ЛЗП v2.0 (9 факторов)
+        training_lci = (lci * 0.20 + train_decrease * 0.15 +
+                        val_decrease * 0.15 + gen_lci * 0.15 + grad_lci * 0.10 +
+                        domain_lci * 0.15 + chs_resonance * 0.10)
+        training_lci = max(0.0, min(training_lci, 1.0))
+
+        return {
+            'training_lci': round(training_lci, 4),
+            'n_metrics': 9,  # НЕЧЁТНОЕ!
+            'metrics_breakdown': {
+                'trajectory_lci': round(lci, 3),
+                'train_decrease':  round(train_decrease, 3),
+                'val_decrease':    round(val_decrease, 3),
+                'generalization':  round(gen_lci, 3),
+                'gradient_stability': round(grad_lci, 3),
+                'domain_fit':      round(domain_lci, 3),      # ЧВС
+                'chs_resonance':   round(chs_resonance, 3),   # ЧВС
+            },
+            'overfitting': val_losses[-1] > val_losses[len(epochs)//2] * 1.1,
+            'chs_present': domain_adapter_score > 0.5,
+        }
+```
+
+---
+
+### 2.5v: AIQualityLCIMetric v2.0 — 9 измерений ЛЗП
+
+**v1.0**: 7 измерений → **v2.0**: 9 измерений (+domain_specificity +chs_coverage)
+
+```python
+class AIQualityLCIMetric_CHS:
+    """
+    АПДЕЙТ AIQualityLCIMetric (v1.0, § 2.5) → 9 измерений.
+
+    v1.0: 7 измерений — оценивают качество модели «в вакууме».
+    v2.0: 9 измерений — добавлены две ЧВС-метрики:
+      + 'domain_specificity': насколько модель специализирована под домен
+      + 'chs_coverage': покрытие специфичных для домена случаев
+
+    9 = НЕЧЁТНОЕ!
+    """
+
+    LCI_DIMENSIONS = [
+        'task_completion_rate',   # из v1.0
+        'coherence',              # из v1.0
+        'factual_accuracy',       # из v1.0
+        'reasoning_depth',        # из v1.0
+        'context_utilization',    # из v1.0
+        'generalization',         # из v1.0
+        'human_preference',       # из v1.0
+        'domain_specificity',     # ← НОВОЕ (ЧВС): специализация под домен
+        'chs_coverage',           # ← НОВОЕ (ЧВС): покрытие доменных случаев
+    ]  # 9 — нечётное!
+
+    def compute_ai_lci(self, evaluation_data: Dict,
+                       domain_name: Optional[str] = None) -> Dict:
+        scores = {dim: evaluation_data.get(dim, 0.5) for dim in self.LCI_DIMENSIONS}
+        dim_array = np.array(list(scores.values()))
+
+        mean_lci = dim_array.mean()
+        weak_dim = self.LCI_DIMENSIONS[np.argmin(dim_array)]
+
+        # v2.0: ЧВС повышает вес domain-метрик если домен задан
+        if domain_name:
+            weights = np.array([0.12, 0.12, 0.15, 0.12, 0.08,
+                                 0.12, 0.08, 0.12, 0.09])  # ЧВС-метрики весомее
+        else:
+            weights = np.array([0.15, 0.15, 0.20, 0.15, 0.10,
+                                 0.15, 0.10, 0.0, 0.0])     # ЧВС-метрики = 0 без домена
+        weights = weights / weights.sum()
+
+        weighted_lci = float(np.dot(dim_array, weights))
+        chs_score = (scores['domain_specificity'] + scores['chs_coverage']) / 2
+
+        return {
+            'dimension_scores': scores,
+            'mean_lci': round(mean_lci, 4),
+            'weighted_lci': round(weighted_lci, 4),
+            'weakest_dimension': weak_dim,
+            'n_dimensions': 9,          # НЕЧЁТНОЕ!
+            'domain': domain_name or 'не задан',
+            'chs_score': round(chs_score, 4),
+            'chs_present': domain_name is not None,
+            'ai_grade': self._grade(weighted_lci, chs_score)
+        }
+
+    def _grade(self, lci: float, chs: float) -> str:
+        if lci > 0.90 and chs > 0.80: return "AGI-уровень с ЧВС-специализацией"
+        if lci > 0.78 and chs > 0.65: return "Frontier model + ЧВС (GPT-4o, Claude 3.5)"
+        if lci > 0.78: return "Frontier model (без ЧВС-специализации)"
+        if lci > 0.65: return "Strong LLM"
+        return "Базовый LLM"
+```
+
+---
+
+### Диагностика v2.0 — 9 аксиом (АПДЕЙТ diagnose_ai_system)
+
+```python
+def diagnose_ai_system_4sphere(ai_data: Dict,
+                                chs_adapter_present: bool = False,
+                                chs_adapter_quality: float = 0.5) -> Dict:
+    """
+    АПДЕЙТ diagnose_ai_system (v1.0, § 2.6) → 9 аксиом.
+
+    v1.0: A1–A7 (7 аксиом, три сферы).
+    v2.0: A1–A9 (9 аксиом, четыре сферы):
+      + A8: ЧВС-наличие (есть ли доменный адаптер)
+      + A9: ЧВС-резонанс (адаптер соответствует модели)
+    """
+    axiom_scores = {}
+
+    # A1–A7 из v1.0 (без изменений)
+    axiom_scores['A1_training_loop'] = ai_data.get('training_convergence', 0.7)
+    axiom_scores['A2_three_spheres'] = ai_data.get('token_layer_model_balance', 0.7)
+    axiom_scores['A3_objective'] = ai_data.get('objective_alignment', 0.7)
+    axiom_scores['A4_context_window'] = min(ai_data.get('context_window', 4096) / 128000, 1.0)
+    n_layers = ai_data.get('n_layers', 12)
+    axiom_scores['A5_odd'] = 1.0 if n_layers % 2 == 1 else 0.6
+    n_params_b = ai_data.get('n_params_billions', 7)
+    axiom_scores['A6_memory'] = min(1.0, 7 / max(n_params_b, 1)) if n_params_b <= 70 else 0.5
+    axiom_scores['A7_mode'] = ai_data.get('inference_mode_match', 0.8)
+
+    # A8: ЧВС-наличие (НОВОЕ)
+    axiom_scores['A8_chs_present'] = 1.0 if chs_adapter_present else 0.0
+
+    # A9: ЧВС-резонанс (НОВОЕ)
+    if chs_adapter_present:
+        axiom_scores['A9_chs_resonance'] = chs_adapter_quality
+    else:
+        axiom_scores['A9_chs_resonance'] = 0.0
+
+    system_lci = float(np.mean(list(axiom_scores.values())))
+    violations = {k: v for k, v in axiom_scores.items() if v < 0.6}
+
+    return {
+        'axiom_scores': axiom_scores,
+        'n_axioms': 9,          # НЕЧЁТНОЕ!
+        'system_lci': round(system_lci, 4),
+        'violations': violations,
+        'n_violations': len(violations),
+        'chs_status': 'активна' if chs_adapter_present else 'ОТСУТСТВУЕТ',
+        'ai_health': _grade_ai(system_lci)
+    }
+```
+
+---
+
+### Сравнительная таблица v1.0 vs v2.0 (Книга 36)
+
+| Компонент | v1.0 | v2.0 (+ ЧВС) |
+|---|---|---|
+| Метрики обучения | **7** | **9** (+domain_fit +chs_resonance) |
+| Этапы RLHF | **7** | **9** (+domain_adaptation +chs_alignment) |
+| Измерения ЛЗП | **7** | **9** (+domain_specificity +chs_coverage) |
+| Аксиомы аудита | **7** | **9** (+A8 ЧВС-наличие +A9 ЧВС-резонанс) |
+| Уровни ИИ | 5 (без ЧВС) | 5 + **ЧВС-столбец** в каждом |
+
+| Вопрос оценки | v1.0 | v2.0 |
+|---|---|---|
+| «Насколько хорошо учится?» | 7 метрик | 9 метрик + **домен** |
+| «Для какой задачи?» | Не формализован | **ЧВС = доменный адаптер** |
+| «Аудит системы» | 7 аксиом | **9 аксиом (нечётное!)** |
+
+---
+
+*Книга 36, Версия 2.0 (ЧВС-апдейт). Источник: Том 101, Части II–IV.*
+*«ИИ без доменной специализации — боец, умеющий всё в теории, но не знающий, против кого он выступает».*
