@@ -3,6 +3,33 @@
 
 ---
 
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+> Этот файл содержит **ДВЕ версии** параллельно — оригинал и расширение.
+> Разница показана в таблице ниже и в секции `ВЕРСИЯ 2.0` в конце файла.
+
+| Параметр | ВЕРСИЯ 1.0 (оригинал) | ВЕРСИЯ 2.0 (ЧВС-апдейт) |
+|---|---|---|
+| Число сфер | 3 (МВС / СВС / БВС) | **4 (МВС / СВС / БВС / ЧВС)** |
+| Что добавлено | — | ЧВС = Domain / Data / Task (контекст задачи) |
+| Архитектура | `NestedSphereArchitecture` (3 слоя) | **`FourSphereApplication`** (4 слоя) |
+| МВС | Infrastructure | Infrastructure |
+| СВС | Business Logic | Business Logic |
+| БВС | Presentation / API | Presentation / API |
+| ЧВС | — | **Domain Context** (EcommerceDomain, MedicalDomain…) |
+| Смена домена | Переписать код | **`attach_domain()` / `detach_domain()`** |
+| Паттерны | DoubleBuffer, Strategy, Hook | + **`FourSphereApplication`**, `CodeArchitectureLCI` |
+| ЛЗП кода | Трёхсферный | **Четырёхсферный** (метрика + ЧВС-бонус) |
+| Источник v2.0 | — | Том 101, Часть II |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
+
+---
+
 ## ВВЕДЕНИЕ
 
 Крюков создал систему, в которой движение описывается **математически** — через петли, сферы, иерархии, законы нечётности, экономии и памяти. Каждый из этих принципов является **универсальной вычислительной структурой**, применимой к программированию вне контекста боевого искусства.
@@ -834,3 +861,290 @@ class ResonanceConsensus:
 ---
 
 *Том 4 из 10. Продолжение — Том 5: Диссертационная серия.*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## Источник: Том 101, Часть II
+## ══════════════════════════════════════════
+
+### Что изменилось относительно v1.0
+
+Том 4 (v1.0) описывал трёхслойную архитектуру ПО: МВС/СВС/БВС.
+Версия 2.0 добавляет **ЧВС = Domain/Data/Task** — то, над чем работает система.
+
+```
+ВЕРСИЯ 1.0 (3 слоя):              ВЕРСИЯ 2.0 (4 слоя):
+  МВС: Infrastructure               МВС: Infrastructure
+  СВС: Business Logic               СВС: Business Logic
+  БВС: Presentation / API           БВС: Presentation / API
+  — нет домена —                    ЧВС: Domain Context (заменяемый)
+
+Вопрос v1.0: «где данные? где домен?»
+Ответ v2.0: ЧВС = контекст задачи, подключается/меняется без изменения тела.
+```
+
+---
+
+### Глава 2v: ЧВС как Domain/Task слой
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, TypeVar, Generic
+
+T = TypeVar('T')
+
+
+class DomainContext(ABC):
+    """
+    ЧВС в программировании — контекст задачи/домена.
+
+    Аналогия: как меч определяет характер движения бойца,
+    так доменный контекст определяет характер работы системы.
+    Система без домена = боец без оружия.
+    """
+
+    @abstractmethod
+    def get_domain_id(self) -> str: ...
+
+    @abstractmethod
+    def get_constraints(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def validate(self, data: Any) -> bool: ...
+
+
+@dataclass
+class EcommerceDomain(DomainContext):
+    """ЧВС для e-commerce системы."""
+    currency: str = 'RUB'
+    tax_rate: float = 0.20
+    max_order_items: int = 99
+    supported_regions: List[str] = field(
+        default_factory=lambda: ['RU', 'BY', 'KZ'])
+
+    def get_domain_id(self) -> str: return 'ecommerce_ru'
+
+    def get_constraints(self) -> Dict[str, Any]:
+        return {'max_price': 10_000_000, 'min_price': 1,
+                'max_items_per_order': self.max_order_items,
+                'currency': self.currency}
+
+    def validate(self, data: Any) -> bool:
+        return 1 <= getattr(data, 'price', 1) <= 10_000_000
+
+
+@dataclass
+class MedicalDomain(DomainContext):
+    """ЧВС для медицинской системы."""
+    country_standard: str = 'ГОСТ_Р'
+    requires_patient_consent: bool = True
+    data_retention_years: int = 25
+
+    def get_domain_id(self) -> str: return 'medical_ru'
+
+    def get_constraints(self) -> Dict[str, Any]:
+        return {'requires_authentication': True, 'audit_every_access': True,
+                'encrypt_at_rest': True, 'retention_years': self.data_retention_years}
+
+    def validate(self, data: Any) -> bool:
+        return self.requires_patient_consent and hasattr(data, 'patient_id')
+
+
+class FourSphereApplication(Generic[T]):
+    """
+    АПДЕЙТ NestedSphereArchitecture (v1.0, Гл.2) → четыре сферы.
+
+    Изменения относительно v1.0:
+      + Параметр domain: Optional[DomainContext] = None (ЧВС)
+      + Методы attach_domain() / detach_domain()
+      + process() расширен: ЧВС валидирует + трансформирует данные
+
+    Главный принцип: та же система (МВС/СВС/БВС) работает
+    с разными доменами (ЧВС) без изменения кода.
+    """
+
+    def __init__(self, infrastructure, business_logic, presentation,
+                 domain: Optional[DomainContext] = None):
+        self.mvs = infrastructure   # МВС — не меняется
+        self.svs = business_logic   # СВС — не меняется
+        self.bvs = presentation     # БВС — не меняется
+        self.chs = domain           # ЧВС — заменяемый инструмент
+
+    def attach_domain(self, domain: DomainContext):
+        """Присоединить домен = взять инструмент в руку."""
+        self.chs = domain
+        constraints = domain.get_constraints()
+        self.svs.apply_constraints(constraints)
+        self.mvs.configure_for_domain(domain.get_domain_id())
+
+    def detach_domain(self):
+        """Снять домен = освободить руку."""
+        self.chs = None
+        self.svs.clear_constraints()
+        self.mvs.reset_configuration()
+
+    def process(self, request: T) -> Any:
+        """
+        БЫЛО (v1.0): МВС → СВС → БВС.
+        СТАЛО (v2.0): ЧВС (валидация) → МВС → СВС → ЧВС (трансформация) → БВС.
+        """
+        # ЧВС: доменная валидация
+        if self.chs and not self.chs.validate(request):
+            raise ValueError(f"Домен {self.chs.get_domain_id()}: валидация не пройдена")
+
+        raw_data = self.mvs.fetch(request)
+        processed = self.svs.process(raw_data)
+
+        # ЧВС: доменная трансформация результата
+        if self.chs:
+            processed = self._apply_domain_transform(processed)
+
+        return self.bvs.format(processed)
+
+    def _apply_domain_transform(self, data):
+        constraints = self.chs.get_constraints()
+        if 'currency' in constraints:
+            return self._convert_currency(data, constraints['currency'])
+        if constraints.get('encrypt_at_rest'):
+            return self._encrypt_sensitive_fields(data)
+        return data
+```
+
+---
+
+### Глава 3v: ЧВС в паттернах проектирования — Стратегия как инструмент
+
+```python
+class SortStrategy(ABC):
+    """ЧВС для алгоритма сортировки."""
+    @abstractmethod
+    def sort(self, data: List) -> List: ...
+
+class QuickSortCHS(SortStrategy):
+    """ЧВС: быстрая сортировка (случайные данные)."""
+    def sort(self, data): return sorted(data)
+
+class TimSortCHS(SortStrategy):
+    """ЧВС: Tim Sort (частично упорядоченные данные)."""
+    def sort(self, data): return sorted(data)
+
+class RadixSortCHS(SortStrategy):
+    """ЧВС: поразрядная сортировка (целые числа)."""
+    def sort(self, data):
+        if not data: return data
+        max_val, exp, result = max(data), 1, data[:]
+        while max_val // exp > 0:
+            result = self._counting_sort(result, exp)
+            exp *= 10
+        return result
+
+    def _counting_sort(self, data, exp):
+        output, count = [0] * len(data), [0] * 10
+        for i in data: count[(i // exp) % 10] += 1
+        for i in range(1, 10): count[i] += count[i - 1]
+        for i in range(len(data) - 1, -1, -1):
+            idx = (data[i] // exp) % 10
+            output[count[idx] - 1] = data[i]; count[idx] -= 1
+        return output
+
+
+class DataProcessor:
+    """
+    Тело системы (МВС/СВС/БВС) — не меняется.
+    ЧВС (стратегия сортировки) — меняется под задачу.
+
+    v1.0: нет явного ЧВС — стратегия вшита в класс.
+    v2.0: ЧВС выделена — swap_tool() меняет алгоритм без изменения тела.
+    """
+    def __init__(self, sorter: SortStrategy):
+        self.chs_sorter = sorter
+
+    def swap_tool(self, new_sorter: SortStrategy):
+        """Сменить инструмент — аналог смены оружия."""
+        self.chs_sorter = new_sorter
+
+    def process(self, dataset: List) -> List:
+        raw = self._load(dataset)
+        normalized = self._normalize(raw)
+        sorted_data = self.chs_sorter.sort(normalized)  # ЧВС
+        return sorted_data
+```
+
+---
+
+### Глава 4v: Четырёхсферный ЛЗП кода
+
+```python
+class CodeArchitectureLCI:
+    """
+    v1.0: ЛЗП трёхслойной архитектуры (МВС/СВС/БВС).
+    v2.0: ЛЗП четырёхсферной архитектуры + ЧВС-бонус.
+    """
+
+    def analyze(self, codebase_metrics: Dict) -> Dict:
+        has_mvs = codebase_metrics.get('has_infrastructure_layer', False)
+        has_svs = codebase_metrics.get('has_business_logic_layer', False)
+        has_bvs = codebase_metrics.get('has_presentation_layer', False)
+        has_chs = codebase_metrics.get('has_domain_context_layer', False)  # ← НОВОЕ
+
+        sphere_count = sum([has_mvs, has_svs, has_bvs, has_chs])
+        base_lci = sphere_count / 4.0  # ← было /3.0
+
+        isolation_score = codebase_metrics.get('sphere_isolation_score', 0.5)
+        chs_swappable = codebase_metrics.get('domain_is_swappable', False)
+        chs_bonus = 0.2 if chs_swappable else 0.0  # ← НОВОЕ
+
+        lci = min(base_lci * 0.6 + isolation_score * 0.3 + chs_bonus, 1.0)
+
+        return {
+            'architecture_lci': round(lci, 3),
+            'spheres_present': sphere_count,
+            'missing_spheres': [
+                s for s, present in [
+                    ('МВС/Infrastructure', has_mvs),
+                    ('СВС/BusinessLogic', has_svs),
+                    ('БВС/Presentation', has_bvs),
+                    ('ЧВС/DomainContext', has_chs),   # ← НОВОЕ
+                ] if not present
+            ],
+            'chs_quality': (
+                'Заменяемая (отлично)' if chs_swappable
+                else 'Жёсткая (рефакторинг)' if has_chs
+                else 'ОТСУТСТВУЕТ — система без домена'
+            ),
+            'grade': self._grade(lci)
+        }
+
+    def _grade(self, lci: float) -> str:
+        if lci >= 0.85: return 'A — Полная 4-сферная архитектура'
+        if lci >= 0.70: return 'B — 3+ сферы, ЧВС частично'
+        if lci >= 0.50: return 'C — 2–3 сферы'
+        return 'D — Монолит (все сферы слиты)'
+```
+
+---
+
+### Глава 10v: Сравнительная таблица v1.0 vs v2.0
+
+| Архетип боя | v1.0 (вычислительный эквивалент) | v2.0 (добавлено ЧВС) |
+|---|---|---|
+| Иерархия сфер | 3-слойная архитектура | **4-слойная: + ЧВС/Domain** |
+| Камуфляж/Угроза | DoubleBuffer | DoubleBuffer (без изменений) |
+| Система окон | Hook / Plugin | Hook / Plugin (без изменений) |
+| Пять уровней | DSL evolution | DSL evolution (без изменений) |
+| Закон памяти | LRU кэш 7±2 | LRU кэш 7±2 (без изменений) |
+| Резонанс | Distributed consensus | + **ЧВС-резонанс** (домен синхронизирует слои) |
+
+| Вопрос | v1.0 | v2.0 |
+|---|---|---|
+| «Где данные / домен?» | Не формализован | **ЧВС = `DomainContext`** |
+| Смена клиента | Переписать бизнес-логику | **`attach_domain(NewDomain())`** |
+| Метрика качества архитектуры | 3-сферный ЛЗП | **4-сферный ЛЗП + ЧВС-бонус** |
+
+---
+
+*Том 4, Версия 2.0 (ЧВС-апдейт). Источник: Том 101, Часть II.*
+*«Программа без домена — боец без противника: система есть, а применение не определено».*
