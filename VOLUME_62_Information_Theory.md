@@ -8,6 +8,25 @@
 
 ---
 
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+| Параметр | ВЕРСИЯ 1.0 (3 сферы) | ВЕРСИЯ 2.0 (4 сферы / ЧВС) |
+|----------|----------------------|------------------------------|
+| МВС | Бит/символ (единица информации) | Бит/символ (без изменений) |
+| СВС | Канал связи (энтропия, пропускная способность) | Канал (без изменений) |
+| БВС | Система передачи информации | Система (без изменений) |
+| ЧВС | — | Кодек (алгоритм кодирования, plug-in) |
+| Кодеков | 1 (абстрактный Шеннон) | 5 plug-in: Huffman/LZ/Turbo/LDPC/RS |
+| ЛЗП формула | H/H_max (нормированная энтропия) | H/H_max x codec_eff x domain_fit |
+| Переключение | ручная настройка | set_codec(ЧВС) |
+| Аксиом | 7 | 9 (+A8 codec_fit, +A9 compression_ratio) |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
+
 ## АННОТАЦИЯ
 
 Теория информации — наука о движении данных: от источника к получателю через канал связи. В данном томе доказывается, что энтропия, пропускная способность каналов, коды и кибернетические системы управления подчиняются семи аксиомам ЕТД. Информационная орбита = траектория сообщения в пространстве вероятностей. ЛЗП_информации = функция от энтропии Шеннона: ЛЗП = H/H_max (нормированная энтропия). Три сферы: детерминированный источник (МВС, H = 0, ЛЗП = 0) / частично случайный (СВС, H = H_max/2) / полностью случайный (БВС, H = H_max, ЛЗП = 1). Закон нечётных: пропускная способность каналов выражается нечётными битами на символ в оптимальных кодах; 7 уровней модели OSI; 3 принципа кибернетики Винера; 5 принципов теоремы Шеннона.
@@ -316,3 +335,342 @@ f_s ≥ 2·f_max (теорема Котельникова-Найквиста).
 ---
 
 *Том 62 завершён. Серия V, Блок 1. Следующий: Том 63 — ЕТД в термодинамике и статистической механике.*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## ══════════════════════════════════════════
+
+### Что такое ЧВС в теории информации?
+
+**ЧВС (Четвёртая Внешняя Сфера)** = кодек: конкретный алгоритм кодирования/сжатия.
+
+- Та же информационная система (3 сферы) использует РАЗНЫЕ кодеки (ЧВС)
+- `set_codec(ЧВС)` — подключить кодек без замены канала/источника
+- Каждый кодек оптимален для своего домена (текст/видео/ДНК/deep space)
+- Аналог: тот же канал (TCP/IP), разные протоколы передачи (ЧВС)
+
+### Сравнение v1.0 и v2.0
+
+| Метрика | v1.0 (3 сферы) | v2.0 (ЧВС) |
+|---------|---------------|------------|
+| Кодеков | 1 (абстрактный) | 5 plug-in (нечётное!) |
+| Оптимизация | теоретический предел Шеннона | практически достижимый (codec_eff) |
+| ЛЗП формула | H/H_max | H/H_max x codec_eff x domain_fit |
+| Переключение домена | ручная настройка | set_codec() |
+| Аксиом стойкости | 7 | 9 (+A8 codec_fit, +A9 compression_ratio) |
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Dict, List
+import numpy as np
+import math
+
+
+class CodecType(Enum):
+    """ЧВС: Тип кодека. Всего 5 - нечётное!"""
+    HUFFMAN  = "Хаффман (энтропийное, lossless)"
+    LZ77     = "LZ77/Deflate (словарное, текст/файлы)"
+    TURBO    = "Turbo Code (помехоустойчивый, deep space)"
+    LDPC     = "LDPC (помехоустойчивый, WiFi/5G)"
+    REED_SOLOMON = "Reed-Solomon (burst errors, CD/QR)"
+
+
+@dataclass
+class CodecContext:
+    """ЧВС: Контекст кодека (4-я сфера информационной системы)."""
+    codec_type: CodecType
+    compression_ratio: float      # во сколько раз сжимает (>1 = сжатие)
+    bit_error_rate_threshold: float  # допустимый BER до отказа кода
+    codec_efficiency: float       # насколько близко к пределу Шеннона (0..1)
+    latency_bits: int             # задержка кодека в битах (нечётное оптимально)
+    domain: str                   # текст / видео / deep-space / telecom / storage
+
+    def __post_init__(self):
+        if self.latency_bits % 2 == 0:
+            self.latency_bits += 1  # Закон нечётности
+
+    @property
+    def chs_resonance_freq(self) -> float:
+        """Частота ЧВС = эффективность относительно предела Шеннона."""
+        return self.codec_efficiency * self.compression_ratio
+
+    def compute_codec_lci(self, source_entropy: float, channel_capacity: float) -> float:
+        """
+        ЛЗП кодека = насколько эффективно он использует канал.
+        Предел: code_rate <= C (теорема Шеннона).
+        """
+        # Отношение: скорость кода к ёмкости канала
+        code_rate = source_entropy / (self.compression_ratio + 1e-10)
+        channel_usage = code_rate / (channel_capacity + 1e-10)
+
+        # BER при данном кодеке (упрощённая модель)
+        ber_ok = 1.0 if channel_usage < 1.0 else max(0.0, 2.0 - channel_usage * 2)
+
+        # ЛЗП кодека
+        codec_lci = self.codec_efficiency * ber_ok * (1 - channel_usage * 0.1)
+        # Бонус нечётности задержки
+        odd_bonus = 0.03 if self.latency_bits % 2 == 1 else 0.0
+        return min(1.0, codec_lci + odd_bonus)
+
+
+# 5 кодеков (ЧВС-библиотека, 5 нечётное!)
+class HuffmanCodec(CodecContext):
+    """ЧВС: Код Хаффмана - оптимальный энтропийный код."""
+
+    def __init__(self):
+        super().__init__(
+            codec_type=CodecType.HUFFMAN,
+            compression_ratio=1.4,          # ~1.4x для текста
+            bit_error_rate_threshold=0.0,   # нет помехоустойчивости!
+            codec_efficiency=0.99,          # почти оптимален для i.i.d.
+            latency_bits=7,                 # нечётное!
+            domain='текст / данные (lossless)'
+        )
+
+
+class LZ77Codec(CodecContext):
+    """ЧВС: LZ77/Deflate - словарное сжатие (gzip, zlib, zip)."""
+
+    def __init__(self):
+        super().__init__(
+            codec_type=CodecType.LZ77,
+            compression_ratio=3.0,          # ~3x для текста/кода
+            bit_error_rate_threshold=0.0,   # нет помехоустойчивости
+            codec_efficiency=0.85,          # хуже Хаффмана, но практичнее
+            latency_bits=255,               # окно 255 байт (нечётное!)
+            domain='файлы / исходный код / веб'
+        )
+
+
+class TurboCodec(CodecContext):
+    """ЧВС: Turbo Code - помехоустойчивый (3GPP, deep space NASA)."""
+
+    def __init__(self):
+        super().__init__(
+            codec_type=CodecType.TURBO,
+            compression_ratio=0.5,          # избыточность: rate=1/2
+            bit_error_rate_threshold=1e-5,  # BER < 10^-5
+            codec_efficiency=0.97,          # близко к пределу Шеннона!
+            latency_bits=319,               # нечётное (типичный interleaver)!
+            domain='мобильная связь / космос (3G, NASA)'
+        )
+
+
+class LDPCCodec(CodecContext):
+    """ЧВС: LDPC - Low-Density Parity-Check (WiFi 802.11, 5G, DVB)."""
+
+    def __init__(self):
+        super().__init__(
+            codec_type=CodecType.LDPC,
+            compression_ratio=0.5,          # rate=1/2 .. 5/6
+            bit_error_rate_threshold=1e-6,  # BER < 10^-6
+            codec_efficiency=0.98,          # ~0.05 дБ от предела Шеннона!
+            latency_bits=1023,              # нечётное (длина блока)!
+            domain='5G / WiFi 6 / DVB-S2 / оптика'
+        )
+
+
+class ReedSolomonCodec(CodecContext):
+    """ЧВС: Reed-Solomon - пакетные ошибки (CD, QR, космос, RAID)."""
+
+    def __init__(self):
+        super().__init__(
+            codec_type=CodecType.REED_SOLOMON,
+            compression_ratio=0.75,         # RS(255,191): rate=191/255
+            bit_error_rate_threshold=1e-3,  # исправляет burst-ошибки
+            codec_efficiency=0.82,
+            latency_bits=255,               # нечётное (поле GF(2^8))!
+            domain='CD/DVD / QR / RAID / космос'
+        )
+
+
+# ЧВС-библиотека кодеков (5 - нечётное!)
+CHS_CODEC_LIBRARY: Dict[str, CodecContext] = {
+    'huffman':       HuffmanCodec(),
+    'lz77':          LZ77Codec(),
+    'turbo':         TurboCodec(),
+    'ldpc':          LDPCCodec(),
+    'reed_solomon':  ReedSolomonCodec(),
+}
+
+
+class FourSphereInfoSystem:
+    """
+    4-сферная информационная система (v2.0).
+
+    МВС = источник/символ (энтропия H(X))
+    СВС = канал связи (пропускная способность C)
+    БВС = система передачи (конец-в-конец)
+    ЧВС = кодек (алгоритм кодирования, plug-in)
+
+    API:
+      set_codec(codec)        -- установить ЧВС-кодек
+      remove_codec()          -- убрать кодек
+      compute_4sphere_lci()   -- ЛЗП с учётом ЧВС
+      recommend_codec()       -- рекомендовать кодек для задачи
+      audit_9axioms()         -- 9-аксиомный аудит
+    """
+
+    def __init__(
+        self,
+        source_entropy_bits: float,     # H(X) в бит/символ
+        channel_capacity_bps: float,    # C канала (бит/с)
+        channel_noise: float = 0.01     # вероятность ошибки бита
+    ):
+        self.H = source_entropy_bits
+        self.C = channel_capacity_bps
+        self.noise = channel_noise
+        self._codec: Optional[CodecContext] = None
+
+    def set_codec(self, codec: CodecContext):
+        """Установить ЧВС-кодек."""
+        self._codec = codec
+
+    def remove_codec(self):
+        """Снять ЧВС."""
+        self._codec = None
+
+    def compute_4sphere_lci(self) -> Dict:
+        """
+        ЛЗП v2.0:
+        v1.0: LCI = H/H_max (нормированная энтропия)
+        v2.0: LCI = H/H_max x codec_eff x domain_fit
+        """
+        H_max = math.log2(256)  # 8 бит/символ (стандарт)
+        lci_v1 = self.H / (H_max + 1e-10)
+
+        if self._codec:
+            codec_lci = self._codec.compute_codec_lci(self.H, self.C)
+            domain_fit = 0.9
+            codec_name = self._codec.codec_type.name
+        else:
+            codec_lci = 0.5
+            domain_fit = 0.5
+            codec_name = 'НЕТ ЧВС'
+
+        lci_v2 = lci_v1 * codec_lci * domain_fit
+        improvement = (lci_v2 - lci_v1 * 0.5) / (lci_v1 * 0.5 + 1e-10) * 100
+
+        return {
+            'source_entropy_bits': self.H,
+            'channel_capacity': self.C,
+            'lci_v1_3sphere': round(lci_v1, 4),
+            'lci_v2_4sphere': round(lci_v2, 4),
+            'improvement': f'+{round(improvement, 1)}%',
+            'codec_lci_chs': round(codec_lci, 4),
+            'domain_fit': round(domain_fit, 4),
+            'current_codec_chs': codec_name,
+            'formula_v1': 'LCI = H/H_max',
+            'formula_v2': 'LCI = H/H_max x codec_eff x domain_fit',
+        }
+
+    def recommend_codec(self, domain: str) -> Dict:
+        """
+        Рекомендовать оптимальный ЧВС-кодек для домена.
+        """
+        domain_preferences = {
+            'text':      ['huffman', 'lz77'],
+            'file':      ['lz77', 'huffman'],
+            'mobile':    ['ldpc', 'turbo'],
+            'deep_space':['turbo', 'ldpc'],
+            'storage':   ['reed_solomon', 'ldpc'],
+            'qr':        ['reed_solomon'],
+            'web':       ['lz77', 'huffman'],
+        }
+
+        preferred = domain_preferences.get(domain, list(CHS_CODEC_LIBRARY.keys()))
+        results = []
+        for name, codec in CHS_CODEC_LIBRARY.items():
+            lci = codec.compute_codec_lci(self.H, self.C)
+            priority = 1.2 if name in preferred else 1.0
+            results.append({
+                'codec': name,
+                'type': codec.codec_type.value,
+                'codec_lci': round(lci * priority, 4),
+                'domain': codec.domain,
+                'efficiency': codec.codec_efficiency,
+                'latency_odd': codec.latency_bits % 2 == 1,
+            })
+        results.sort(key=lambda x: -x['codec_lci'])
+        return {
+            'domain': domain,
+            'n_codecs': len(results),   # 5 - нечётное!
+            'recommendations': results,
+            'best_chs': results[0]['codec'],
+        }
+
+    def audit_9axioms(self) -> Dict:
+        """
+        9-аксиомный аудит (v2.0).
+        v1.0: 7 аксиом; v2.0: 9 аксиом (+A8 codec_fit, +A9 compression_ratio)
+        """
+        scores = {}
+        H_max = math.log2(256)
+
+        # A1-A7 базовые
+        scores['A1_info_loop']   = self.H / (H_max + 1e-10)
+        scores['A2_3spheres']    = min(1.0, self.C / (self.H * 2 + 1e-10))
+        scores['A3_shannon_theorem'] = 1.0 if self.H <= self.C else 0.2
+        scores['A4_noise_limit'] = max(0.0, 1.0 - self.noise * 10)
+        odd_entropy = abs(round(self.H) % 2)
+        scores['A5_odd_entropy'] = 1.0 if odd_entropy == 1 else 0.7
+        scores['A6_memory']      = 1.0  # 5 кодеков <= 7
+        scores['A7_adaptive']    = 0.8  # предполагаем адаптацию
+
+        # A8-A9: ЧВС
+        if self._codec:
+            cl = self._codec.compute_codec_lci(self.H, self.C)
+            scores['A8_codec_fit']         = cl
+            scores['A9_compression_ratio'] = min(1.0, self._codec.compression_ratio / 3)
+        else:
+            scores['A8_codec_fit']         = 0.5
+            scores['A9_compression_ratio'] = 0.3
+
+        n_axioms = len(scores)  # 9 - нечётное!
+        lci = float(np.mean(list(scores.values())))
+        violations = {k: v for k, v in scores.items() if v < 0.6}
+
+        return {
+            'n_axioms': n_axioms,
+            'axioms_odd': n_axioms % 2 == 1,
+            'axiom_scores': {k: round(v, 3) for k, v in scores.items()},
+            'system_lci': round(lci, 3),
+            'violations': violations,
+            'codec': self._codec.codec_type.name if self._codec else 'НЕТ ЧВС',
+            'rating': 'ОПТИМАЛЬНО' if lci > 0.85 else 'ХОРОШО' if lci > 0.65 else 'УЛУЧШИТЬ',
+        }
+```
+
+### Сравнение ЧВС-кодеков для канала с H=4 бит/символ
+
+| ЧВС-кодек | Домен | Эффективность | Нечётность задержки | ЛЗП v1.0 | ЛЗП v2.0 |
+|-----------|-------|--------------|-------------------|----------|----------|
+| Huffman | текст/данные | 0.99 | 7 бит (нечётно) | 0.50 | 0.44 |
+| LZ77 | файлы/веб | 0.85 | 255 (нечётно) | 0.50 | 0.38 |
+| Turbo | мобильная/космос | 0.97 | 319 (нечётно) | 0.50 | 0.29 |
+| LDPC | 5G/WiFi | 0.98 | 1023 (нечётно) | 0.50 | 0.29 |
+| Reed-Solomon | хранение/QR | 0.82 | 255 (нечётно) | 0.50 | 0.31 |
+
+### Теорема 62.v2: 4-сферная информационная система
+
+**Система достигает ЛЗП_opt при 9 аксиомах (v2.0):**
+
+1. **A1** — информационная петля: H > 0 (есть что передавать)
+2. **A2** — три сферы в резонансе: C >= H (канал не перегружен)
+3. **A3** — теорема Шеннона: скорость кода < C
+4. **A4** — шум < порога BER кодека
+5. **A5** — нечётное число бит в алфавите источника (7 бит = ASCII)
+6. **A6** — не более 7 кодеков в системе
+7. **A7** — кодек обновляется под изменения канала
+8. **A8** — ЧВС codec_fit >= 0.85 (кодек специализирован под домен)
+9. **A9** — compression_ratio >= 1.4 (реальное сжатие)
+
+**ЛЗП_opt = H/H_max x codec_eff x domain_fit**
+
+---
+
+*Серия V «Граничные случаи», Том 62. v2.0 ЧВС-апдейт.*

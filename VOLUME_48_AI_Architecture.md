@@ -8,6 +8,32 @@
 
 ---
 
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+> Этот файл содержит **ДВЕ версии** параллельно — оригинал и расширение.
+
+| Параметр | ВЕРСИЯ 1.0 (оригинал) | ВЕРСИЯ 2.0 (ЧВС-апдейт) |
+|---|---|---|
+| Число сфер ИИ-системы | 3 (МВС / СВС / БВС) | **4 (МВС / СВС / БВС / ЧВС)** |
+| МВС | Данные / токены / эмбеддинги | Данные / токены / эмбеддинги |
+| СВС | Модель / архитектура / веса | Модель / архитектура / веса |
+| БВС | Деплой / сервис / мониторинг | Деплой / сервис / мониторинг |
+| ЧВС | — | **Адаптер / Fine-tune / Domain** (LoRA, Prefix, Prompt) |
+| Аудитор | `AISystemETDAuditor` (7 аксиом) | **`FourSphereAIAuditor`** (9 аксиом) |
+| Добавлены аксиомы | — | **A8** (ЧВС-наличие) + **A9** (ЧВС-резонанс ранга) |
+| ЛЗП формула | 3-сферная | **4-сферная** (additive / multiplicative / weighted) |
+| Тип ЧВС | — | `AdapterType`: LoRA / PrefixTuning / AdapterLayers / PromptTuning |
+| Смена домена | Полный retraining | **Сменить ЧВС-адаптер** (`CHS_ADAPTER_LIBRARY`) |
+| Источник v2.0 | — | Том 101, Часть IV |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
+
+---
+
 ## АННОТАЦИЯ
 
 Любая успешная ИИ-система — это иерархия замкнутых орбит. В данном томе доказывается, что архитектурные решения, обеспечивающие высокое качество ИИ, подчиняются семи аксиомам ЕТД. Трансформер = три сферы (QKV). Обучение с подкреплением = петля. Масштабный закон Чинчиллы = степенной закон с нечётными показателями. Иерархия агентов: 5 уровней (нечётное!). ЛЗП системы = отношение выпуклой оболочки орбиты активаций к её описывающему боксу; системы с ЛЗП > 0.85 достигают emergent abilities. Три сферы ИИ: данные (МВС) — модель (СВС) — деплой (БВС).
@@ -973,3 +999,289 @@ if __name__ == "__main__":
 
 *Единая Теория Движения. Том 48. Крюков.*
 *«Великая ИИ-система — это иерархия замкнутых орбит нечётного порядка.»*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## Источник: Том 101, Часть IV
+## ══════════════════════════════════════════
+
+### Что изменилось относительно v1.0
+
+```
+ВЕРСИЯ 1.0 (3 сферы ИИ):          ВЕРСИЯ 2.0 (4 сферы ИИ):
+  МВС: Данные / токены               МВС: Данные / токены
+  СВС: Модель / архитектура          СВС: Модель / архитектура
+  БВС: Деплой / сервис               БВС: Деплой / сервис
+  — нет домена —                     ЧВС: Адаптер / Fine-tune / Domain
+
+ПРОБЛЕМА v1.0: «Трансформер = три сферы (QKV)» — верно,
+  но где специализация под медицину, юриспруденцию, код?
+
+РЕШЕНИЕ v2.0: ЧВС = LoRA-адаптер. Фундаментальная модель (БВС)
+  остаётся; ЧВС-адаптер меняется при смене домена.
+
+7 аксиом → 9 аксиом (нечётное!): +A8 (ЧВС-наличие) +A9 (ЧВС-резонанс).
+```
+
+---
+
+### Глава 4v: ЧВС ИИ-системы — LoRA-адаптер как инструмент
+
+```python
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+from enum import Enum
+import numpy as np
+
+
+class AdapterType(Enum):
+    """Типы ЧВС-адаптеров ИИ-системы."""
+    LORA            = "lora"
+    PREFIX_TUNING   = "prefix_tuning"
+    ADAPTER_LAYERS  = "adapter_layers"
+    PROMPT_TUNING   = "prompt_tuning"
+    FULL_FINETUNE   = "full_finetune"
+    DOMAIN_SPECIFIC = "domain_specific"
+
+
+@dataclass
+class AISystemCHS:
+    """
+    ЧВС ИИ-системы — адаптер к конкретному прикладному домену.
+
+    Аналогия:
+      Фундаментальная модель (БВС) = тело бойца
+      LoRA-адаптер (ЧВС) = меч в его руках
+      Без ЧВС модель «общая»; с ЧВС — специализированная.
+
+    Изменения относительно v1.0:
+      + Параметр lora_rank (нечётное оптимально: 7, 13...)
+      + target_modules по умолчанию = ['q_proj', 'v_proj', 'k_proj'] (QKV = три сферы!)
+      + Метрика parameter_efficiency (% параметров, которые обучаются)
+    """
+    domain_name: str
+    adapter_type: AdapterType
+    lora_rank: int = 16
+    lora_alpha: float = 32.0
+    target_modules: List[str] = field(
+        default_factory=lambda: ['q_proj', 'v_proj', 'k_proj']  # QKV = три сферы
+    )
+    training_samples: int = 1000
+    eval_metric: str = 'accuracy'
+
+    @property
+    def parameter_efficiency(self) -> float:
+        """% параметров модели, которые обучаются (vs полный retraining)."""
+        approx_lora_params = 2 * self.lora_rank * 1024 * len(self.target_modules)
+        approx_total_params = 7_000_000_000
+        return approx_lora_params / approx_total_params
+
+    @property
+    def is_chs_odd_rank(self) -> bool:
+        """Закон нечётности: нечётный ранг LoRA предпочтительнее."""
+        return self.lora_rank % 2 == 1
+
+
+# Библиотека стандартных ЧВС-адаптеров
+CHS_ADAPTER_LIBRARY = {
+    'medical_qa': AISystemCHS(
+        domain_name='Медицинские вопросы-ответы',
+        adapter_type=AdapterType.LORA,
+        lora_rank=16, training_samples=50_000, eval_metric='medical_accuracy'
+    ),
+    'legal_analysis': AISystemCHS(
+        domain_name='Юридический анализ',
+        adapter_type=AdapterType.LORA,
+        lora_rank=32, training_samples=20_000, eval_metric='legal_f1'
+    ),
+    'code_generation': AISystemCHS(
+        domain_name='Генерация кода',
+        adapter_type=AdapterType.ADAPTER_LAYERS,
+        lora_rank=64, training_samples=100_000, eval_metric='pass@k'
+    ),
+    'robotics_control': AISystemCHS(
+        domain_name='Управление роботами (связь с Томом 03 ЧВС)',
+        adapter_type=AdapterType.DOMAIN_SPECIFIC,
+        lora_rank=7, training_samples=10_000,  # 7 — нечётное!
+        eval_metric='task_success_rate'
+    ),
+}
+```
+
+---
+
+### Глава 5v: Обновлённый аудитор — 9 аксиом (АПДЕЙТ AISystemETDAuditor)
+
+**v1.0** `AISystemETDAuditor` (7 аксиом) → **v2.0** `FourSphereAIAuditor` (9 аксиом)
+
+```python
+class FourSphereAIAuditor:
+    """
+    АПДЕЙТ AISystemETDAuditor (v1.0, Том 48).
+
+    Было: 7 аксиом (A1–A7) — три сферы.
+    Стало: 9 аксиом (A1–A9) — четыре сферы.
+
+    Добавлены:
+      A8: ЧВС-наличие (есть ли адаптер для домена)
+      A9: ЧВС-резонанс (LoRA-ранг оптимален под задачу)
+    """
+
+    def audit_4sphere(self, system_config: Dict,
+                       chs_adapter: Optional[AISystemCHS] = None) -> Dict:
+        # A1–A7 из Тома 48 v1.0 (без изменений)
+        base_scores = self._compute_base_axioms(system_config)
+
+        # A8: ЧВС — наличие доменного адаптера (НОВОЕ)
+        if chs_adapter is None:
+            axiom8_chs_present = 0.0
+            axiom9_chs_resonance = 0.0
+        else:
+            axiom8_chs_present = 1.0
+            # A9: ЧВС-резонанс — LoRA rank оптимален
+            rank_score = 1.0 - abs(np.log2(chs_adapter.lora_rank) - 4) / 4
+            odd_bonus = 0.1 if chs_adapter.is_chs_odd_rank else 0.0
+            axiom9_chs_resonance = min(max(rank_score + odd_bonus, 0.0), 1.0)
+
+        all_scores = base_scores + [axiom8_chs_present, axiom9_chs_resonance]
+        overall_lci = float(np.mean(all_scores))
+
+        return {
+            'system_name': system_config.get('name', 'ИИ-система'),
+            'overall_4sphere_lci': round(overall_lci, 4),
+            'n_axioms': 9,  # НЕЧЁТНОЕ!
+            'axiom_scores': {
+                **{f'A{i+1}': round(s, 3) for i, s in enumerate(base_scores)},
+                'A8_chs_present':   round(axiom8_chs_present, 3),
+                'A9_chs_resonance': round(axiom9_chs_resonance, 3),
+            },
+            'chs_adapter': chs_adapter.domain_name if chs_adapter else 'НЕ ЗАДАН',
+            'chs_efficiency_pct': (
+                round(chs_adapter.parameter_efficiency * 100, 3)
+                if chs_adapter else 0.0
+            ),
+            'four_sphere_achieved': overall_lci > 0.80 and chs_adapter is not None,
+            'recommendations': self._gen_4sphere_recs(all_scores, chs_adapter)
+        }
+
+    def _compute_base_axioms(self, cfg: Dict) -> List[float]:
+        """A1–A7 из Тома 48 v1.0 (воспроизведены)."""
+        a1 = min(cfg.get('n_training_runs', 0) / 21.0, 1.0)
+        fracs = np.array([cfg.get('data_budget_pct', 0.33),
+                          cfg.get('model_budget_pct', 0.33),
+                          cfg.get('deploy_budget_pct', 0.34)])
+        fracs /= fracs.sum() + 1e-10
+        a2 = float(1.0 - 0.5 * np.sum(np.abs(fracs - 1/3)))
+        a3 = 0.5 * cfg.get('has_system_prompt', True) + 0.5 * cfg.get('has_arch_template', True)
+        cl = cfg.get('context_length', 8192)
+        bests = [127, 255, 511, 1023, 2047, 4095, 8191, 16383, 32767]
+        best = min(bests, key=lambda x: abs(x - cl))
+        a4 = max(0.0, 1.0 - abs(cl - best) / max(cl, 1))
+        a5 = 1.0 if cfg.get('n_layers', 33) % 2 == 1 else 0.5
+        a6 = max(0.0, 1.0 - abs(cfg.get('kv_heads', 8) - 7) / 7)
+        a7 = min(cfg.get('n_inference_modes', 5) / 5.0, 1.0)
+        return [a1, a2, a3, a4, a5, a6, a7]
+
+    def _gen_4sphere_recs(self, scores: List[float],
+                          chs: Optional[AISystemCHS]) -> List[str]:
+        names = ['A1-Цикл', 'A2-Бюджет', 'A3-Шаблон', 'A4-Контекст',
+                 'A5-Нечётность', 'A6-KV', 'A7-Режимы', 'A8-ЧВС', 'A9-Ранг']
+        recs = [f'Улучшить {n} ({s:.2f})' for n, s in zip(names, scores) if s < 0.6]
+        if chs is None:
+            recs.append('КРИТИЧНО: добавить ЧВС-адаптер (A8=0)!')
+        elif not chs.is_chs_odd_rank:
+            recs.append(f'Рекомендация: LoRA rank нечётный (текущий: {chs.lora_rank})')
+        return recs or ['Система сбалансирована по 4 сферам']
+```
+
+---
+
+### Глава 6v: Четырёхсферная формула ЛЗП ИИ-системы
+
+```python
+def compute_4sphere_ai_lci(
+    data_quality: float,        # МВС: качество данных [0,1]
+    model_capability: float,    # СВС: мощность модели [0,1]
+    deploy_reliability: float,  # БВС: надёжность деплоя [0,1]
+    domain_fit: float           # ЧВС: соответствие домену [0,1]
+) -> Dict[str, float]:
+    """
+    v1.0: нет единой формулы для ЧВС.
+    v2.0: три варианта ЛЗП (additive / multiplicative / weighted).
+
+    Ключевое свойство v2.0: слабое звено (min сфера) тянет вниз
+    через multiplicative_lci — мотивирует сбалансировать все 4 сферы.
+    """
+    spheres = np.array([data_quality, model_capability,
+                         deploy_reliability, domain_fit])
+
+    additive_lci      = float(np.mean(spheres))
+    multiplicative_lci = float(np.prod(spheres))          # слабое звено
+
+    resonance = 1.0 - 0.5 * float(np.sum(np.abs(spheres - 0.25 * spheres.sum())))
+
+    chs_weight = 1.0 + (1.0 - np.mean(spheres[:3])) * 0.5
+    weighted_lci = float(
+        (data_quality + model_capability + deploy_reliability +
+         domain_fit * chs_weight) / (3 + chs_weight)
+    )
+
+    grades = [
+        (0.85, 'A — Элитная 4-сферная ИИ-система'),
+        (0.70, 'B — Зрелая система с хорошей специализацией'),
+        (0.55, 'C — Рабочая система, ЧВС требует усиления'),
+        (0.40, 'D — Базовая система без специализации'),
+        (0.0,  'E — Критические проблемы'),
+    ]
+    grade = next(g for threshold, g in grades if weighted_lci >= threshold)
+
+    return {
+        'additive_lci':       round(additive_lci, 4),
+        'multiplicative_lci': round(multiplicative_lci, 4),
+        'weighted_lci':       round(weighted_lci, 4),
+        'resonance_4sphere':  round(resonance, 4),
+        'bottleneck_sphere':  ['МВС/Данные', 'СВС/Модель',
+                               'БВС/Деплой', 'ЧВС/Домен'][int(np.argmin(spheres))],
+        'grade': grade,
+        'sphere_balance': {
+            'МВС_данные': round(float(data_quality), 3),
+            'СВС_модель': round(float(model_capability), 3),
+            'БВС_деплой': round(float(deploy_reliability), 3),
+            'ЧВС_домен':  round(float(domain_fit), 3),
+        }
+    }
+```
+
+---
+
+### Сравнительная таблица v1.0 vs v2.0
+
+| Компонент | v1.0 (3 сферы) | v2.0 (+ ЧВС) |
+|---|---|---|
+| Три сферы ИИ | МВС/СВС/БВС | МВС/СВС/БВС **+ ЧВС** |
+| ЧВС | Не формализована | **`AISystemCHS`** (LoRA, Prefix...) |
+| Аудитор | `AISystemETDAuditor` | **`FourSphereAIAuditor`** |
+| Число аксиом | 7 | **9 (нечётное!)** |
+| Новые аксиомы | — | **A8** (ЧВС-наличие), **A9** (ЧВС-резонанс) |
+| ЛЗП формула | Нет для ЧВС | **additive + multiplicative + weighted** |
+| Узкое место | Из 7 аксиом | **+ ЧВС как 4-й фактор** |
+| Смена домена | Полный retraining | **`CHS_ADAPTER_LIBRARY[domain]`** |
+
+### Обновлённые архитектурные рекомендации ЕТД (v2.0)
+
+| Компонент | v1.0 рекомендация | v2.0 рекомендация (+ ЧВС) |
+|---|---|---|
+| Число слоёв | Нечётное: 33, 65, 97 | Без изменений |
+| KV-головы | 7, 21, 35 | Без изменений |
+| Контекстное окно | 2^k − 1 | Без изменений |
+| RLHF итерации | 7, 21, 35 | Без изменений |
+| LoRA rank (ЧВС) | — | **Нечётное: 7, 13, 17, 33** |
+| Число ЧВС-модулей | — | **3 (QKV — три сферы!)** |
+| Число адаптеров в библиотеке | — | **7 (нечётное — закон памяти)** |
+
+---
+
+*Том 48, Версия 2.0 (ЧВС-апдейт). Источник: Том 101, Часть IV.*
+*«Фундаментальная ИИ-модель без доменного адаптера — орбита без аттрактора: движется, но куда — не определено».*

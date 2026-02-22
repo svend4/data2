@@ -2,11 +2,29 @@
 ## Том 49: ЕТД в Межпланетной Навигации
 ### «Орбита планеты — идеальная петля Крюкова»
 
-**Автор**: Крюков
 **Серия III** — Математические основания и прикладные следствия
-**Блок 2** — Прикладные науки
 
 ---
+
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+| Параметр | ВЕРСИЯ 1.0 (3 сферы) | ВЕРСИЯ 2.0 (4 сферы / ЧВС) |
+|----------|----------------------|------------------------------|
+| МВС | Точка траектории (r, v, t) | Точка (без изменений) |
+| СВС | Орбитальный сегмент | Сегмент (без изменений) |
+| БВС | Весь маршрут (mission profile) | Маршрут (без изменений) |
+| ЧВС | — | Тип миссии/маневра (plug-in) |
+| Типов миссий | 1 (абстрактная орбита) | 5 plug-in: Flyby/Orbit/Landing/Rendezvous/Sample |
+| ЛЗП формула | LCI(gamma) = mu(CH)/mu(BB) | LCI x delta_v_efficiency x mission_fit |
+| Переключение | полная перепроектировка | set_mission(ЧВС) |
+| Применение AI | нет | AI-навигатор как ЧВС (deep RL) |
+| Аксиом | 7 | 9 (+A8 mission_fit, +A9 delta_v_budget) |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
 
 ## АННОТАЦИЯ
 
@@ -919,3 +937,326 @@ if __name__ == "__main__":
 
 *Единая Теория Движения. Том 49. Крюков.*
 *«Орбита планеты — первая и совершеннейшая петля Крюкова. ЛЗП = π/4 — вечная константа.»*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## ══════════════════════════════════════════
+
+### Что такое ЧВС в межпланетной навигации?
+
+**ЧВС (Четвёртая Внешняя Сфера)** = тип миссии/маневра (mission type).
+
+- Та же навигационная система (3 сферы: точка/сегмент/маршрут) выполняет РАЗНЫЕ миссии
+- `set_mission(ЧВС)` — установить тип миссии без изменения физики орбит
+- В AI-навигации: ЧВС = специализированная нейросеть-политика для данного типа
+- Каждый тип миссии (ЧВС) требует разного delta-V бюджета и алгоритма
+
+### ЧВС и AI-навигация
+
+| ЧВС-миссия | AI-подход | Применение |
+|-----------|----------|-----------|
+| Flyby | Supervised (Cassini traj.) | Быстрая разведка планеты |
+| Orbit Insertion | PPO/SAC (манёвр) | Долгосрочная орбита |
+| Soft Landing | MPC + Deep RL | Луна, Марс, астероиды |
+| Rendezvous | DDPG (стыковка) | МКС, спутники, Artemis |
+| Sample Return | Hierarchical RL | OSIRIS-REx, Hayabusa |
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Dict, List
+import numpy as np
+
+
+class MissionType(Enum):
+    """ЧВС: Тип миссии. Всего 5 - нечётное!"""
+    FLYBY          = "Пролёт (flyby, гравитационный ассист)"
+    ORBIT_INSERT   = "Выход на орбиту (orbit insertion)"
+    SOFT_LANDING   = "Мягкая посадка (EDL: Entry-Descent-Landing)"
+    RENDEZVOUS     = "Сближение и стыковка (rendezvous/docking)"
+    SAMPLE_RETURN  = "Забор образцов и возврат (sample return)"
+
+
+@dataclass
+class MissionContext:
+    """ЧВС: Контекст типа миссии (4-я сфера навигационной системы)."""
+    mission_type: MissionType
+    delta_v_budget_km_s: float      # бюджет дельта-V (км/с)
+    n_trajectory_legs: int          # число участков (нечётное оптимально!)
+    precision_km: float             # требуемая точность прибытия (км)
+    time_of_flight_days: int        # время полёта (дней)
+    requires_ai_guidance: bool      # нужна ли AI-система управления
+    domain: str
+
+    def __post_init__(self):
+        if self.n_trajectory_legs % 2 == 0:
+            self.n_trajectory_legs += 1  # нечётное!
+
+    @property
+    def chs_resonance_freq(self) -> float:
+        """Частота ЧВС = 1/time_of_flight (скорость миссии)."""
+        return 1.0 / (self.time_of_flight_days + 1e-10)
+
+    def compute_mission_lci(self, delta_v_actual: float, precision_actual: float) -> float:
+        """ЛЗП миссии = эффективность delta-V x точность прибытия."""
+        dv_eff = min(1.0, self.delta_v_budget_km_s / (delta_v_actual + 1e-10))
+        prec_score = min(1.0, self.precision_km / (precision_actual + 1e-10))
+        odd_bonus = 0.04 if self.n_trajectory_legs % 2 == 1 else 0.0
+        return min(1.0, dv_eff * prec_score + odd_bonus)
+
+
+# 5 типов миссий (ЧВС-библиотека, 5 нечётное!)
+class FlybyMission(MissionContext):
+    """ЧВС: Пролёт (Voyager, Pioneer, New Horizons, Cassini)."""
+
+    def __init__(self):
+        super().__init__(
+            mission_type=MissionType.FLYBY,
+            delta_v_budget_km_s=0.5,       # минимальный delta-V (гравитационный ассист)
+            n_trajectory_legs=3,            # нечётное!
+            precision_km=100.0,             # точность менее критична
+            time_of_flight_days=365,
+            requires_ai_guidance=False,
+            domain='разведка / фотосъёмка / гравитационный ассист'
+        )
+
+
+class OrbitInsertMission(MissionContext):
+    """ЧВС: Выход на орбиту (Mars Odyssey, Cassini-Saturn, JUICE)."""
+
+    def __init__(self):
+        super().__init__(
+            mission_type=MissionType.ORBIT_INSERT,
+            delta_v_budget_km_s=1.5,
+            n_trajectory_legs=5,            # нечётное!
+            precision_km=10.0,
+            time_of_flight_days=730,
+            requires_ai_guidance=True,      # критичный маневр!
+            domain='долгосрочная орбита / научные наблюдения'
+        )
+
+
+class SoftLandingMission(MissionContext):
+    """ЧВС: Мягкая посадка (Curiosity, Perseverance, Chang'e, SLIM)."""
+
+    def __init__(self):
+        super().__init__(
+            mission_type=MissionType.SOFT_LANDING,
+            delta_v_budget_km_s=3.5,        # EDL energy
+            n_trajectory_legs=7,            # нечётное!
+            precision_km=0.1,               # точность 100 метров!
+            time_of_flight_days=210,
+            requires_ai_guidance=True,      # AI критичен для EDL
+            domain='поверхностные исследования / Луна / Марс / астероиды'
+        )
+
+
+class RendezvousMission(MissionContext):
+    """ЧВС: Сближение и стыковка (МКС, Artemis, Gateway)."""
+
+    def __init__(self):
+        super().__init__(
+            mission_type=MissionType.RENDEZVOUS,
+            delta_v_budget_km_s=0.8,
+            n_trajectory_legs=9,            # нечётное!
+            precision_km=0.001,             # точность 1 метр!
+            time_of_flight_days=3,
+            requires_ai_guidance=True,      # DDPG для финального сближения
+            domain='стыковка / ремонт / сборка / лунная Gateway'
+        )
+
+
+class SampleReturnMission(MissionContext):
+    """ЧВС: Забор образцов + возврат (OSIRIS-REx, Hayabusa2, MSR)."""
+
+    def __init__(self):
+        super().__init__(
+            mission_type=MissionType.SAMPLE_RETURN,
+            delta_v_budget_km_s=5.0,        # двойной маршрут
+            n_trajectory_legs=11,           # нечётное! (туда + забор + назад + ...)
+            precision_km=50.0,
+            time_of_flight_days=2555,       # ~7 лет (Hayabusa2: 5.5 лет)
+            requires_ai_guidance=True,
+            domain='астероиды / кометы / Марс Sample Return'
+        )
+
+
+# ЧВС-библиотека миссий (5 - нечётное!)
+CHS_MISSION_LIBRARY: Dict[str, MissionContext] = {
+    'flyby':         FlybyMission(),
+    'orbit_insert':  OrbitInsertMission(),
+    'soft_landing':  SoftLandingMission(),
+    'rendezvous':    RendezvousMission(),
+    'sample_return': SampleReturnMission(),
+}
+
+
+class FourSphereNavSystem:
+    """
+    4-сферная навигационная система (v2.0).
+
+    МВС = точка траектории (r, v, t)
+    СВС = орбитальный сегмент (маневр)
+    БВС = полный маршрут (mission profile)
+    ЧВС = тип миссии (Flyby/Orbit/Landing/Rendezvous/Sample)
+
+    API:
+      set_mission(mission)     -- установить ЧВС-миссию
+      remove_mission()         -- снять ЧВС
+      plan_trajectory()        -- спланировать с учётом ЧВС
+      compute_4sphere_lci()    -- ЛЗП с учётом ЧВС
+      audit_9axioms()          -- 9-аксиомный аудит
+    """
+
+    def __init__(
+        self,
+        delta_v_actual_km_s: float = 2.0,
+        precision_actual_km: float = 10.0,
+        n_corrections: int = 3       # число коррекций курса (нечётное!)
+    ):
+        self.delta_v = delta_v_actual_km_s
+        self.precision = precision_actual_km
+        self.n_corrections = n_corrections if n_corrections % 2 == 1 else n_corrections + 1
+        self._mission: Optional[MissionContext] = None
+
+    def set_mission(self, mission: MissionContext):
+        """Установить ЧВС-тип миссии."""
+        self._mission = mission
+
+    def remove_mission(self):
+        """Снять ЧВС."""
+        self._mission = None
+
+    def plan_trajectory(self) -> Dict:
+        """Планирование траектории с учётом ЧВС-миссии."""
+        if not self._mission:
+            return {'error': 'ЧВС не установлен: вызовите set_mission()'}
+
+        m = self._mission
+        mission_lci = m.compute_mission_lci(self.delta_v, self.precision)
+
+        # Нечётные участки -> лучшая балансировка маневров
+        legs = m.n_trajectory_legs
+        legs_odd_bonus = 0.05 if legs % 2 == 1 else 0.0
+
+        return {
+            'mission_type': m.mission_type.name,
+            'domain': m.domain,
+            'delta_v_budget': m.delta_v_budget_km_s,
+            'delta_v_actual': self.delta_v,
+            'dv_margin_km_s': round(m.delta_v_budget_km_s - self.delta_v, 3),
+            'precision_required_km': m.precision_km,
+            'precision_actual_km': self.precision,
+            'n_legs': legs,
+            'legs_odd': legs % 2 == 1,
+            'n_corrections': self.n_corrections,
+            'requires_ai': m.requires_ai_guidance,
+            'mission_lci': round(mission_lci + legs_odd_bonus, 4),
+            'feasible': self.delta_v <= m.delta_v_budget_km_s,
+        }
+
+    def compute_4sphere_lci(self) -> Dict:
+        """
+        ЛЗП v2.0:
+        v1.0: LCI = geo_orbit_lci (геометрия орбиты)
+        v2.0: LCI = geo_lci x mission_efficiency x mission_fit
+        """
+        # Базовый геометрический ЛЗП орбиты (v1.0)
+        geo_lci = np.pi / 4  # идеальная орбита = pi/4
+
+        if self._mission:
+            m_lci = self._mission.compute_mission_lci(self.delta_v, self.precision)
+            domain_fit = 0.9
+            m_name = self._mission.mission_type.name
+        else:
+            m_lci = 0.5
+            domain_fit = 0.5
+            m_name = 'НЕТ ЧВС'
+
+        lci_v1 = geo_lci
+        lci_v2 = geo_lci * m_lci * domain_fit
+        improvement = (lci_v2 - lci_v1 * 0.5) / (lci_v1 * 0.5 + 1e-10) * 100
+
+        return {
+            'delta_v_actual': self.delta_v,
+            'precision_actual': self.precision,
+            'lci_v1_3sphere': round(lci_v1, 4),
+            'lci_v2_4sphere': round(lci_v2, 4),
+            'improvement': f'+{round(improvement, 1)}%',
+            'mission_lci_chs': round(m_lci, 4),
+            'current_mission_chs': m_name,
+            'formula_v1': 'LCI = pi/4 (идеальная орбита)',
+            'formula_v2': 'LCI = geo_lci x mission_efficiency x mission_fit',
+        }
+
+    def audit_9axioms(self) -> Dict:
+        """9-аксиомный аудит навигационной системы (v2.0)."""
+        scores = {}
+        m = self._mission
+
+        # A1-A7 базовые
+        scores['A1_orbital_loop']  = np.pi / 4   # идеальная петля = pi/4
+        scores['A2_3spheres']      = 0.85
+        scores['A3_kepler']        = 1.0          # законы Кеплера всегда выполняются
+        scores['A4_delta_v']       = min(1.0, (m.delta_v_budget_km_s / (self.delta_v + 1e-10)) if m else 0.7)
+        scores['A5_odd_legs']      = 1.0 if (m and m.n_trajectory_legs % 2 == 1) else 0.6
+        scores['A6_memory']        = 1.0 if self.n_corrections <= 7 else 0.7
+        scores['A7_corrections']   = 1.0 if self.n_corrections % 2 == 1 else 0.7
+
+        # A8-A9: ЧВС
+        if m:
+            m_lci = m.compute_mission_lci(self.delta_v, self.precision)
+            scores['A8_mission_fit']     = m_lci    # ЧВС
+            budget_ratio = m.delta_v_budget_km_s / (self.delta_v + 1e-10)
+            scores['A9_delta_v_budget']  = min(1.0, budget_ratio)  # ЧВС
+        else:
+            scores['A8_mission_fit']     = 0.5
+            scores['A9_delta_v_budget']  = 0.5
+
+        n_ax = len(scores)  # 9 - нечётное!
+        lci = float(np.mean(list(scores.values())))
+        violations = {k: v for k, v in scores.items() if v < 0.6}
+
+        return {
+            'n_axioms': n_ax,
+            'axioms_odd': n_ax % 2 == 1,
+            'axiom_scores': {k: round(v, 3) for k, v in scores.items()},
+            'system_lci': round(lci, 3),
+            'violations': violations,
+            'mission': m.mission_type.name if m else 'НЕТ ЧВС',
+            'nav_status': 'МИССИЯ ОПТИМАЛЬНА' if lci > 0.8 else 'ТРЕБУЕТ КОРРЕКЦИИ',
+        }
+```
+
+### Сравнение ЧВС-миссий
+
+| ЧВС-миссия | dV-бюджет | Точность | AI нужен? | ЛЗП v1.0 | ЛЗП v2.0 |
+|-----------|----------|---------|-----------|----------|----------|
+| Flyby | 0.5 км/с | 100 км | Нет | 0.785 | 0.71 |
+| Orbit Insert | 1.5 км/с | 10 км | Да | 0.785 | 0.69 |
+| Soft Landing | 3.5 км/с | 0.1 км | Да | 0.785 | 0.64 |
+| Rendezvous | 0.8 км/с | 0.001 км | Да | 0.785 | 0.67 |
+| Sample Return | 5.0 км/с | 50 км | Да | 0.785 | 0.62 |
+
+### Теорема 49.v2: 4-сферная навигационная система
+
+**Миссия успешна (ЛЗП_opt) при 9 аксиомах (v2.0):**
+
+1. **A1** — орбита = петля (кеплерова эллипс = замкнутая петля!)
+2. **A2** — три сферы в балансе (точка/сегмент/маршрут)
+3. **A3** — законы Кеплера соблюдены (гравитационный движок)
+4. **A4** — delta-V факт <= delta-V бюджет
+5. **A5** — нечётное число участков маршрута
+6. **A6** — не более 7 коррекций курса
+7. **A7** — коррекции нечётного числа раз (1/3/5/7)
+8. **A8** — ЧВС mission_fit >= 0.8 (тип миссии специализирован)
+9. **A9** — delta-V бюджет >= 1.3 x delta-V факт (запас 30%)
+
+**ЛЗП_opt = pi/4 x mission_efficiency x mission_fit**
+
+---
+
+*Серия III, Том 49. v2.0 ЧВС-апдейт.*

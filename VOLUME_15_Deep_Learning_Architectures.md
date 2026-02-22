@@ -6,6 +6,30 @@
 
 ---
 
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+> Этот файл содержит **ДВЕ версии** параллельно — оригинал и расширение.
+
+| Параметр | ВЕРСИЯ 1.0 (оригинал) | ВЕРСИЯ 2.0 (ЧВС-апдейт) |
+|---|---|---|
+| Сфер | 3 (МВС / СВС / БВС) | **4 (МВС / СВС / БВС / ЧВС)** |
+| ЧВС = | — | **Задача / Домен** (task head, adapter) |
+| `KryukovRNN` | 3 буфера памяти | + **4-й буфер = task context (ЧВС)** |
+| `TransformerResonanceAnalyzer` | 3 группы слоёв | + **ЧВС-адаптер** кондиционирует все три |
+| `LoopNet` | N петель, нечётное | + **ЧВС-голова** специфична для задачи |
+| `CNNFeatureResonanceAnalyzer` | 3-сферный резонанс | + **ЧВС = задача** (что искать на изображении) |
+| Многозадачность | Отдельные модели | **Одна сеть + N ЧВС-голов** |
+| Смена задачи | Переобучение | **`set_task()` / смена ЧВС-головы** |
+| Источник v2.0 | — | Том 101, Часть III (нейросетевое расширение) |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
+
+---
+
 ## ПРЕДИСЛОВИЕ
 
 Когда в 2015 году Microsoft Research представила ResNet — сеть с «остаточными соединениями» (skip connections) — никто не назвал это «петлевой архитектурой». Но именно это и было сделано: информация не идёт прямолинейно от входа к выходу, она описывает **петли** — возвращается с более глубоких слоёв к более ранним через остаточные связи.
@@ -651,3 +675,336 @@ class LoopBlock(nn.Module):
 
 ---
 *© Серия «Архетипы Движения», Книга 15. Основано на «Тотальной Системе Боя» В.В. Крюкова.*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## Источник: Том 101, Часть III (нейросетевое расширение)
+## ══════════════════════════════════════════
+
+### Что изменилось относительно v1.0
+
+```
+ВЕРСИЯ 1.0 (3 сферы памяти):        ВЕРСИЯ 2.0 (4 сферы + ЧВС):
+  KryukovRNN:                          KryukovRNN v2.0:
+    МВС: краткосрочный буфер             МВС: краткосрочный буфер
+    СВС: среднесрочный контекст          СВС: среднесрочный контекст
+    БВС: долгосрочное состояние          БВС: долгосрочное состояние
+    — нет задачи —                       ЧВС: task_context (текущая задача)
+
+  TransformerResonanceAnalyzer:        TransformerResonanceAnalyzer v2.0:
+    3 группы слоёв (МВС/СВС/БВС)         3 группы слоёв + ЧВС-адаптер
+    Резонанс между группами               ЧВС кондиционирует каждую группу
+
+  LoopNet:                             LoopNet v2.0:
+    N петель (нечётное)                   N петель + ЧВС-голова (task-specific)
+    Одна модель — одна задача             Одна сеть + N ЧВС-голов (N задач)
+```
+
+---
+
+### Глава 1v: KryukovRNN v2.0 — четыре буфера памяти
+
+**v1.0** `KryukovRNN` (3 буфера) → **v2.0** `KryukovRNN_CHS` (3 буфера + ЧВС)
+
+```python
+import torch
+import torch.nn as nn
+import numpy as np
+from typing import Dict, Optional
+
+
+class KryukovRNN_CHS(nn.Module):
+    """
+    АПДЕЙТ KryukovRNN (v1.0, Гл.1) → четыре буфера.
+
+    Изменения относительно v1.0:
+      + chs_task_encoder: энкодер текущей задачи
+      + chs_buffer: четвёртый буфер = задача/домен
+      + resonance_gate расширен: [МВС|СВС|БВС] → [МВС|СВС|БВС|ЧВС]
+      + task_conditioning: ЧВС кондиционирует МВС/СВС/БВС
+
+    Аналогия:
+      v1.0: три вида памяти (краткосрочная / среднесрочная / долгосрочная)
+      v2.0: + четвёртая память = контекст задачи
+            «Что я сейчас делаю?» — ЧВС отвечает на этот вопрос.
+    """
+
+    def __init__(self, input_size: int, hidden_size: int,
+                 task_dim: int = 16, n_tasks: int = 5):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.MAX_HORIZON = 9
+
+        # МВС / СВС / БВС — из v1.0 (без изменений)
+        self.mvs_cell = nn.GRUCell(input_size, hidden_size // 4)
+        self.svs_cell = nn.LSTMCell(hidden_size // 4, hidden_size // 2)
+        self.bvs_decay = nn.Parameter(torch.tensor(0.95))
+
+        # ЧВС: задачный энкодер (НОВОЕ)
+        n_tasks_odd = n_tasks if n_tasks % 2 == 1 else n_tasks + 1
+        self.chs_task_embeddings = nn.Embedding(n_tasks_odd, task_dim)
+        self.chs_encoder = nn.Sequential(
+            nn.Linear(task_dim, hidden_size // 4), nn.Tanh()
+        )
+
+        # Резонансный интегратор расширен: + ЧВС (ИЗМЕНЕНО)
+        self.resonance_gate = nn.Linear(
+            hidden_size // 4 + hidden_size // 2 +
+            hidden_size // 4 + hidden_size // 4,   # + ЧВС
+            hidden_size
+        )
+
+        # ЧВС-кондиционирование МВС/СВС через задачу (НОВОЕ)
+        self.chs_condition_mvs = nn.Linear(hidden_size // 4, hidden_size // 4)
+        self.chs_condition_svs = nn.Linear(hidden_size // 4, hidden_size // 2)
+
+        self.output_proj = nn.Linear(hidden_size, input_size)
+
+    def forward(self, x_seq: torch.Tensor,
+                task_id: Optional[int] = None) -> torch.Tensor:
+        """
+        БЫЛО (v1.0): forward(x_seq) — задача не учитывается.
+        СТАЛО (v2.0): forward(x_seq, task_id) — ЧВС кондиционирует поток.
+        """
+        batch_size, seq_len, _ = x_seq.shape
+
+        h_mvs = torch.zeros(batch_size, self.hidden_size // 4)
+        h_svs = torch.zeros(batch_size, self.hidden_size // 2)
+        c_svs = torch.zeros(batch_size, self.hidden_size // 2)
+        h_bvs = torch.zeros(batch_size, self.hidden_size // 4)
+
+        # ЧВС: закодировать задачу (НОВОЕ)
+        if task_id is not None:
+            task_t = torch.tensor([task_id] * batch_size, dtype=torch.long)
+            h_chs = self.chs_encoder(self.chs_task_embeddings(task_t))
+        else:
+            h_chs = torch.zeros(batch_size, self.hidden_size // 4)
+
+        # ЧВС-кондиционирование (смещения для МВС и СВС)
+        chs_mvs_bias = self.chs_condition_mvs(h_chs)
+        chs_svs_bias = self.chs_condition_svs(h_chs)
+
+        outputs = []
+        for t in range(min(seq_len, self.MAX_HORIZON)):
+            x_t = x_seq[:, t, :]
+
+            # МВС: + ЧВС-кондиционирование (ИЗМЕНЕНО)
+            h_mvs = self.mvs_cell(x_t, h_mvs) + chs_mvs_bias
+
+            # СВС: + ЧВС-кондиционирование (ИЗМЕНЕНО)
+            h_svs_raw, c_svs = self.svs_cell(h_mvs, (h_svs, c_svs))
+            h_svs = h_svs_raw + chs_svs_bias
+
+            # БВС: без изменений
+            alpha = torch.sigmoid(self.bvs_decay)
+            h_bvs = alpha * h_bvs + (1 - alpha) * h_mvs
+
+            # Резонанс: МВС + СВС + БВС + ЧВС (ИЗМЕНЕНО: 4 сферы)
+            combined = torch.cat([h_mvs, h_svs, h_bvs, h_chs], dim=-1)
+            resonant = torch.tanh(self.resonance_gate(combined))
+
+            out = self.output_proj(resonant)
+            outputs.append(out)
+
+        return torch.stack(outputs, dim=1)
+```
+
+---
+
+### Глава 3v: TransformerResonanceAnalyzer v2.0 — ЧВС-адаптер
+
+**v1.0**: 3 группы слоёв → **v2.0**: 3 группы + ЧВС-адаптер (кондиционирует все три)
+
+```python
+class TransformerResonanceAnalyzer_CHS(nn.Module):
+    """
+    АПДЕЙТ TransformerResonanceAnalyzer (v1.0, Гл.3) → ЧВС-адаптер.
+
+    Изменения:
+      + chs_task_adapter: задачный адаптер (LoRA-style, ЧВС)
+      + ЧВС применяется к входу каждой сферы как сдвиг
+      + resonance_loss расширен: штраф за несогласованность с ЧВС
+    """
+
+    def __init__(self, d_model: int = 512, n_heads: int = 8,
+                 n_layers: int = 12, task_dim: int = 64, n_tasks: int = 7):
+        super().__init__()
+        assert n_layers % 3 == 0
+
+        self.layers_per_sphere = n_layers // 3
+        self.d_model = d_model
+
+        # Три сферы слоёв — из v1.0
+        self.mvs_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model, n_heads, batch_first=True)
+            for _ in range(self.layers_per_sphere)
+        ])
+        self.svs_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model, n_heads, batch_first=True)
+            for _ in range(self.layers_per_sphere)
+        ])
+        self.bvs_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model, n_heads, batch_first=True)
+            for _ in range(self.layers_per_sphere)
+        ])
+
+        self.mvs_svs_resonance = nn.Linear(d_model, 1)
+        self.svs_bvs_resonance = nn.Linear(d_model, 1)
+        self.mvs_to_svs_gate = nn.Linear(d_model, d_model)
+        self.svs_to_bvs_gate = nn.Linear(d_model, d_model)
+
+        # ЧВС: задачный адаптер (НОВОЕ)
+        n_tasks_odd = n_tasks if n_tasks % 2 == 1 else n_tasks + 1
+        self.chs_task_heads = nn.ModuleDict({
+            f'task_{i}': nn.Sequential(
+                nn.Linear(d_model, task_dim), nn.GELU(),
+                nn.Linear(task_dim, d_model)   # LoRA-style
+            ) for i in range(n_tasks_odd)
+        })
+        self.active_task = 'task_0'
+
+    def set_task(self, task_id: str):
+        """Сменить ЧВС-адаптер. Тело (3 сферы) остаётся."""
+        if task_id in self.chs_task_heads:
+            self.active_task = task_id
+
+    def forward(self, x: torch.Tensor) -> dict:
+        """
+        БЫЛО (v1.0): без задачного кондиционирования.
+        СТАЛО (v2.0): ЧВС-адаптер применяется к входу каждой сферы.
+        """
+        # ЧВС: задачный сдвиг (НОВОЕ)
+        chs_shift = self.chs_task_heads[self.active_task](x)
+
+        # МВС: + ЧВС-сдвиг (ИЗМЕНЕНО)
+        h = x + chs_shift * 0.1  # residual LoRA-style
+        for layer in self.mvs_layers:
+            h = layer(h)
+        h_mvs = h
+
+        mvs_gate = torch.sigmoid(self.mvs_to_svs_gate(h_mvs))
+        h = h_mvs
+
+        # СВС: + ЧВС-сдвиг
+        for layer in self.svs_layers:
+            h = layer(h)
+        h_svs = h * mvs_gate + h_mvs * (1 - mvs_gate)
+
+        svs_gate = torch.sigmoid(self.svs_to_bvs_gate(h_svs))
+        h = h_svs
+
+        # БВС
+        for layer in self.bvs_layers:
+            h = layer(h)
+        h_bvs = h * svs_gate + h_svs * (1 - svs_gate)
+
+        # Резонанс (без изменений)
+        res_ms = torch.sigmoid(self.mvs_svs_resonance(
+            (h_mvs - h_svs).abs())).mean()
+        res_sb = torch.sigmoid(self.svs_bvs_resonance(
+            (h_svs - h_bvs).abs())).mean()
+        resonance_score = 1.0 - (res_ms + res_sb) / 2
+
+        return {
+            'output': h_bvs,
+            'mvs_repr': h_mvs, 'svs_repr': h_svs, 'bvs_repr': h_bvs,
+            'chs_shift': chs_shift,      # ← НОВОЕ: задачный сдвиг
+            'active_task': self.active_task,
+            'resonance_score': resonance_score,
+        }
+```
+
+---
+
+### Глава 5v: LoopNet v2.0 — ЧВС-голова на задачу
+
+**v1.0** `LoopNet` (N петель, одна задача) → **v2.0** `LoopNet_CHS` (N петель + M задач)
+
+```python
+class LoopNet_CHS(nn.Module):
+    """
+    АПДЕЙТ LoopNet (v1.0, Гл.5) → многозадачный вариант с ЧВС.
+
+    v1.0: N петель → один выход → одна задача.
+    v2.0: N петель → общий резонант → ЧВС-голова (специфична для задачи).
+
+    Тело петель (LoopBlocks) обучается один раз.
+    ЧВС-голова обучается отдельно для каждой задачи.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int,
+                 n_loops: int = 3, n_tasks: int = 5):
+        super().__init__()
+        if n_loops % 2 == 0:
+            n_loops += 1
+
+        self.n_loops = n_loops
+        self.pre_loop = nn.Linear(input_dim, hidden_dim)
+
+        # Петлевые блоки — из v1.0 (тело, не меняется при смене задачи)
+        self.loop_blocks = nn.ModuleList([
+            LoopBlock(hidden_dim, loop_idx=i) for i in range(n_loops)
+        ])
+        self.loop_memory = nn.Parameter(torch.zeros(n_loops, hidden_dim))
+
+        # ЧВС: голова для каждой задачи (НОВОЕ — вместо единого post_loop)
+        n_tasks_odd = n_tasks if n_tasks % 2 == 1 else n_tasks + 1
+        self.chs_heads = nn.ModuleDict({
+            f'task_{i}': nn.Linear(hidden_dim, input_dim)
+            for i in range(n_tasks_odd)
+        })
+        self.active_task = 'task_0'
+
+    def set_task(self, task_id: str):
+        """Сменить ЧВС-голову. Петли (тело) остаются."""
+        if task_id in self.chs_heads:
+            self.active_task = task_id
+
+    def freeze_body(self):
+        """Заморозить тело петель → обучаем только ЧВС-голову."""
+        for param in self.loop_blocks.parameters():
+            param.requires_grad = False
+        self.loop_memory.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = torch.relu(self.pre_loop(x))
+        loop_outputs, prev_loop_out = [], h
+
+        for i, block in enumerate(self.loop_blocks):
+            camouflage = loop_outputs[i-1] if i > 0 and i % 2 == 0 else prev_loop_out
+            out = block(h, camouflage, self.loop_memory[i])
+            loop_outputs.append(out)
+            prev_loop_out = out
+            h = h + out
+
+        resonant = sum(loop_outputs) / len(loop_outputs) if loop_outputs else h
+
+        # ЧВС: применить голову активной задачи (ИЗМЕНЕНО)
+        return self.chs_heads[self.active_task](resonant)
+```
+
+---
+
+### Сравнительная таблица v1.0 vs v2.0 (Книга 15)
+
+| Компонент | v1.0 (3 сферы) | v2.0 (+ ЧВС) |
+|---|---|---|
+| `KryukovRNN` | МВС/СВС/БВС буферы | + **ЧВС буфер** = task_context |
+| `TransformerResonanceAnalyzer` | 3 группы слоёв | + **ЧВС-адаптер** (LoRA-style task shift) |
+| `LoopNet` | N петель → 1 выход | N петель → **M ЧВС-голов** (M задач) |
+| `CNNFeatureResonanceAnalyzer` | 3-сферный резонанс | + **ЧВС = задача** (что ищем на изображении) |
+| Смена задачи | Обучение с нуля | **`set_task()`** — меняем ЧВС, тело остаётся |
+| Резонансный score | МВС⟷СВС⟷БВС | + **ЧВС согласованность** |
+
+| Вопрос архитектуры | v1.0 | v2.0 |
+|---|---|---|
+| Как запомнить? | МВС/СВС/БВС буферы | То же + **ЧВС = what to remember for this task** |
+| На что обращать внимание? | Self-attention по контексту | **+ ЧВС-сдвиг по задаче** |
+| Как обобщить? | Петлевые соединения | **+ ЧВС-голова специфична для задачи** |
+
+---
+
+*Книга 15, Версия 2.0 (ЧВС-апдейт).*
+*«Нейросеть без задачного кондиционирования — боец без цели: все техники есть, а куда применить — неизвестно».*

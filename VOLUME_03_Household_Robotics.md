@@ -4,6 +4,31 @@
 
 ---
 
+## 📋 ДВУХВЕРСИОННЫЙ ДОКУМЕНТ
+
+> Этот файл содержит **ДВЕ версии** параллельно — оригинал и расширение.
+> Разница между ними видна в таблице ниже и в секции `ВЕРСИЯ 2.0` в конце файла.
+
+| Параметр | ВЕРСИЯ 1.0 (оригинал) | ВЕРСИЯ 2.0 (ЧВС-апдейт) |
+|---|---|---|
+| Число сфер | 3 (МВС / СВС / БВС) | **4 (МВС / СВС / БВС / ЧВС)** |
+| Что добавлено | — | Четвёртая Внешняя Сфера = физический инструмент (метла, швабра, лопатка) |
+| Класс контроллера | `RobotMotionController` | **`FourSphereRobotController`** + `ToolSphere` |
+| Резонанс | `ω_МВС = ω_СВС = ω_БВС` | **`ω_всех = ω_ЧВС`** (инструмент диктует ритм) |
+| Рабочая точка | Позиция кисти | **Позиция кончика инструмента** |
+| Энергопотребление | −25…30 % при резонансе | **−30…40 % при 4-сферном резонансе** |
+| Смена задачи | Перепрограммирование | **`attach_tool()` / `detach_tool()`** |
+| Уровни мастерства | 5 уровней (без инструмента) | **5 уровней + ЧВС-столбец** |
+| Источник v2.0 | — | Том 101, Часть I |
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 1.0 — ОРИГИНАЛ (3 СФЕРЫ, ПОЛНАЯ)
+## ══════════════════════════════════════════
+
+---
+
 ## ВВЕДЕНИЕ
 
 Бытовой гуманоидный робот ростом 0,5–1,5 м — это, с точки зрения кинематики, **та же система сочленений**, что и человеческое тело. Проблемы, которые решала многовековая традиция кунг-фу — плавность движений, экономия энергии, координация нескольких конечностей, переключение между задачами — это те же проблемы, что стоят перед инженерами бытовой робототехники.
@@ -634,3 +659,290 @@ def adaptive_room_cleaning(robot, room):
 ---
 
 *Том 3 из 10. Продолжение — Том 4: Программирование и алгоритмы.*
+
+---
+
+## ══════════════════════════════════════════
+## ВЕРСИЯ 2.0 — ЧВС-АПДЕЙТ (4 СФЕРЫ)
+## Источник: Том 101, Часть I
+## ══════════════════════════════════════════
+
+### Что изменилось относительно v1.0
+
+В версии 1.0 три сферы описывали **тело робота** (кисть / предплечье / рука).
+В версии 2.0 добавлена **ЧВС = физический инструмент** в руке робота.
+Принципиальное отличие: рабочая точка смещается с кисти на **кончик инструмента**.
+
+```
+ВЕРСИЯ 1.0 (3 сферы):                ВЕРСИЯ 2.0 (4 сферы):
+  МВС: кисть (~10–15 см)               МВС: кисть (~10–15 см)
+  СВС: предплечья (~30–40 см)          СВС: предплечья (~30–40 см)
+  БВС: вытянутые руки                  БВС: вытянутые руки
+  — нет инструмента —                  ЧВС: рабочая часть инструмента
+                                             (метла +25 см, лопатка +18 см...)
+```
+
+---
+
+### Глава 2v: Класс ЧВС-инструмента
+
+```python
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional, Tuple
+import numpy as np
+
+
+class ToolType(Enum):
+    """Типы бытовых инструментов — классификация по характеру ЧВС."""
+    BROOM       = "broom"       # Метла: широкий контакт с полом
+    MOP         = "mop"         # Швабра: влажный контакт
+    SPATULA     = "spatula"     # Лопатка: точечный контакт с пищей
+    VACUUM_HOSE = "vacuum_hose" # Гибкий шланг: переменная длина
+    KNIFE       = "knife"       # Нож: режущая кромка
+    CLOTH       = "cloth"       # Тряпка: распределённый контакт
+    GRIPPER_EXT = "gripper_ext" # Удлинитель захвата
+
+
+@dataclass
+class ToolSphere:
+    """
+    Четвёртая Внешняя Сфера (ЧВС) — инструмент робота.
+
+    Ключевые параметры:
+      handle_length : длина рукоятки от кисти до рабочей части (м)
+      working_radius: радиус рабочей части инструмента (м)
+      working_angle : угол атаки рабочей части (рад)
+      effective_mass: эффективная масса с учётом инструмента (кг)
+    """
+    tool_type: ToolType
+    handle_length: float         # Длина рукоятки (м)
+    working_radius: float        # Радиус рабочей части (м)
+    working_angle: float = 0.0   # Угол атаки (рад)
+    effective_mass: float = 0.5  # Масса инструмента (кг)
+    is_flexible: bool = False    # Гибкий? (шланг, тряпка)
+    flexible_length_range: Tuple[float, float] = (0.0, 1.0)
+
+    @property
+    def total_reach(self) -> float:
+        """Полный радиус досягаемости с инструментом."""
+        return self.handle_length + self.working_radius
+
+    @property
+    def chs_resonance_freq(self) -> float:
+        """
+        Резонансная частота ЧВС.
+        Из механики: ω = √(k/m). Длинный тяжёлый инструмент → ниже частота.
+        """
+        k_stiffness = 50.0  # Н/м
+        return np.sqrt(k_stiffness / (self.effective_mass + 0.01)) / (2 * np.pi)
+
+
+# Библиотека стандартных инструментов
+TOOL_LIBRARY = {
+    'broom_standard': ToolSphere(
+        tool_type=ToolType.BROOM,
+        handle_length=0.8, working_radius=0.25,
+        working_angle=-np.pi/6, effective_mass=0.4
+    ),
+    'mop_standard': ToolSphere(
+        tool_type=ToolType.MOP,
+        handle_length=0.9, working_radius=0.20,
+        working_angle=-np.pi/4, effective_mass=0.6
+    ),
+    'spatula_cooking': ToolSphere(
+        tool_type=ToolType.SPATULA,
+        handle_length=0.30, working_radius=0.08,
+        working_angle=0.0, effective_mass=0.15
+    ),
+    'vacuum_hose': ToolSphere(
+        tool_type=ToolType.VACUUM_HOSE,
+        handle_length=0.5, working_radius=0.05,
+        effective_mass=0.3, is_flexible=True,
+        flexible_length_range=(0.3, 1.2)
+    ),
+    'kitchen_knife': ToolSphere(
+        tool_type=ToolType.KNIFE,
+        handle_length=0.12, working_radius=0.18,
+        working_angle=np.pi/2, effective_mass=0.2
+    ),
+}
+```
+
+---
+
+### Глава 1v: Четырёхсферный контроллер (АПДЕЙТ Главы 1)
+
+**v1.0** `RobotMotionController` → **v2.0** `FourSphereRobotController`
+
+```python
+class FourSphereRobotController:
+    """
+    АПДЕЙТ RobotMotionController (v1.0, Гл.1) → четыре сферы.
+
+    Изменения относительно v1.0:
+      + Параметр tool: Optional[ToolSphere] = None
+      + Методы attach_tool() / detach_tool()
+      + execute_task() расширен 4-м уровнем: ЧВС
+      + Компенсация инерции инструмента
+    """
+
+    def __init__(self, tool: Optional[ToolSphere] = None):
+        self.bvs = LargeExternalSphereController()
+        self.svs = MediumInternalSphereController()
+        self.mvs = SmallInternalSphereController()
+        self.chs = tool                                   # ← НОВОЕ
+        self.inertia_compensator = InertiaCompensator()  # ← НОВОЕ
+
+    def attach_tool(self, tool: ToolSphere):
+        """Взять инструмент → активировать ЧВС."""
+        self.chs = tool
+        self.mvs.set_load(tool.effective_mass)
+        self.svs.set_effective_length(self.svs.length + tool.handle_length)
+        self.inertia_compensator.update(tool)
+
+    def detach_tool(self):
+        """Положить инструмент → деактивировать ЧВС."""
+        self.chs = None
+        self.mvs.set_load(0.0)
+        self.svs.reset_length()
+        self.inertia_compensator.reset()
+
+    def execute_task(self, task):
+        """
+        БЫЛО (v1.0): 3 уровня (БВС → СВС → МВС).
+        СТАЛО (v2.0): 4 уровня (БВС → СВС → МВС → ЧВС).
+        """
+        # Уровень 1: БВС — навигация (с поправкой на досягаемость инструмента)
+        approach_point = self.bvs.compute_approach(
+            task.target_position,
+            tool_reach=self.chs.total_reach if self.chs else 0.0  # ← НОВОЕ
+        )
+        self.bvs.navigate_to(approach_point)
+
+        # Уровень 2: СВС — позиционирование рукоятки
+        if self.chs:
+            handle_pose = self.svs.compute_handle_pose(
+                target=task.target_position,
+                tool_angle=self.chs.working_angle,
+                handle_length=self.chs.handle_length
+            )
+            self.svs.move_to(handle_pose)
+
+        # Уровень 3: МВС — точный захват
+        self.mvs.fine_adjust(task.precision_requirement)
+
+        # Уровень 4: ЧВС — работа инструментом (← НОВЫЙ УРОВЕНЬ)
+        if self.chs:
+            self._execute_tool_action(task)
+        else:
+            self.mvs.direct_contact(task)
+
+    def _execute_tool_action(self, task):
+        if self.chs.tool_type == ToolType.BROOM:
+            self._sweep_motion(task)
+        elif self.chs.tool_type == ToolType.SPATULA:
+            self._stir_motion(task)
+        elif self.chs.tool_type == ToolType.MOP:
+            self._mop_motion(task)
+        elif self.chs.tool_type == ToolType.KNIFE:
+            self._cut_motion(task)
+        elif self.chs.tool_type == ToolType.VACUUM_HOSE:
+            self._vacuum_motion(task)
+
+    def _sweep_motion(self, task):
+        """
+        Подметание метлой.
+        v1.0: восьмёрка по амплитуде кисти.
+        v2.0: восьмёрка по амплитуде РАБОЧЕЙ ЧАСТИ метлы + резонансная частота ЧВС.
+        """
+        amp = self.chs.working_radius * 0.8         # ← рабочий радиус метлы
+        freq = self.chs.chs_resonance_freq           # ← резонанс инструмента
+        motion = FigureEightLoop(
+            amplitude=amp, frequency=freq,
+            orientation=self.chs.working_angle, n_loops=7
+        )
+        self.svs.execute_loop(motion)
+
+    def _stir_motion(self, task):
+        """
+        Помешивание лопаткой.
+        v1.0: центр вращения = кисть.
+        v2.0: центр вращения = кончик лопатки (ЧВС).
+        """
+        tip_position = self._compute_tool_tip()
+        circle = CircularLoop(
+            center=tip_position,
+            radius=task.container_radius * 0.6,
+            frequency=self.chs.chs_resonance_freq
+        )
+        self.svs.execute_loop(circle)
+```
+
+---
+
+### Глава 1v-R: Четырёхсферный резонанс (АПДЕЙТ ResonanceController)
+
+**v1.0** `ResonanceController` → **v2.0** `FourSphereResonanceController`
+
+```python
+class FourSphereResonanceController:
+    """
+    БЫЛО (v1.0):
+      RESONANCE_FREQ_HZ = 50  # фиксированная частота
+      Резонанс: ω_МВС = ω_СВС = ω_БВС = 50 Гц
+
+    СТАЛО (v2.0):
+      Оптимальная частота = chs_resonance_freq инструмента
+      Резонанс: ω_МВС = ω_СВС = ω_БВС = ω_ЧВС (инструмент диктует ритм)
+      Экономия энергии: -30…40 % (vs -25…30 % в v1.0)
+    """
+
+    def __init__(self, tool: ToolSphere):
+        self.tool = tool
+
+    @property
+    def optimal_freq(self) -> float:
+        """Оптимальная частота = резонансная частота ЧВС."""
+        return self.tool.chs_resonance_freq
+
+    def is_resonant_4sphere(self, mvs_freq, svs_freq, bvs_freq) -> bool:
+        target = self.optimal_freq
+        tolerance = 0.1 * target
+        return all(abs(f - target) < tolerance
+                   for f in [mvs_freq, svs_freq, bvs_freq])
+
+    def force_4sphere_resonance(self, controllers: dict):
+        target_freq = self.optimal_freq
+        for ctrl in controllers.values():
+            ctrl.set_update_freq(target_freq)
+```
+
+---
+
+### Глава 10v: Сравнительная таблица v1.0 vs v2.0
+
+| Параметр | v1.0 (3 сферы) | v2.0 (4 сферы + ЧВС) |
+|---|---|---|
+| Траектории | Петли тела (кисть) | Петли **рабочей точки инструмента** |
+| Резонанс | `ω_МВС = ω_СВС = ω_БВС` | `ω_всех = ω_ЧВС` (инструмент диктует) |
+| Смена задачи | Перепрограммирование | `attach_tool()` / `detach_tool()` |
+| Зона работы | Радиус руки | Радиус руки **+ длина инструмента** |
+| Энергопотребление | −25…30 % | **−30…40 %** (4-сферный резонанс) |
+| Точность | Позиция кисти | Позиция **кончика инструмента** |
+| Уровни мастерства | 5 уровней | 5 уровней **+ ЧВС-столбец** |
+
+### Обновлённая таблица уровней мастерства (v2.0)
+
+| Уровень | Архетип | Робот v1.0 (3 сферы) | Робот v2.0 (+ ЧВС) | Технология |
+|---|---|---|---|---|
+| 1 | Элементы | Жёсткий скрипт | Скрипт + фиксированный инструмент | FSM + tool model |
+| 2 | Связки | Behavior Tree | BT + tool state | BT + ЧВС-адаптер |
+| 3 | Серии | RL базовый | RL + tool-aware reward | RL + ЧВС-encoder |
+| 4 | Образы | PDDL-планировщик | HTN + tool selection | HTN + ЧВС-библиотека |
+| 5 | Дух | GOAP-агент | GOAP + tool reasoning | Multimodal GOAP |
+
+---
+
+*Том 3, Версия 2.0 (ЧВС-апдейт). Источник: Том 101, Часть I.*
+*«Робот без инструмента — боец без оружия: тело есть, а эффективность ограничена».*
