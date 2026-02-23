@@ -10,7 +10,11 @@ Rules:
   - Series lengths must be odd: {1, 3, 5, 7}
   - Turn angle = π/4 (45° = LCI optimal)
   - Deformation parameter k = ratio of two loops
-  - Three nested levels: BVS (body), SVS (forearm), MVS (hand)
+  - Four nested levels (four spheres):
+      BVS (shoulder/body):  3D, Earth, strategy    (~seconds)
+      SVS (elbow/forearm):  2D, Water, tactics     (~100ms)
+      MVS (wrist/hand):     1D, Air,   technique   (~50ms)
+      ChVS (fingers):       0D, Fire,  correction  (~10ms)
 """
 
 import math
@@ -130,55 +134,100 @@ def deformed_lissajous(A=1.0, B=1.0, k=1.0, omega=1.0, points=500):
     return trajectory
 
 
-def three_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5, k_mvs=1.0,
-                       steps=500, seed=None):
+def four_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5, k_mvs=1.0,
+                      k_chvs=1.0, mastery_level=3, steps=500, seed=None):
     """
-    Three-level nested Scarab: BVS + SVS + MVS superimposed.
+    Four-level nested Scarab: BVS + SVS + MVS + ChVS superimposed.
 
-    BVS (body):    large loops, A=80-200cm equivalent
-    SVS (forearm): medium loops, A=30-40cm equivalent
-    MVS (hand):    small loops, A=10-15cm equivalent
+    Four spheres (from Kryukov + ETD Vol.100-103):
+      BVS  (shoulder/body):  3D, Earth, A=80-200cm, strategy    (~seconds)
+      SVS  (elbow/forearm):  2D, Water, A=30-40cm,  tactics     (~100ms)
+      MVS  (wrist/hand):     1D, Air,   A=10-15cm,  technique   (~50ms)
+      ChVS (fingers):        0D, Fire,  A=1-5cm,    correction  (~10ms)
 
-    At mastery: ω_BVS = ω_SVS = ω_MVS (resonance)
+    Quaternion analogy (Vol.103):
+      A = a·I + b·i + c·j + d·k  ↔  {BVS, SVS, MVS, ChVS}
+      |A| = √(a² + b² + c² + d²) = LCI
+
+    Mastery levels (1-5):
+      Level 1: Only BVS active (linear movement)
+      Level 2: BVS + SVS (loop-based combinations)
+      Level 3: BVS + SVS + MVS (3D volume, all spheres)
+      Level 4: All four spheres (satellite system, directed explosion)
+      Level 5: Resonance ω_BVS = ω_SVS = ω_MVS = ω_ChVS (master)
+
+    At mastery: BVS + SVS + MVS + ChVS = π (conservation law, Noether)
     """
     if seed is not None:
         random.seed(seed)
 
-    # Amplitude ratios (from Kryukov's sphere sizes)
-    A_bvs = space_size * 0.6       # ~60% of space
-    A_svs = space_size * 0.15      # ~15% of space
-    A_mvs = space_size * 0.05      # ~5% of space
+    # Amplitude ratios (from Kryukov's sphere sizes, proportional)
+    A_bvs  = space_size * 0.55      # ~55% — shoulder span
+    A_svs  = space_size * 0.15      # ~15% — forearm reach
+    A_mvs  = space_size * 0.05      # ~5%  — hand/wrist
+    A_chvs = space_size * 0.015     # ~1.5% — finger micro-movements
 
-    # Angular frequencies (resonance = all equal)
-    omega_bvs = 1.0
-    omega_svs = 1.0    # resonance condition
-    omega_mvs = 1.0    # resonance condition
+    # Angular frequencies depend on mastery level
+    if mastery_level >= 5:
+        # RESONANCE: all frequencies equal (master level)
+        omega_bvs = omega_svs = omega_mvs = omega_chvs = 1.0
+    else:
+        # Non-resonant: higher spheres oscillate faster
+        omega_bvs  = 1.0
+        omega_svs  = 2.0 + (5 - mastery_level) * 0.3
+        omega_mvs  = 5.0 + (5 - mastery_level) * 0.5
+        omega_chvs = 13.0 + (5 - mastery_level) * 1.0  # fastest (prime!)
+
+    # Disable spheres below mastery level
+    if mastery_level < 2:
+        A_svs = 0
+    if mastery_level < 3:
+        A_mvs = 0
+    if mastery_level < 4:
+        A_chvs = 0
+
+    def _lissajous(A, omega, k, t, phase=0):
+        """Single deformed Lissajous component."""
+        x = A * math.sin(omega * t + phase)
+        y = A * (math.sin(2 * omega * t + math.pi/2 + phase) +
+                 (k - 1) / (k + 1) * math.sin(omega * t + phase))
+        return x, y
 
     trajectory = []
     for i in range(steps):
         t = 2 * math.pi * i / steps * 3  # 3 full cycles
 
-        # BVS: large deformed figure-8
-        x_bvs = A_bvs * math.sin(omega_bvs * t)
-        y_bvs = A_bvs * (math.sin(2 * omega_bvs * t + math.pi/2) +
-                          (k_bvs - 1) / (k_bvs + 1) * math.sin(omega_bvs * t))
+        # BVS: large deformed figure-8 (body movement)
+        x_bvs, y_bvs = _lissajous(A_bvs, omega_bvs, k_bvs, t, phase=0)
 
-        # SVS: medium figure-8, phase-shifted
-        x_svs = A_svs * math.sin(omega_svs * t * 2 + math.pi/3)
-        y_svs = A_svs * (math.sin(2 * omega_svs * t * 2 + math.pi/2) +
-                          (k_svs - 1) / (k_svs + 1) * math.sin(omega_svs * t * 2))
+        # SVS: medium figure-8 (forearm/elbow)
+        x_svs, y_svs = _lissajous(A_svs, omega_svs, k_svs, t, phase=math.pi/3)
 
-        # MVS: small figure-8, high frequency
-        x_mvs = A_mvs * math.sin(omega_mvs * t * 5 + math.pi/7)
-        y_mvs = A_mvs * (math.sin(2 * omega_mvs * t * 5 + math.pi/2) +
-                          (k_mvs - 1) / (k_mvs + 1) * math.sin(omega_mvs * t * 5))
+        # MVS: small figure-8 (wrist/hand)
+        x_mvs, y_mvs = _lissajous(A_mvs, omega_mvs, k_mvs, t, phase=math.pi/7)
 
-        x = x_bvs + x_svs + x_mvs
-        y = y_bvs + y_svs + y_mvs
+        # ChVS: micro figure-8 (fingers — "gearbox")
+        # ChVS has special behavior: it can SWITCH between modes
+        # modeled as sign flips at odd intervals
+        chvs_switch = 1 if (int(t * 7 / math.pi) % 2 == 0) else -1
+        x_chvs, y_chvs = _lissajous(A_chvs * chvs_switch, omega_chvs,
+                                      k_chvs, t, phase=math.pi/11)
+
+        # Superposition: r(t) = Σ spheres
+        x = x_bvs + x_svs + x_mvs + x_chvs
+        y = y_bvs + y_svs + y_mvs + y_chvs
 
         trajectory.append((x, y))
 
     return trajectory
+
+
+def three_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5, k_mvs=1.0,
+                       steps=500, seed=None):
+    """Legacy 3-level wrapper. See four_level_scarab for full version."""
+    return four_level_scarab(space_size=space_size, k_bvs=k_bvs, k_svs=k_svs,
+                             k_mvs=k_mvs, k_chvs=1.0, mastery_level=3,
+                             steps=steps, seed=seed)
 
 
 # ═══════════════════════════════════════════════════════════
