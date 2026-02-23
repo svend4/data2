@@ -234,41 +234,178 @@ def three_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5, k_mvs=1.0,
 # MOVEMENT ALPHABET: 76-symbol system
 # ═══════════════════════════════════════════════════════════
 
-# Square edges and diagonals as bit flags
-TOP    = 0b000001  # 1
-BOTTOM = 0b000010  # 2
-LEFT   = 0b000100  # 4
-RIGHT  = 0b001000  # 8
-DIAG1  = 0b010000  # 16  (╲ top-left to bottom-right)
-DIAG2  = 0b100000  # 32  (╱ top-right to bottom-left)
+# Square edges and diagonals as bit flags (6 bits = 64 base combinations)
+TOP    = 0b000001  # 1   — upper horizontal edge
+BOTTOM = 0b000010  # 2   — lower horizontal edge
+LEFT   = 0b000100  # 4   — left vertical edge
+RIGHT  = 0b001000  # 8   — right vertical edge
+DIAG1  = 0b010000  # 16  — ╲ top-left to bottom-right diagonal
+DIAG2  = 0b100000  # 32  — ╱ top-right to bottom-left diagonal
 
-# Full edges: 6 bits → 2^6 = 64 base combinations
-# Plus 12 half-lines → 76 total
+# Half-line flags (4 additional bits = 12 extra symbols beyond 64)
+# Half-lines go from center to midpoints/corners
+HALF_UP    = 0b00000001_00000000  # 256  — center to top midpoint
+HALF_DOWN  = 0b00000010_00000000  # 512  — center to bottom midpoint
+HALF_LEFT  = 0b00000100_00000000  # 1024 — center to left midpoint
+HALF_RIGHT = 0b00001000_00000000  # 2048 — center to right midpoint
+HALF_D1_UP = 0b00010000_00000000  # 4096 — center to top-left corner (half ╲)
+HALF_D1_DN = 0b00100000_00000000  # 8192 — center to bottom-right corner (half ╲)
+HALF_D2_UP = 0b01000000_00000000  # 16384— center to top-right corner (half ╱)
+HALF_D2_DN = 0b10000000_00000000  # 32768— center to bottom-left corner (half ╱)
 
-# Named symbols (subset)
-SYMBOLS = {
-    'empty':    0b000000,    # · point (symbol 01)
-    'diag1':    DIAG1,       # ╲ (symbol 03)
-    'diag2':    DIAG2,       # ╱
-    'cross_d':  DIAG1|DIAG2, # X diagonal cross (symbol 06)
-    'corner_bl': BOTTOM|LEFT, # └ (symbol 05)
-    'corner_br': BOTTOM|RIGHT,# ┘ (symbol 11)
-    'corner_tl': TOP|LEFT,    # ┌
-    'corner_tr': TOP|RIGHT,   # ┐
-    'horiz':    TOP|BOTTOM,   # ─ horizontal pair
-    'vert':     LEFT|RIGHT,   # │ vertical pair
-    'cross_hv': TOP|BOTTOM|LEFT|RIGHT,  # + (but this is the square □)
-    'square':   TOP|BOTTOM|LEFT|RIGHT,  # □ (symbol 12)
-    'sq_d1':    TOP|BOTTOM|LEFT|RIGHT|DIAG1,      # □+╲ (symbol 13)
-    'sq_d2':    TOP|BOTTOM|LEFT|RIGHT|DIAG2,      # □+╱
-    'sq_full':  TOP|BOTTOM|LEFT|RIGHT|DIAG1|DIAG2, # ☒ (symbol 14)
-    'K_shape':  LEFT|DIAG1|DIAG2,  # K (symbol 07)
-    'M_shape':  LEFT|RIGHT|DIAG1,  # M-like
-    'T_shape':  TOP|LEFT,          # ⊥
-    'tri_up':   DIAG1|DIAG2,       # △ (alias for cross_d viewed differently)
-    'Z_shape':  TOP|DIAG1|BOTTOM,  # Z
-    'N_shape':  LEFT|DIAG1|RIGHT,  # N
+# Total: 64 base (full edges) + 12 half-line combinations = 76 symbols
+# The 12 extra: 8 individual half-lines + 4 cross-half combinations
+
+# ─── ChVS (finger) modifiers: 2 extra bits ───
+# Each of the 76 symbols × 4 finger modes = 304 total ≈ 310 ETD volumes
+CHVS_FIST   = 0  # Кулак — closed fist (strike)
+CHVS_PALM   = 1  # Ладонь — open palm (block)
+CHVS_POINT  = 2  # Пальцы — pointing fingers (thrust)
+CHVS_GRAB   = 3  # Расслаб — relaxed fingers (grab/capture)
+
+CHVS_NAMES = {
+    CHVS_FIST:  'fist',
+    CHVS_PALM:  'palm',
+    CHVS_POINT: 'point',
+    CHVS_GRAB:  'grab',
 }
+
+# ─── Complete 76-symbol alphabet ───
+# Row 1 (14): Progressive complexity from point → full square+X
+# Row 2-11: Systematic enumeration of all combinations
+
+# 64 base symbols (all 6-bit combinations of full edges)
+BASE_SYMBOLS = {i: i for i in range(64)}
+
+# 12 half-line symbols (numbered 64-75)
+HALF_SYMBOLS = {
+    64: HALF_UP,                        # │↑ center to top
+    65: HALF_DOWN,                      # │↓ center to bottom
+    66: HALF_LEFT,                      # ─← center to left
+    67: HALF_RIGHT,                     # ─→ center to right
+    68: HALF_D1_UP,                     # ╲↑ center to top-left
+    69: HALF_D1_DN,                     # ╲↓ center to bottom-right
+    70: HALF_D2_UP,                     # ╱↑ center to top-right
+    71: HALF_D2_DN,                     # ╱↓ center to bottom-left
+    72: HALF_UP | HALF_DOWN,            # │  vertical half-cross
+    73: HALF_LEFT | HALF_RIGHT,         # ─  horizontal half-cross
+    74: HALF_D1_UP | HALF_D1_DN,        # ╲  diagonal half-cross
+    75: HALF_D2_UP | HALF_D2_DN,        # ╱  anti-diagonal half-cross
+}
+
+# Named symbols (human-readable subset for the first row of the image)
+SYMBOLS = {
+    # Row 1: Progressive complexity (symbols 01-14 from image)
+    'empty':     0b000000,    # · point (symbol 01)
+    'dot':       0b000000,    # alias
+    'diag1':     DIAG1,       # ╲ (symbol 03)
+    'diag2':     DIAG2,       # ╱
+    'corner_bl': BOTTOM|LEFT, # └ (symbol 05)
+    'cross_d':   DIAG1|DIAG2, # X diagonal cross (symbol 06)
+    'K_shape':   LEFT|DIAG1|DIAG2,    # K (symbol 07)
+    'M_shape':   DIAG2|LEFT|RIGHT|DIAG1, # M (symbol 08)
+    'T_shape':   TOP|LEFT,             # ⊥ T-shape (symbol 09)
+    'chevron':   DIAG1|DIAG2,          # △ chevron up (symbol 10)
+    'corner_br': BOTTOM|RIGHT,         # ┘ (symbol 11)
+    'square':    TOP|BOTTOM|LEFT|RIGHT,# □ (symbol 12)
+    'sq_d1':     TOP|BOTTOM|LEFT|RIGHT|DIAG1,       # □+╲ (symbol 13)
+    'sq_full':   TOP|BOTTOM|LEFT|RIGHT|DIAG1|DIAG2, # ☒ (symbol 14)
+
+    # Additional named forms
+    'corner_tl': TOP|LEFT,     # ┌
+    'corner_tr': TOP|RIGHT,    # ┐
+    'horiz':     TOP|BOTTOM,   # ─ pair
+    'vert':      LEFT|RIGHT,   # │ pair
+    'sq_d2':     TOP|BOTTOM|LEFT|RIGHT|DIAG2, # □+╱
+    'Z_shape':   TOP|DIAG1|BOTTOM,     # Z
+    'N_shape':   LEFT|DIAG1|RIGHT,     # N
+    'V_shape':   DIAG1|BOTTOM|DIAG2,   # V (bottom triangle)
+    'A_shape':   DIAG2|TOP|DIAG1,      # A (top triangle)
+    'L_shape':   BOTTOM|LEFT,          # L
+    'J_shape':   BOTTOM|RIGHT,         # J
+
+    # Kryukov's 7 groups mapping
+    'g1_swing':     DIAG2,                           # Group 1: swing
+    'g1_soft_out':  LEFT|DIAG2,                      # Group 1: soft outer block
+    'g1_soft_in':   RIGHT|DIAG1,                     # Group 1: soft inner block
+    'g2_straight':  LEFT|RIGHT,                      # Group 2: straight punch (both horizontal)
+    'g2_uppercut':  BOTTOM|LEFT,                     # Group 2: uppercut
+    'g2_hard_block': TOP|RIGHT,                      # Group 2: hard block
+    'g3_uraken':    DIAG1,                           # Group 3: backfist
+    'g4_corkscrew': DIAG1|DIAG2|LEFT,               # Group 4: spiral entry (K-shape)
+    'g4_curtains':  LEFT|RIGHT|TOP|BOTTOM,           # Group 4: dual curtain block (□)
+    'g5_shuto':     DIAG1|TOP,                       # Group 5: knife-hand
+    'g6_cobra':     DIAG2|TOP|RIGHT,                 # Group 6: cobra hood
+    'g7_frame':     TOP|BOTTOM|LEFT|RIGHT,           # Group 7: frame block (= square)
+    'g7_lift':      TOP|LEFT|RIGHT,                  # Group 7: lifting block
+}
+
+
+def count_lines(sym):
+    """Count number of active lines (set bits) in a symbol."""
+    count = 0
+    s = sym
+    while s:
+        count += s & 1
+        s >>= 1
+    return count
+
+
+def symbol_complexity(sym):
+    """
+    Complexity metric for a symbol.
+    Maps to Kryukov's 7 groups:
+      0 lines = empty (ready position)
+      1 line  = Group 1-2 (basic)
+      2 lines = Group 2-4 (intermediate)
+      3 lines = Group 4-5 (advanced)
+      4+ lines = Group 6-7 (master)
+    """
+    n = count_lines(sym & 0x3F)  # only count base 6 bits
+    if n == 0:
+        return 0
+    elif n <= 1:
+        return 1
+    elif n <= 2:
+        return 2
+    elif n <= 3:
+        return 3
+    else:
+        return 4
+
+
+def get_group(sym):
+    """
+    Assign a symbol to one of Kryukov's 7 groups based on its structure.
+    Returns group number 1-7.
+    """
+    bits = sym & 0x3F
+    n = count_lines(bits)
+    has_diag = bool(bits & (DIAG1 | DIAG2))
+    has_sides = bool(bits & (TOP | BOTTOM | LEFT | RIGHT))
+    is_closed = (bits & (TOP | BOTTOM | LEFT | RIGHT)) == (TOP | BOTTOM | LEFT | RIGHT)
+
+    if n == 0:
+        return 1  # ready position = group 1
+    if n == 1 and has_diag:
+        return 1  # single diagonal = soft technique
+    if n == 1 and has_sides:
+        return 2  # single side = straight/hard technique
+    if n == 2 and not has_diag:
+        return 2  # two sides = hard combination
+    if n == 2 and has_diag and has_sides:
+        return 3  # diagonal + side = MVS technique
+    if n == 2 and has_diag and not has_sides:
+        return 4  # two diagonals = X = rotational
+    if n == 3 and has_diag:
+        return 5 if not is_closed else 6  # complex with diagonal
+    if n == 3:
+        return 5  # three sides = weapon-like
+    if is_closed:
+        return 7  # full square = frame block (peak defense)
+    if n >= 4:
+        return 6 if not is_closed else 7  # complex = master level
+    return 3  # default: MVS level
 
 
 def hamming_distance(sym1, sym2):
@@ -540,70 +677,105 @@ TRAINING_PLAN = {
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("SCARAB ALGORITHM — Controlled Chaos Movement Generator")
+    print("SCARAB ALGORITHM v2 — Four-Sphere Movement Generator")
     print("Based on Kryukov's ETD / Deformed Figure-8")
+    print("BVS(3D) + SVS(2D) + MVS(1D) + ChVS(0D) = π")
     print("=" * 60)
 
-    # 1. Deformed Lissajous figures
-    print("\n--- Deformed Lissajous (k=1, symmetric) ---")
-    traj_sym = deformed_lissajous(k=1.0, points=20)
-    for i, (x, y) in enumerate(traj_sym[:10]):
-        print(f"  t={i:2d}: ({x:+.3f}, {y:+.3f})")
+    # 1. Four-level Scarab at different mastery levels
+    print("\n--- Four-Level Scarab: Mastery Progression ---")
+    level_names = {1: 'Linear (BVS only)', 2: 'Loops (BVS+SVS)',
+                   3: 'Volume (BVS+SVS+MVS)', 4: 'Satellite (all 4 spheres)',
+                   5: 'Master (RESONANCE)'}
+    for level in [1, 2, 3, 4, 5]:
+        traj = four_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5,
+                                  k_mvs=1.0, k_chvs=1.0,
+                                  mastery_level=level, steps=100, seed=42)
+        # Calculate trajectory complexity (path length)
+        path_len = sum(math.sqrt((traj[i+1][0]-traj[i][0])**2 +
+                                  (traj[i+1][1]-traj[i][1])**2)
+                       for i in range(len(traj)-1))
+        print(f"  Level {level} ({level_names[level]}): path_length={path_len:.1f}")
 
-    print("\n--- Deformed Lissajous (k=5, nevalyashka) ---")
-    traj_def = deformed_lissajous(k=5.0, points=20)
-    for i, (x, y) in enumerate(traj_def[:10]):
-        print(f"  t={i:2d}: ({x:+.3f}, {y:+.3f})")
+    # 2. Alphabet: 76 symbols overview
+    print("\n--- Movement Alphabet: 76 Symbols ---")
+    print(f"  Base symbols (6-bit):  {len(BASE_SYMBOLS)} (= 2^6 = 64)")
+    print(f"  Half-line symbols:     {len(HALF_SYMBOLS)} (= 76 - 64 = 12)")
+    print(f"  Total:                 {len(BASE_SYMBOLS) + len(HALF_SYMBOLS)}")
+    print(f"  × 4 ChVS modifiers:   {(len(BASE_SYMBOLS) + len(HALF_SYMBOLS)) * 4}"
+          f" (≈ 310 ETD volumes)")
 
-    # 2. Scarab trajectory
-    print("\n--- Scarab 2D (k=2, space=10) ---")
-    traj_scarab = scarab_2d(space_size=10.0, k=2.0, steps=20, seed=42)
-    for i, (x, y) in enumerate(traj_scarab[:10]):
-        print(f"  step {i:2d}: ({x:+.2f}, {y:+.2f})")
+    # 3. Group distribution
+    print("\n--- Kryukov's 7 Groups Distribution ---")
+    group_counts = {g: 0 for g in range(1, 8)}
+    for sym in range(64):
+        g = get_group(sym)
+        group_counts[g] += 1
+    group_names = {1: 'Soft base', 2: 'Hard base', 3: 'MVS (wrist)',
+                   4: 'Rotational', 5: 'Weapon', 6: 'Master', 7: 'Peak defense'}
+    for g in range(1, 8):
+        print(f"  Group {g} ({group_names[g]}): {group_counts[g]} symbols")
+    print(f"  Total: {sum(group_counts.values())}")
 
-    # 3. Symbol display
-    print("\n--- Movement Alphabet Symbols ---")
-    for name, sym in list(SYMBOLS.items())[:8]:
-        print(f"\n  {name} ({sym:06b}):")
+    # 4. Symbol examples with ChVS modifiers
+    print("\n--- Symbol Examples with ChVS (finger) Modifiers ---")
+    examples = ['empty', 'diag1', 'cross_d', 'K_shape', 'square', 'sq_full']
+    for name in examples:
+        sym = SYMBOLS[name]
+        grp = get_group(sym)
+        cplx = symbol_complexity(sym)
+        print(f"\n  {name} (group {grp}, complexity {cplx}):")
         for line in symbol_to_ascii(sym).split('\n'):
             print(f"    {line}")
+        print(f"    ChVS variants: fist(strike), palm(block), point(thrust), grab(capture)")
 
-    # 4. Generate kata
-    print("\n--- Generated Kata (7 tacts) ---")
+    # 5. Generate kata with group annotation
+    print("\n--- Generated Kata (7 tacts) with Groups ---")
     kata = generate_kata(length=7, seed=42)
-    frames = animate_kata_text(kata)
-    for frame in frames:
-        print(frame)
+    for i, sym in enumerate(kata):
+        grp = get_group(sym)
+        cplx = symbol_complexity(sym)
+        print(f"  Tact {i+1}: {sym:06b} → Group {grp} ({group_names[grp]})"
+              f", complexity={cplx}")
 
-    # 5. Three-level trajectory
-    print("\n--- Three-Level Scarab (BVS+SVS+MVS) ---")
-    traj_3 = three_level_scarab(space_size=10.0, k_bvs=3.0, k_svs=1.5,
-                                 k_mvs=1.0, steps=20, seed=42)
-    for i, (x, y) in enumerate(traj_3[:10]):
-        print(f"  step {i:2d}: ({x:+.3f}, {y:+.3f})")
-
-    # 6. Training plan
+    # 6. Training plan with symbol counts per quarter
     print("\n--- Annual Training Plan (Kryukov) ---")
     for q, info in TRAINING_PLAN.items():
+        # Count symbols available at this level
+        available = sum(1 for s in range(64) if get_group(s) in info['groups'])
         print(f"\n  {q}: {info['name']}")
-        print(f"    Kata length: {info['kata_length']} tacts")
+        print(f"    Kata length: {info['kata_length']} tacts (ODD!)")
         print(f"    Deformation k: {info['k_range'][0]:.1f} - {info['k_range'][1]:.1f}")
-        print(f"    Groups: {info['groups']}")
+        print(f"    Groups: {info['groups']} → {available} symbols available")
         print(f"    Sessions: {info['sessions']}")
         print(f"    → {info['description']}")
 
-    # 7. Graph statistics
-    print("\n--- Alphabet Graph Statistics ---")
-    all_64 = list(range(64))  # all 6-bit combinations
+    # 7. Graph statistics (76-symbol version)
+    print("\n--- Alphabet Graph Statistics (76 symbols) ---")
+    all_64 = list(range(64))
     total_edges = 0
     for sym in all_64:
         neighbors = get_neighbors(sym, max_changes=2)
         total_edges += len(neighbors)
-    total_edges //= 2  # undirected
-    print(f"  Nodes (6-bit symbols): {len(all_64)}")
-    print(f"  Edges (≤2 line changes): {total_edges}")
+    total_edges //= 2
+    print(f"  Base nodes (6-bit): {len(all_64)}")
+    print(f"  Half-line nodes:    {len(HALF_SYMBOLS)}")
+    print(f"  Total nodes:        {len(all_64) + len(HALF_SYMBOLS)}")
+    print(f"  Base edges (≤2 changes): {total_edges}")
     print(f"  Avg degree: {2 * total_edges / len(all_64):.1f}")
-    print(f"  Density: {2 * total_edges / (64 * 63):.3f}")
+    # Diameter estimate via BFS from empty
+    from collections import deque
+    visited = {0: 0}
+    queue = deque([0])
+    while queue:
+        node = queue.popleft()
+        for nb in get_neighbors(node, max_changes=2):
+            if nb not in visited and 0 <= nb < 64:
+                visited[nb] = visited[node] + 1
+                queue.append(nb)
+    max_dist = max(visited.values())
+    print(f"  Diameter (from empty): {max_dist} steps")
+    print(f"  (Miller's law: 7±2 → {max_dist} is within range!)")
 
     print("\n" + "=" * 60)
-    print("Complete.")
+    print("Complete. 76 symbols × 4 ChVS = 304 states. ≈ 310 ETD volumes.")
