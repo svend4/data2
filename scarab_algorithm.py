@@ -6860,6 +6860,341 @@ def format_timeline(events, student_name='Student'):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# ELO RATING SYSTEM — competitive skill tracking (v21)
+# ═══════════════════════════════════════════════════════════
+
+class EloRating:
+    """
+    ELO rating system adapted for Scarab training.
+
+    Each student gets an ELO rating that changes based on:
+    - Training session results (vs expected performance)
+    - Sparring outcomes (head-to-head)
+    - Tournament placements
+
+    K-factor scales with experience: new students K=40, veterans K=16.
+    """
+
+    DEFAULT_RATING = 1200
+
+    def __init__(self):
+        self.ratings = {}     # name → current rating
+        self.history = {}     # name → [(event, old, new, delta)]
+        self.peak = {}        # name → highest rating ever
+
+    def register(self, name, initial=None):
+        """Register a student with initial rating."""
+        rating = initial or self.DEFAULT_RATING
+        self.ratings[name] = rating
+        self.history[name] = []
+        self.peak[name] = rating
+
+    def get(self, name):
+        """Get current rating."""
+        return self.ratings.get(name, self.DEFAULT_RATING)
+
+    def k_factor(self, name):
+        """K-factor based on number of rated events."""
+        n = len(self.history.get(name, []))
+        if n < 10:
+            return 40
+        elif n < 30:
+            return 24
+        else:
+            return 16
+
+    def expected(self, rating_a, rating_b):
+        """Expected score of A vs B."""
+        return 1.0 / (1.0 + 10 ** ((rating_b - rating_a) / 400.0))
+
+    def update_match(self, name_a, name_b, score_a, score_b):
+        """
+        Update ratings after a head-to-head match.
+
+        score_a, score_b are actual scores (e.g. kata pct).
+        Winner gets rating boost, loser drops.
+        """
+        ra = self.get(name_a)
+        rb = self.get(name_b)
+
+        # Normalize to 0-1 outcome
+        total = score_a + score_b
+        if total > 0:
+            actual_a = score_a / total
+            actual_b = score_b / total
+        else:
+            actual_a = actual_b = 0.5
+
+        ea = self.expected(ra, rb)
+        eb = self.expected(rb, ra)
+
+        ka = self.k_factor(name_a)
+        kb = self.k_factor(name_b)
+
+        new_ra = ra + ka * (actual_a - ea)
+        new_rb = rb + kb * (actual_b - eb)
+
+        self._apply(name_a, ra, new_ra, f"vs {name_b}")
+        self._apply(name_b, rb, new_rb, f"vs {name_a}")
+
+    def update_session(self, name, pct, mastery_level):
+        """
+        Update rating after a training session.
+
+        Compare actual pct to expected pct for that mastery level.
+        Expected baseline: 50 + mastery_level * 8 (L1=58%, L5=90%).
+        """
+        rating = self.get(name)
+        expected_pct = 50 + mastery_level * 8
+        performance = (pct - expected_pct) / 100.0  # [-0.5 .. +0.5]
+        k = self.k_factor(name) * 0.5  # Half K for solo sessions
+
+        new_rating = rating + k * performance
+        self._apply(name, rating, new_rating,
+                    f"session L{mastery_level} {pct:.0f}%")
+
+    def _apply(self, name, old, new, event):
+        """Apply a rating change."""
+        new = max(100, min(3000, new))  # Clamp
+        self.ratings[name] = round(new, 1)
+        delta = round(new - old, 1)
+        self.history[name].append({
+            'event': event, 'old': round(old, 1),
+            'new': round(new, 1), 'delta': delta,
+        })
+        if new > self.peak.get(name, 0):
+            self.peak[name] = round(new, 1)
+
+    def leaderboard(self, top_n=10):
+        """Return top-N rated students."""
+        sorted_r = sorted(self.ratings.items(),
+                          key=lambda x: x[1], reverse=True)
+        return [{
+            'name': name, 'rating': rating,
+            'peak': self.peak.get(name, rating),
+            'events': len(self.history.get(name, [])),
+        } for name, rating in sorted_r[:top_n]]
+
+    def rating_class(self, name):
+        """Map rating to a class name."""
+        r = self.get(name)
+        if r >= 2000:
+            return 'Grandmaster'
+        elif r >= 1800:
+            return 'Master'
+        elif r >= 1600:
+            return 'Expert'
+        elif r >= 1400:
+            return 'Advanced'
+        elif r >= 1200:
+            return 'Intermediate'
+        elif r >= 1000:
+            return 'Beginner'
+        else:
+            return 'Novice'
+
+
+def format_elo_leaderboard(elo):
+    """Format ELO leaderboard."""
+    board = elo.leaderboard()
+    lines = ["ELO Leaderboard"]
+    lines.append("─" * 50)
+    for i, entry in enumerate(board, 1):
+        cls = elo.rating_class(entry['name'])
+        lines.append(
+            f"  #{i:2d} {entry['name']:10s} "
+            f"{entry['rating']:6.0f} "
+            f"(peak {entry['peak']:5.0f}) "
+            f"[{cls}]  ({entry['events']} events)")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# ADAPTIVE DIFFICULTY — flow-state targeting (v21)
+# ═══════════════════════════════════════════════════════════
+
+def adaptive_difficulty(student, target_success_rate=0.7):
+    """
+    Compute optimal difficulty parameters to keep student
+    in the flow zone (not too easy, not too hard).
+
+    Uses recent performance to adjust:
+    - mastery_level (may suggest +1 or -1)
+    - kata length
+    - target complexity (group distribution bias)
+
+    Flow zone: success rate between 60-80%.
+    """
+    sessions = student.sessions
+    n = len(sessions)
+
+    if n < 3:
+        return {
+            'mastery_level': student.mastery_level,
+            'length': 4,
+            'complexity_bias': 'balanced',
+            'reason': 'Too few sessions — using defaults',
+        }
+
+    # Recent success rate (Grade A or B = success)
+    recent = sessions[-5:] if n >= 5 else sessions
+    successes = sum(1 for s in recent if s['pct'] >= 70)
+    success_rate = successes / len(recent)
+
+    current_ml = student.mastery_level
+
+    # Compute avg grade of recent
+    recent_avg = sum(s['pct'] for s in recent) / len(recent)
+
+    if success_rate > 0.85:
+        # Too easy — increase difficulty
+        new_ml = min(5, current_ml + 1)
+        length = 6
+        bias = 'harder'
+        reason = (f'Success rate {success_rate:.0%} > 85% — '
+                  f'increasing difficulty')
+    elif success_rate < 0.4:
+        # Too hard — decrease difficulty
+        new_ml = max(1, current_ml - 1)
+        length = 4
+        bias = 'easier'
+        reason = (f'Success rate {success_rate:.0%} < 40% — '
+                  f'reducing difficulty')
+    elif success_rate < 0.6:
+        # Slightly too hard
+        length = 4
+        new_ml = current_ml
+        bias = 'slightly_easier'
+        reason = f'Success rate {success_rate:.0%} — slight easing'
+    elif success_rate > 0.8:
+        # Slightly too easy
+        length = 5
+        new_ml = current_ml
+        bias = 'slightly_harder'
+        reason = f'Success rate {success_rate:.0%} — slight challenge'
+    else:
+        # In the flow zone!
+        length = 5
+        new_ml = current_ml
+        bias = 'balanced'
+        reason = f'In flow zone ({success_rate:.0%} success rate)'
+
+    # Group bias
+    group_weights = {g: 1.0 for g in range(1, 8)}
+    if bias == 'harder':
+        for g in range(4, 8):
+            group_weights[g] = 2.0
+    elif bias == 'easier':
+        for g in range(1, 4):
+            group_weights[g] = 2.0
+
+    return {
+        'mastery_level': new_ml,
+        'length': length,
+        'complexity_bias': bias,
+        'group_weights': group_weights,
+        'success_rate': round(success_rate, 2),
+        'recent_avg': round(recent_avg, 1),
+        'reason': reason,
+    }
+
+
+def format_adaptive(ad):
+    """Format adaptive difficulty result."""
+    lines = [f"Adaptive Difficulty: {ad['reason']}"]
+    lines.append(f"  Level: L{ad['mastery_level']}  "
+                 f"Length: {ad['length']}  "
+                 f"Bias: {ad['complexity_bias']}")
+    if 'success_rate' in ad:
+        lines.append(f"  Success rate: {ad['success_rate']:.0%}  "
+                     f"Recent avg: {ad['recent_avg']:.1f}%")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# MATCHMAKING — pair students for sparring (v21)
+# ═══════════════════════════════════════════════════════════
+
+def matchmake(students, elo=None, max_rating_gap=200):
+    """
+    Find optimal sparring pairs from a pool of students.
+
+    Strategy:
+    1. Sort by ELO rating (or avg grade if no ELO)
+    2. Pair adjacent students (closest skill)
+    3. Enforce max rating gap
+    4. If odd number, last student gets a bye
+
+    Returns:
+        list of (student_a, student_b, rating_diff) tuples
+        plus list of byes
+    """
+    if len(students) < 2:
+        return {'pairs': [], 'byes': [s.name for s in students]}
+
+    # Sort by rating
+    def sort_key(s):
+        if elo:
+            return elo.get(s.name)
+        n = len(s.sessions)
+        return sum(ss['pct'] for ss in s.sessions) / n if n else 0
+
+    sorted_students = sorted(students, key=sort_key, reverse=True)
+
+    pairs = []
+    used = set()
+
+    for i in range(len(sorted_students)):
+        if i in used:
+            continue
+        best_j = None
+        best_gap = float('inf')
+
+        for j in range(i + 1, len(sorted_students)):
+            if j in used:
+                continue
+            gap = abs(sort_key(sorted_students[i]) -
+                      sort_key(sorted_students[j]))
+            if gap < best_gap:
+                best_gap = gap
+                best_j = j
+
+        if best_j is not None and best_gap <= max_rating_gap:
+            a = sorted_students[i]
+            b = sorted_students[best_j]
+            rating_a = sort_key(a)
+            rating_b = sort_key(b)
+            pairs.append({
+                'a': a.name, 'b': b.name,
+                'rating_a': round(rating_a, 1),
+                'rating_b': round(rating_b, 1),
+                'gap': round(abs(rating_a - rating_b), 1),
+            })
+            used.add(i)
+            used.add(best_j)
+
+    byes = [sorted_students[i].name
+            for i in range(len(sorted_students)) if i not in used]
+
+    return {'pairs': pairs, 'byes': byes}
+
+
+def format_matchmaking(mm):
+    """Format matchmaking result."""
+    lines = ["Matchmaking"]
+    lines.append("─" * 45)
+    for p in mm['pairs']:
+        lines.append(
+            f"  {p['a']:10s} ({p['rating_a']:6.1f}) vs "
+            f"{p['b']:10s} ({p['rating_b']:6.1f})  "
+            f"gap={p['gap']:.0f}")
+    if mm['byes']:
+        lines.append(f"  Byes: {', '.join(mm['byes'])}")
+    lines.append(f"  Total pairs: {len(mm['pairs'])}")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -7766,5 +8101,37 @@ if __name__ == '__main__':
     events = build_timeline(timeline_st)
     print(format_timeline(events, student_name='Anna'))
 
+    # 72. ELO Rating System
+    print("\n--- ELO Rating System ---")
+    elo = EloRating()
+    # Register all sim_school students
+    for sn in sim_school.students:
+        elo.register(sn)
+    # Simulate rating changes from their sessions
+    for sn, st in sim_school.students.items():
+        for s in st.sessions:
+            elo.update_session(sn, s['pct'], s.get('mastery_level', 1))
+    # Simulate a few matches
+    all_names = list(sim_school.students.keys())
+    for i in range(0, len(all_names) - 1, 2):
+        a, b = all_names[i], all_names[i + 1]
+        sa = sim_school.students[a].sessions[-1]['pct']
+        sb = sim_school.students[b].sessions[-1]['pct']
+        elo.update_match(a, b, sa, sb)
+    print(format_elo_leaderboard(elo))
+
+    # 73. Adaptive Difficulty
+    print("\n--- Adaptive Difficulty ---")
+    for sn in list(sim_school.students.keys())[:3]:
+        ad = adaptive_difficulty(sim_school.students[sn])
+        print(f"  {sn:10s}: {format_adaptive(ad)}")
+        print()
+
+    # 74. Matchmaking
+    print("--- Matchmaking ---")
+    pool = [sim_school.students[n] for n in sim_school.students]
+    mm = matchmake(pool, elo=elo)
+    print(format_matchmaking(mm))
+
     print("\n" + "=" * 60)
-    print("v20: Federation, targeted patterns, timeline.")
+    print("v21: ELO ratings, adaptive difficulty, matchmaking.")

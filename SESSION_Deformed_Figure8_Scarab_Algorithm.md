@@ -3457,3 +3457,93 @@ Timeline: Anna
   # 12 🏅 Achievement: Master
   # 12 ▲ New personal best — 93%
 ```
+
+---
+
+## Часть 36: ELO, адаптивная сложность, матчмейкинг (v21)
+
+### 36.1 Система ELO
+
+```python
+elo = EloRating()
+elo.register('Anna')
+elo.update_session('Anna', pct=85, mastery_level=3)
+elo.update_match('Anna', 'Ivan', score_a=90, score_b=75)
+print(format_elo_leaderboard(elo))
+```
+
+Параметры:
+
+```
+Начальный рейтинг: 1200
+K-фактор:
+  < 10 событий → K=40 (быстрая калибровка)
+  < 30 событий → K=24
+  ≥ 30 событий → K=16 (стабильный)
+
+Expected score: E_a = 1 / (1 + 10^((R_b - R_a) / 400))
+New rating:     R' = R + K × (actual - expected)
+
+Для сессий: K × 0.5, baseline = 50 + ML × 8
+Кламп: [100 .. 3000]
+```
+
+Классы рейтинга:
+```
+≥ 2000  Grandmaster
+≥ 1800  Master
+≥ 1600  Expert
+≥ 1400  Advanced
+≥ 1200  Intermediate
+≥ 1000  Beginner
+<  1000  Novice
+```
+
+### 36.2 Адаптивная сложность
+
+```python
+ad = adaptive_difficulty(student, target_success_rate=0.7)
+```
+
+Зоны потока (Flow zones):
+
+```
+Success rate     Действие         Bias
+──────────────────────────────────────────
+> 85%            ML+1, len=6     harder
+80-85%           len=5           slightly_harder
+60-80%           len=5           balanced (FLOW!)
+40-60%           len=4           slightly_easier
+< 40%            ML-1, len=4     easier
+```
+
+Групповые веса:
+```
+harder  → G4-G7 × 2.0 (сложные группы)
+easier  → G1-G3 × 2.0 (простые группы)
+balanced → все × 1.0
+```
+
+### 36.3 Матчмейкинг
+
+```python
+mm = matchmake(pool, elo=elo, max_rating_gap=200)
+print(format_matchmaking(mm))
+```
+
+Алгоритм:
+```
+1. Сортировка по ELO (или avg grade)
+2. Жадное спаривание: для каждого свободного →
+   найти ближайшего свободного по рейтингу
+3. Фильтр: gap ≤ max_rating_gap (200)
+4. Нечётный → bye (пропуск раунда)
+```
+
+Пример:
+```
+Matchmaking
+  Anna   (1238) vs Max    (1237)  gap=1
+  Ivan   (1236) vs Lena   (1235)  gap=0
+  Total pairs: 2
+```
