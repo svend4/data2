@@ -3005,3 +3005,129 @@ print(format_patterns(pats))
 - **Характеристика стиля**: "ученик часто использует Arch"
 - **Целевая генерация**: генерировать ката с заданным паттерном
 - **Разнообразие**: не повторять один паттерн в сессии
+
+---
+
+## Часть 32: Рекомендации, симулятор года, табель (v17)
+
+### 32.1 Рекомендательная система
+
+```python
+rec = recommend_next(student, library=school.library)
+print(format_recommendation(rec))
+```
+
+Дерево решений (приоритеты):
+
+```
+1. sessions < 3        → easy_kata     (разогрев фаза)
+2. rule_pct < 50%      → drill_rule    (слабое правило)
+3. group underexplored  → drill_group   (пустая группа)
+4. trend < -3%         → review        (спад формы)
+5. close to Grade A    → optimize_kata (добить Achievement)
+6. streak > 70%        → maintain      (строить Consistency)
+7. avg > 85%           → level_up      (готов к следующему L)
+8. default             → new_kata      (продолжать)
+```
+
+7 типов рекомендаций:
+```
+Action         Что делать                    Когда
+────────────────────────────────────────────────────────
+easy_kata      Лёгкая ката (L-1)             < 3 сессий
+drill_rule     Дрилл на правило              Правило < 50%
+drill_group    Дрилл на группу               Группа пустая
+review         Повтор на L-1                 Тренд падает
+optimize_kata  Целевая Grade A               Близко к A
+maintain       Продолжить на L               Серия > 70%
+level_up       Повысить уровень              Avg > 85%
+new_kata       Новая ката на текущем L       По умолчанию
+```
+
+### 32.2 Симулятор учебного года
+
+```python
+yr = simulate_school_year(school, year=1,
+                          sessions_per_quarter=3, seed=42)
+print(format_year_summary(yr))
+```
+
+Цикл:
+```
+Для каждого Q ∈ [Q1, Q2, Q3, Q4]:
+  Для каждого ученика:
+    N тренировок → school.train()
+  Сводка по Q (avg grade, resonance, recommendation)
+
+Конец года:
+  Для каждого ученика:
+    school.examine() → PASS / FAIL / HONORS
+```
+
+Пример:
+```
+Year 1 Summary (4 students)
+  Q1: Anna L1 avg=50.0% → drill_group
+  Q2: Anna L1 avg=75.0% → drill_group
+  Q3: Anna L2 avg=88.3% → drill_group
+  Q4: Anna L5 avg=89.3% → drill_group
+
+  End-of-year exams:
+    Anna B (86%), Ivan B (89%),
+    Lena A (93%), Max B (82%)
+```
+
+### 32.3 Табель ученика (Report Card)
+
+```python
+rc = report_card(student, year=1)
+print(format_report_card(rc))
+```
+
+8 секций:
+
+```
+┌─────────────────────────────────────────┐
+│  REPORT CARD:            Anna  Y1      │
+│  Overall: B                             │
+├─────────────────────────────────────────┤
+│  Level: 5  Sessions: 12 (total: 12)    │← 1. Identity
+│  Avg: 75.7%  Best: 93%  Range: 43%    │← 2. Stats
+│  Resonance: 0.56  LCI: 1.26           │
+│  Grades: A:3  B:6  D:3                │← 3. History
+│  Rule compliance:                       │← 4. Rules
+│    R1 Zones        ########## 100.0%   │
+│    R2 Anti-sym     #####       58.1%   │
+│  Group coverage:                        │← 5. Groups
+│    G1 Empty    #####       26.0%       │
+│    G2 Single   ###########  58.3%      │
+│  Achievements: 7/10 (70%)              │← 6. Badges
+│  Next: drill_group — Group 4 empty     │← 7. Recommendation
+└─────────────────────────────────────────┘
+
+Годовая оценка:
+  A (≥90%) │ B (≥75%) │ C (≥60%) │ D (≥40%) │ F (<40%)
+```
+
+### 32.4 Итоговая статистика v17
+
+```
+SCARAB Algorithm v17 — полная учебная экосистема
+
+Модулей:    45+ функций и классов
+Демо:       62 секции
+Документ:   32 части
+Код:        ~6500 строк
+Markdown:   ~3100 строк
+Всего:      ~9600 строк
+
+Компоненты:
+  Теория     → Quaternion, 4 сферы, π, LCI
+  Алфавит    → 76 sym × 4 ChVS × 8 mudra
+  Генерация  → 7 генераторов (auto, battle, optimize, resonance, mutate...)
+  Тренировка → 9 систем (session, drill, sparring, tournament, curriculum...)
+  Анализ     → 9 анализаторов (score, DNA, difficulty, patterns, achievements...)
+  Школа      → School (lifecycle), Library, export/import
+  Визуализ.  → sparkline, dashboard, report card, ASCII art
+  Аудит      → 8/8 integrity checks
+```

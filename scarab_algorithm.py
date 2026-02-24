@@ -4685,15 +4685,26 @@ class School:
         if name not in self.students:
             return None
         student = self.students[name]
+        rng = random.Random(seed)
         exam = generate_exam(quarter=quarter, year=year,
                              mastery_level=student.mastery_level,
-                             seed=seed)
-        result = evaluate_exam(exam)
+                             seed=rng.randint(0, 2**31))
+        # Student attempts the exam
+        dma = DualMatchStickAutomaton(
+            mastery_level=student.mastery_level,
+            seed=rng.randint(0, 2**31))
+        student_kata = dma.generate_dual_kata(
+            length=len(exam['reference']))
+        result = evaluate_exam(exam, student_kata)
         self.history.append({
             'event': 'exam', 'student': name,
-            'grade': result['final_grade'],
-            'pct': result['final_pct'],
+            'grade': result['score']['grade'],
+            'pct': result['score']['pct'],
+            'result': result['result'],
         })
+        # Add convenience keys
+        result['final_grade'] = result['score']['grade']
+        result['final_pct'] = result['score']['pct']
         return result
 
     def graduate(self, name):
@@ -5336,6 +5347,391 @@ def format_patterns(pat_result):
             lines.append(f"  {label}: {names}")
     if pat_result['total'] == 0:
         lines.append("  (no named patterns detected)")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# RECOMMENDATION ENGINE — intelligent next action (v17)
+# ═══════════════════════════════════════════════════════════
+
+def recommend_next(student, library=None):
+    """
+    Recommend the best next action for a student.
+
+    Decision tree:
+    1. If < 3 sessions → recommend easy kata (warm-up phase)
+    2. If weak rules exist → recommend targeted drill
+    3. If weak groups exist → recommend group drill
+    4. If trend is declining → recommend review of best kata
+    5. If close to achievement → recommend targeted session
+    6. Default → recommend new kata at current level
+
+    Returns:
+        dict with 'action', 'reason', 'details'
+    """
+    n_sess = len(student.sessions)
+    ml = student.mastery_level
+    weaknesses = student.weaknesses()
+
+    # 1. New student
+    if n_sess < 3:
+        return {
+            'action': 'easy_kata',
+            'reason': 'Build foundation (< 3 sessions)',
+            'details': {'mastery_level': max(1, ml - 1), 'length': 3},
+        }
+
+    # Check trend
+    recent = student.sessions[-4:] if n_sess >= 4 else student.sessions
+    recent_avg = sum(s['pct'] for s in recent) / len(recent)
+    if n_sess >= 6:
+        older = student.sessions[-8:-4]
+        older_avg = sum(s['pct'] for s in older) / len(older)
+        trend = recent_avg - older_avg
+    else:
+        trend = 0
+
+    # 2. Weak rules
+    rule_weaks = [w for w in weaknesses if w['type'] == 'rule']
+    if rule_weaks and rule_weaks[0].get('pct', 100) < 50:
+        return {
+            'action': 'drill_rule',
+            'reason': f"Rule {rule_weaks[0]['rule']} is weak "
+                      f"({rule_weaks[0].get('pct', 0):.0f}%)",
+            'details': {'rule_num': rule_weaks[0]['rule'],
+                        'n_reps': 5, 'mastery_level': ml},
+        }
+
+    # 3. Weak groups
+    group_weaks = [w for w in weaknesses if w['type'] == 'group']
+    if group_weaks:
+        return {
+            'action': 'drill_group',
+            'reason': f"Group {group_weaks[0]['group']} underexplored",
+            'details': {'group_num': group_weaks[0]['group'],
+                        'n_reps': 5, 'mastery_level': ml},
+        }
+
+    # 4. Declining trend
+    if trend < -3:
+        return {
+            'action': 'review',
+            'reason': f'Performance declining (trend={trend:+.1f}%)',
+            'details': {'mastery_level': max(1, ml - 1), 'length': 4},
+        }
+
+    # 5. Close to achievement
+    ach = check_achievements(student)
+    pending = ach['pending']
+    for p in pending:
+        if p['key'] == 'grade_a' and recent_avg > 80:
+            return {
+                'action': 'optimize_kata',
+                'reason': 'Close to Grade A achievement',
+                'details': {'target_grade': 'A', 'mastery_level': ml},
+            }
+        if p['key'] == 'consistency' and all(
+                s['pct'] >= 70 for s in recent):
+            return {
+                'action': 'maintain',
+                'reason': f'Building consistency streak '
+                          f'({len(recent)} sessions > 70%)',
+                'details': {'mastery_level': ml, 'length': 5},
+            }
+
+    # 6. Default: new kata, maybe level up
+    if recent_avg > 85 and ml < 5:
+        return {
+            'action': 'level_up',
+            'reason': f'Ready for next level (avg={recent_avg:.0f}%)',
+            'details': {'mastery_level': ml + 1, 'length': 5},
+        }
+
+    return {
+        'action': 'new_kata',
+        'reason': 'Continue training at current level',
+        'details': {'mastery_level': ml, 'length': 5},
+    }
+
+
+def format_recommendation(rec):
+    """Format a recommendation as readable text."""
+    actions = {
+        'easy_kata': 'Generate easy kata',
+        'drill_rule': 'Focused rule drill',
+        'drill_group': 'Focused group drill',
+        'review': 'Review session',
+        'optimize_kata': 'Aim for Grade A',
+        'maintain': 'Maintain consistency',
+        'level_up': 'Level up!',
+        'new_kata': 'New kata',
+    }
+    label = actions.get(rec['action'], rec['action'])
+    return (f"Recommendation: {label}\n"
+            f"  Reason: {rec['reason']}\n"
+            f"  Details: {rec['details']}")
+
+
+# ═══════════════════════════════════════════════════════════
+# YEAR SIMULATOR — run full school year (v17)
+# ═══════════════════════════════════════════════════════════
+
+def simulate_school_year(school, year=1, sessions_per_quarter=3, seed=None):
+    """
+    Simulate a full school year (Q1-Q4) for all active students.
+
+    Each quarter: N training sessions per student, with recommendations
+    informing each session. End of year: exam for each student.
+
+    Returns:
+        dict with quarterly summaries, exam results, year stats
+    """
+    rng = random.Random(seed)
+    quarterly = []
+
+    for qi, q in enumerate(['Q1', 'Q2', 'Q3', 'Q4']):
+        q_results = []
+        for name in list(school.students.keys()):
+            if name in school.graduated:
+                continue
+            student = school.students[name]
+            for sess_i in range(sessions_per_quarter):
+                school.train(name, quarter=q, year=year,
+                             seed=rng.randint(0, 2**31))
+
+            # Quarterly summary for this student
+            recent = student.sessions[-sessions_per_quarter:]
+            avg_pct = sum(s['pct'] for s in recent) / len(recent)
+            avg_res = sum(s['resonance'] for s in recent) / len(recent)
+            rec = recommend_next(student, library=school.library)
+            q_results.append({
+                'student': name,
+                'sessions': sessions_per_quarter,
+                'avg_grade': round(avg_pct, 1),
+                'avg_resonance': round(avg_res, 2),
+                'mastery': student.mastery_level,
+                'recommendation': rec['action'],
+            })
+
+        quarterly.append({'quarter': q, 'results': q_results})
+
+    # End-of-year exam
+    exam_results = []
+    for name in list(school.students.keys()):
+        if name in school.graduated:
+            continue
+        result = school.examine(name, quarter='Q4', year=year,
+                                seed=rng.randint(0, 2**31))
+        exam_results.append({
+            'student': name,
+            'grade': result['final_grade'],
+            'pct': result['final_pct'],
+        })
+
+    # Year summary
+    all_active = [s for n, s in school.students.items()
+                  if n not in school.graduated]
+    total_sessions = sum(len(s.sessions) for s in all_active)
+
+    return {
+        'year': year,
+        'quarterly': quarterly,
+        'exams': exam_results,
+        'total_sessions': total_sessions,
+        'n_students': len(all_active),
+    }
+
+
+def format_year_summary(yr):
+    """Format year simulation as readable text."""
+    lines = [f"Year {yr['year']} Summary ({yr['n_students']} students)"]
+    lines.append("=" * 55)
+    for qdata in yr['quarterly']:
+        lines.append(f"\n  {qdata['quarter']}:")
+        for r in qdata['results']:
+            lines.append(
+                f"    {r['student']:10s} L{r['mastery']} "
+                f"avg={r['avg_grade']:5.1f}% "
+                f"res={r['avg_resonance']:.2f} "
+                f"→ {r['recommendation']}")
+
+    lines.append(f"\n  End-of-year exams:")
+    for e in yr['exams']:
+        lines.append(f"    {e['student']:10s} {e['grade']} ({e['pct']:.0f}%)")
+
+    lines.append(f"\n  Total sessions: {yr['total_sessions']}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# REPORT CARD — comprehensive end-of-year report (v17)
+# ═══════════════════════════════════════════════════════════
+
+def report_card(student, year=1):
+    """
+    Generate a comprehensive report card for a student.
+
+    Sections:
+    1. Identity & Level
+    2. Session statistics
+    3. Grade history & trend
+    4. Rule compliance breakdown
+    5. Group coverage
+    6. Pattern profile
+    7. Achievements
+    8. Recommendations
+    """
+    n = len(student.sessions)
+    if n == 0:
+        return {'student': student.name, 'sections': [], 'empty': True}
+
+    # Filter sessions for this year
+    year_sessions = [s for s in student.sessions
+                     if s.get('year') == year]
+    if not year_sessions:
+        year_sessions = student.sessions  # fallback to all
+
+    ny = len(year_sessions)
+
+    # 1. Identity
+    identity = {
+        'name': student.name,
+        'mastery_level': student.mastery_level,
+        'total_sessions': n,
+        'year_sessions': ny,
+    }
+
+    # 2. Stats
+    avg_pct = sum(s['pct'] for s in year_sessions) / ny
+    avg_res = sum(s['resonance'] for s in year_sessions) / ny
+    avg_lci = sum(s['lci_avg'] for s in year_sessions) / ny
+    best_pct = max(s['pct'] for s in year_sessions)
+    worst_pct = min(s['pct'] for s in year_sessions)
+    stats = {
+        'avg_grade': round(avg_pct, 1),
+        'avg_resonance': round(avg_res, 2),
+        'avg_lci': round(avg_lci, 2),
+        'best': round(best_pct, 1),
+        'worst': round(worst_pct, 1),
+        'range': round(best_pct - worst_pct, 1),
+    }
+
+    # 3. Grade history
+    grades = [s['grade'] for s in year_sessions]
+    grade_counts = {}
+    for g in grades:
+        grade_counts[g] = grade_counts.get(g, 0) + 1
+
+    # 4. Rule compliance
+    rule_avgs = {}
+    for r in range(1, 6):
+        history = student.rule_history.get(r, [])
+        if history:
+            recent = history[-ny:]
+            rule_avgs[r] = round(sum(recent) / len(recent), 1)
+        else:
+            rule_avgs[r] = 0
+    rule_names = {1: 'Zones', 2: 'Anti-sym', 3: 'Alternation',
+                  4: 'Smoothness', 5: 'Conservation'}
+
+    # 5. Group coverage
+    groups_total = sum(student.group_hits.values())
+    group_pcts = {}
+    for g in range(1, 8):
+        hits = student.group_hits.get(g, 0)
+        group_pcts[g] = round(hits / groups_total * 100, 1) if groups_total else 0
+
+    # 6. Achievements
+    ach = check_achievements(student)
+
+    # 7. Recommendation
+    rec = recommend_next(student)
+
+    # Overall letter grade for the year
+    if avg_pct >= 90:
+        year_grade = 'A'
+    elif avg_pct >= 75:
+        year_grade = 'B'
+    elif avg_pct >= 60:
+        year_grade = 'C'
+    elif avg_pct >= 40:
+        year_grade = 'D'
+    else:
+        year_grade = 'F'
+
+    return {
+        'student': student.name,
+        'year': year,
+        'year_grade': year_grade,
+        'identity': identity,
+        'stats': stats,
+        'grade_counts': grade_counts,
+        'rule_compliance': rule_avgs,
+        'rule_names': rule_names,
+        'group_coverage': group_pcts,
+        'achievements': ach,
+        'recommendation': rec,
+        'empty': False,
+    }
+
+
+def format_report_card(rc):
+    """Format report card as a readable document."""
+    if rc.get('empty'):
+        return f"Report Card: {rc['student']} — No data"
+
+    lines = []
+    lines.append("┌─────────────────────────────────────────┐")
+    lines.append(f"│  REPORT CARD: {rc['student']:>15s}  Y{rc['year']}      │")
+    lines.append(f"│  Overall: {rc['year_grade']}                             │")
+    lines.append("├─────────────────────────────────────────┤")
+
+    # Identity
+    ident = rc['identity']
+    lines.append(f"│  Level: {ident['mastery_level']}  "
+                 f"Sessions: {ident['year_sessions']} "
+                 f"(total: {ident['total_sessions']})")
+
+    # Stats
+    s = rc['stats']
+    lines.append(f"│  Avg: {s['avg_grade']:.1f}%  "
+                 f"Best: {s['best']:.0f}%  "
+                 f"Worst: {s['worst']:.0f}%  "
+                 f"Range: {s['range']:.0f}%")
+    lines.append(f"│  Resonance: {s['avg_resonance']:.2f}  "
+                 f"LCI: {s['avg_lci']:.2f}")
+
+    # Grade counts
+    lines.append("│  Grades: " + '  '.join(
+        f"{g}:{c}" for g, c in sorted(rc['grade_counts'].items())))
+
+    # Rules
+    lines.append("│  Rule compliance:")
+    for r in range(1, 6):
+        val = rc['rule_compliance'][r]
+        bar = '#' * int(val / 10)
+        lines.append(f"│    R{r} {rc['rule_names'][r]:12s} "
+                     f"{bar:<10s} {val:5.1f}%")
+
+    # Groups
+    lines.append("│  Group coverage:")
+    group_names = {1: 'Empty', 2: 'Single', 3: 'Angle',
+                   4: 'Parallel', 5: 'Triple', 6: 'Master', 7: 'Peak'}
+    for g in range(1, 8):
+        pct = rc['group_coverage'][g]
+        bar = '#' * int(pct / 5)
+        lines.append(f"│    G{g} {group_names[g]:8s} "
+                     f"{bar:<10s} {pct:5.1f}%")
+
+    # Achievements
+    ach = rc['achievements']
+    lines.append(f"│  Achievements: {len(ach['earned'])}/{ach['total']} "
+                 f"({ach['progress']:.0f}%)")
+
+    # Recommendation
+    rec = rc['recommendation']
+    lines.append(f"│  Next: {rec['action']} — {rec['reason']}")
+    lines.append("└─────────────────────────────────────────┘")
     return '\n'.join(lines)
 
 
@@ -6103,6 +6499,34 @@ if __name__ == '__main__':
     for key, pat in PATTERN_CATALOG.items():
         print(f"    {pat['name']:12s} — {pat['desc']}")
 
+    # 60. Recommendation Engine
+    print("\n--- Recommendation Engine ---")
+    # Recommend for each student in the school
+    for sn, sp in list(school.students.items())[:3]:
+        rec = recommend_next(sp, library=school.library)
+        print(f"  {sn:10s} → {format_recommendation(rec)}")
+        print()
+
+    # 61. Year Simulator
+    print("--- Year Simulator ---")
+    # Create a fresh school for year simulation
+    sim_school = School('Simulation Academy')
+    for sn, ml in [('Anna', 1), ('Ivan', 1), ('Lena', 1), ('Max', 1)]:
+        sim_school.enroll(sn, mastery_level=ml)
+    yr = simulate_school_year(sim_school, year=1,
+                              sessions_per_quarter=3, seed=42)
+    print(format_year_summary(yr))
+
+    # 62. Report Card
+    print("\n--- Report Card ---")
+    # Use the simulated school's best student
+    best_name = max(sim_school.students.keys(),
+                    key=lambda n: (sum(s['pct']
+                        for s in sim_school.students[n].sessions)
+                        / max(len(sim_school.students[n].sessions), 1)))
+    rc = report_card(sim_school.students[best_name], year=1)
+    print(format_report_card(rc))
+
     print("\n" + "=" * 60)
-    print("v16: Progress charts, school dashboard,")
-    print("     pattern catalog (8 named motifs).")
+    print("v17: Recommendation engine, year simulator,")
+    print("     report card with full analytics.")
