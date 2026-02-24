@@ -1508,7 +1508,22 @@ def generate_seasonal_kata(quarter, mastery_level=1, year=1, use_dual=False,
         'total_duration_s': round(total_duration, 2),
     }
 
-    if use_dual:
+    # Use trajectory-driven generation when k > 1 (deformed figure-8)
+    # This connects the geometric Scarab to the discrete MSA
+    use_trajectory = (k > 1.05 and kata_length >= 3)
+
+    if use_trajectory:
+        tk = trajectory_kata(
+            k=k, length=kata_length, mastery_level=eff_mastery,
+            use_dual=use_dual, use_mudras=use_mudras,
+            seed=rng.randint(0, 2**31))
+        result['kata'] = tk['kata']
+        result['trajectory_points'] = tk['trajectory_points']
+        result['mode'] = tk['mode']
+        result['generation'] = 'trajectory'
+        if 'score' in tk:
+            result['score'] = tk['score']
+    elif use_dual:
         dual = DualMatchStickAutomaton(
             mastery_level=eff_mastery, use_mudras=use_mudras,
             seed=rng.randint(0, 2**31))
@@ -1521,6 +1536,7 @@ def generate_seasonal_kata(quarter, mastery_level=1, year=1, use_dual=False,
         result['kata'] = kata
         result['score'] = score
         result['mode'] = 'dual'
+        result['generation'] = 'automaton'
     else:
         msa = MatchStickAutomaton(mastery_level=eff_mastery,
                                    seed=rng.randint(0, 2**31))
@@ -1528,6 +1544,7 @@ def generate_seasonal_kata(quarter, mastery_level=1, year=1, use_dual=False,
         kata = msa.generate_kata(length=kata_length)
         result['kata'] = kata
         result['mode'] = 'single'
+        result['generation'] = 'automaton'
 
     return result
 
@@ -1563,6 +1580,328 @@ def format_seasonal_kata(skata, use_mudras=False):
             dur = skata['beat_durations_s'][i] if i < len(skata['beat_durations_s']) else 0
             lines.append(f"    T{i}: {sym:06b} G{grp}/{group_names[grp]:4s} [{dur:.2f}s]")
 
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SYMBOL ↔ SPATIAL COORDINATE MAPPING
+# ═══════════════════════════════════════════════════════════
+
+# Each 6-bit symbol maps to a 2D centroid (x, y) based on its active lines.
+# This allows MSA symbols to be plotted on a figure-8 trajectory.
+#
+# Mapping: each bit contributes a direction vector:
+#   TOP    → (0, +1)   "up"
+#   BOTTOM → (0, -1)   "down"
+#   LEFT   → (-1, 0)   "left"
+#   RIGHT  → (+1, 0)   "right"
+#   DIAG1  → (+1, +1)  "top-right to bottom-left diagonal"
+#   DIAG2  → (-1, +1)  "top-left to bottom-right diagonal"
+# The centroid is the average of active directions, normalized to [-1,+1].
+
+_BIT_VECTORS = {
+    TOP:    ( 0.0,  1.0),
+    BOTTOM: ( 0.0, -1.0),
+    LEFT:   (-1.0,  0.0),
+    RIGHT:  ( 1.0,  0.0),
+    DIAG1:  ( 0.7,  0.7),   # ╲ goes from top-left to bottom-right
+    DIAG2:  (-0.7,  0.7),   # ╱ goes from top-right to bottom-left
+}
+
+def symbol_to_xy(sym):
+    """
+    Convert a 6-bit symbol to (x, y) spatial coordinates ∈ [-1, +1].
+
+    The position represents where the hand IS in 2D space.
+    Empty (000000) = center (0, 0).
+    """
+    if sym == 0:
+        return (0.0, 0.0)
+    x, y, n = 0.0, 0.0, 0
+    for bit, (dx, dy) in _BIT_VECTORS.items():
+        if sym & bit:
+            x += dx
+            y += dy
+            n += 1
+    if n > 0:
+        x /= n
+        y /= n
+    return (x, y)
+
+
+def xy_to_nearest_symbol(x, y, available=None):
+    """
+    Find the symbol closest to a given (x, y) position.
+
+    Used to map continuous trajectory points to discrete MSA symbols.
+    """
+    if available is None:
+        available = range(64)
+    best_sym = 0
+    best_dist = float('inf')
+    for s in available:
+        sx, sy = symbol_to_xy(s)
+        d = (x - sx)**2 + (y - sy)**2
+        if d < best_dist:
+            best_dist = d
+            best_sym = s
+    return best_sym
+
+
+# ═══════════════════════════════════════════════════════════
+# K-DEFORMATION KATA — trajectory-driven kata generation
+# ═══════════════════════════════════════════════════════════
+
+def trajectory_kata(k=2.0, length=7, mastery_level=3, use_dual=False,
+                    use_mudras=False, seed=None):
+    """
+    Generate a kata by sampling points on a deformed figure-8 trajectory.
+
+    This bridges the continuous Scarab trajectory and the discrete MSA:
+    1. Generate a 4-level Scarab trajectory with the given k deformation
+    2. Sample `length` evenly-spaced points along the trajectory
+    3. Map each point to the nearest MSA symbol
+    4. For dual: left hand follows main trajectory, right hand follows
+       the anti-symmetric mirror (phase-shifted by π)
+
+    The deformation parameter k controls the kata's character:
+      k=1.0: symmetric, balanced kata (Winter/Q1)
+      k=2.0: slight asymmetry, flowing (Spring/Q2)
+      k=5.0: strong asymmetry, explosive (Summer/Q3)
+      k=10.0: extreme, one-sided (master level)
+
+    Returns:
+        dict with kata, trajectory points, k, and score (for dual)
+    """
+    rng = random.Random(seed)
+
+    # Generate trajectory with 4-level Scarab
+    traj = four_level_scarab(
+        space_size=1.0,
+        k_bvs=k, k_svs=max(1.0, k * 0.7),
+        k_mvs=max(1.0, k * 0.4), k_chvs=1.0,
+        mastery_level=mastery_level,
+        steps=500, seed=rng.randint(0, 2**31))
+
+    # Available symbols based on mastery
+    msa = MatchStickAutomaton(mastery_level=mastery_level,
+                               seed=rng.randint(0, 2**31))
+    available = msa.available_symbols
+
+    # Sample evenly-spaced points
+    n_points = len(traj)
+    indices = [int(i * (n_points - 1) / (length - 1)) for i in range(length)]
+
+    kata_syms = []
+    traj_points = []
+    for idx in indices:
+        x, y = traj[idx]
+        sym = xy_to_nearest_symbol(x, y, available)
+        kata_syms.append(sym)
+        traj_points.append((x, y))
+
+    result = {
+        'k': k,
+        'length': length,
+        'mastery': mastery_level,
+        'trajectory_points': traj_points,
+    }
+
+    if use_dual:
+        # Right hand: mirror trajectory (phase-shifted by π on the figure-8)
+        # Mirror points are at n_points/2 offset
+        mirror_offset = n_points // 2
+        dual_kata = []
+        chvs_L = MUDRA_FIST if use_mudras else CHVS_FIST
+        chvs_R = MUDRA_PALM if use_mudras else CHVS_PALM
+
+        for i, idx in enumerate(indices):
+            L = kata_syms[i]
+            # Mirror index: half-cycle offset on figure-8
+            mirror_idx = (idx + mirror_offset) % n_points
+            mx, my = traj[mirror_idx]
+            R = xy_to_nearest_symbol(mx, my, available)
+
+            # Enforce zone exclusion
+            if zones_conflict(L, R):
+                safe = [s for s in available
+                        if not zones_conflict(L, s)]
+                if safe:
+                    # Pick closest to mirror point
+                    R = min(safe, key=lambda s: (
+                        (symbol_to_xy(s)[0] - mx)**2 +
+                        (symbol_to_xy(s)[1] - my)**2))
+
+            dual_kata.append((L, R, chvs_L, chvs_R))
+
+        score = score_dual_kata(dual_kata)
+        result['kata'] = dual_kata
+        result['score'] = score
+        result['mode'] = 'dual'
+    else:
+        result['kata'] = kata_syms
+        result['mode'] = 'single'
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
+# COMPACT KATA NOTATION
+# ═══════════════════════════════════════════════════════════
+
+# Encoding: each symbol → 1-2 character code
+# 6-bit values 0-63 encoded as base-64 chars (A-Z, a-z, 0-9, +, /)
+_B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+_B64_REV = {c: i for i, c in enumerate(_B64)}
+
+
+def kata_to_notation(kata, mode='single'):
+    """
+    Encode a kata as a compact string notation.
+
+    Single kata: "S:AcQhR"  (one char per symbol)
+    Dual kata:   "D:Ac.Qh|Bd.Re|..."  (L.R per tact, | separator)
+
+    Includes header with mode, length, and checksum.
+    """
+    if mode == 'dual':
+        parts = []
+        for entry in kata:
+            L, R = entry[0], entry[1]
+            chvs = entry[2] if len(entry) > 2 else 0
+            parts.append(f"{_B64[L]}{chvs}{_B64[R]}")
+        body = '.'.join(parts)
+        checksum = sum(entry[0] ^ entry[1] for entry in kata) % 64
+        return f"D{len(kata)}/{_B64[checksum]}:{body}"
+    else:
+        body = ''.join(_B64[s] for s in kata)
+        checksum = sum(kata) % 64
+        return f"S{len(kata)}/{_B64[checksum]}:{body}"
+
+
+def notation_to_kata(notation):
+    """
+    Decode a compact notation string back to a kata.
+
+    Returns: (mode, kata_list)
+      mode='single': kata_list is [sym, sym, ...]
+      mode='dual':   kata_list is [(L, R, chvs_L, chvs_R), ...]
+    """
+    mode = notation[0]
+    header, body = notation.split(':', 1)
+
+    if mode == 'S':
+        kata = [_B64_REV[c] for c in body]
+        return ('single', kata)
+    elif mode == 'D':
+        tacts = body.split('.')
+        kata = []
+        for t in tacts:
+            L = _B64_REV[t[0]]
+            chvs_L = int(t[1])
+            R = _B64_REV[t[2]]
+            kata.append((L, R, chvs_L, CHVS_PALM))
+        return ('dual', kata)
+    else:
+        raise ValueError(f"Unknown notation mode: {mode}")
+
+
+# ═══════════════════════════════════════════════════════════
+# KATA ANALYTICS — statistical analysis
+# ═══════════════════════════════════════════════════════════
+
+def analyze_kata(kata, mode='single'):
+    """
+    Statistical analysis of a kata's quality and characteristics.
+
+    Returns dict with:
+      - group_coverage: which of 7 groups are represented
+      - diversity: unique symbols / total (0-1)
+      - avg_transition: average Hamming distance between tacts
+      - spatial_spread: how much of the (x,y) space is covered
+      - complexity_curve: C values per tact
+      - symmetry_score: for dual, anti-symmetry quality
+    """
+    if mode == 'dual':
+        syms_L = [entry[0] for entry in kata]
+        syms_R = [entry[1] for entry in kata]
+        all_syms = syms_L + syms_R
+    else:
+        all_syms = list(kata)
+        syms_L = all_syms
+        syms_R = []
+
+    n = len(syms_L)
+
+    # Group coverage
+    groups_used = set(get_group(s) for s in all_syms)
+    group_coverage = sorted(groups_used)
+
+    # Diversity: unique symbols / total
+    diversity = len(set(all_syms)) / len(all_syms) if all_syms else 0
+
+    # Average transition distance
+    transitions = []
+    for seq in ([syms_L] if not syms_R else [syms_L, syms_R]):
+        for i in range(1, len(seq)):
+            transitions.append(hamming_distance(seq[i], seq[i-1]))
+    avg_transition = sum(transitions) / len(transitions) if transitions else 0
+
+    # Spatial spread: bounding box of (x,y) centroids
+    points = [symbol_to_xy(s) for s in all_syms]
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x_range = max(xs) - min(xs) if xs else 0
+    y_range = max(ys) - min(ys) if ys else 0
+    spatial_spread = x_range * y_range  # area of bounding box
+
+    # Complexity curve
+    complexity_L = [symbol_complexity(s) for s in syms_L]
+    complexity_R = [symbol_complexity(s) for s in syms_R] if syms_R else []
+
+    # Path length in symbol space (total Hamming distance)
+    path_length = sum(transitions)
+
+    result = {
+        'n_tacts': n,
+        'group_coverage': group_coverage,
+        'n_groups': len(group_coverage),
+        'diversity': round(diversity, 2),
+        'avg_transition': round(avg_transition, 2),
+        'spatial_spread': round(spatial_spread, 3),
+        'path_length': path_length,
+        'complexity_L': complexity_L,
+    }
+
+    if mode == 'dual':
+        result['complexity_R'] = complexity_R
+        # Symmetry analysis
+        anti_count = sum(1 for i in range(n)
+                         if is_anti_symmetric(syms_L[i], syms_R[i]))
+        result['anti_symmetry_pct'] = round(anti_count / n * 100, 1) if n else 0
+        # Zone safety
+        zone_safe = sum(1 for i in range(n)
+                        if not zones_conflict(syms_L[i], syms_R[i]))
+        result['zone_safety_pct'] = round(zone_safe / n * 100, 1) if n else 0
+
+    return result
+
+
+def format_analysis(analysis):
+    """Format kata analysis as a human-readable string."""
+    lines = []
+    lines.append(f"  Tacts: {analysis['n_tacts']}, "
+                 f"Groups: {analysis['group_coverage']} ({analysis['n_groups']}/7)")
+    lines.append(f"  Diversity: {analysis['diversity']:.0%}, "
+                 f"Avg transition: {analysis['avg_transition']:.1f} bits, "
+                 f"Path: {analysis['path_length']} bits")
+    lines.append(f"  Spatial spread: {analysis['spatial_spread']:.3f} "
+                 f"(of max ~4.0)")
+    lines.append(f"  Complexity L: {analysis['complexity_L']}")
+    if 'complexity_R' in analysis:
+        lines.append(f"  Complexity R: {analysis['complexity_R']}")
+        lines.append(f"  Anti-symmetry: {analysis['anti_symmetry_pct']}%, "
+                     f"Zone safety: {analysis['zone_safety_pct']}%")
     return '\n'.join(lines)
 
 
@@ -2616,7 +2955,61 @@ if __name__ == '__main__':
                                 use_mudras=True, base_tempo=100, seed=77)
     print(format_battle_kata(bk4, use_mudras=True))
 
-    # 24. Graph statistics (summary)
+    # 24. Symbol spatial mapping
+    print("\n--- Symbol → Spatial Coordinates ---")
+    test_syms = [0, TOP, BOTTOM, LEFT, RIGHT, DIAG1, DIAG2,
+                 TOP|LEFT, BOTTOM|RIGHT, DIAG1|DIAG2, 0b111111]
+    for s in test_syms:
+        x, y = symbol_to_xy(s)
+        nearest = xy_to_nearest_symbol(x, y)
+        print(f"  {s:06b} → ({x:+.2f}, {y:+.2f}) → nearest: {nearest:06b} "
+              f"{'✓' if nearest == s else '≈'}")
+
+    # 25. Trajectory-driven kata (k-deformation bridge)
+    print("\n--- Trajectory Kata (k=1 vs k=5 vs k=10) ---")
+    for k_val in [1.0, 5.0, 10.0]:
+        tk = trajectory_kata(k=k_val, length=7, mastery_level=4,
+                              use_dual=True, seed=42)
+        syms_str = ' '.join(f'{e[0]:06b}' for e in tk['kata'])
+        print(f"  k={k_val:4.1f}: L: {syms_str}")
+        print(f"         {format_score_report(tk['score']).split(chr(10))[0]}")
+
+    # 26. Compact kata notation (round-trip)
+    print("\n--- Compact Kata Notation ---")
+    # Single
+    single_kata = [0, 0b010000, 0b110100, 0b110000, 0b001010, 0b100000, 0]
+    notation = kata_to_notation(single_kata, mode='single')
+    mode, decoded = notation_to_kata(notation)
+    print(f"  Single: {notation}")
+    print(f"  Decode: {mode}, {[f'{s:06b}' for s in decoded]}")
+    print(f"  Round-trip OK: {decoded == single_kata}")
+    # Dual
+    dual_notation = kata_to_notation(dkata_r45, mode='dual')
+    print(f"  Dual:   {dual_notation}")
+
+    # 27. Kata analytics
+    print("\n--- Kata Analytics ---")
+    print("  Automaton kata (Level 4, dual):")
+    analysis_auto = analyze_kata(dkata_r45, mode='dual')
+    print(format_analysis(analysis_auto))
+    print("  Trajectory kata (k=5, dual):")
+    tk5 = trajectory_kata(k=5.0, length=7, mastery_level=4,
+                           use_dual=True, seed=42)
+    analysis_traj = analyze_kata(tk5['kata'], mode='dual')
+    print(format_analysis(analysis_traj))
+
+    # 28. Seasonal kata with trajectory generation
+    print("\n--- Seasonal Kata (trajectory mode) ---")
+    for q in ['Q2', 'Q3', 'Q4']:
+        use_d = (q in ['Q3', 'Q4'])
+        sk = generate_seasonal_kata(q, mastery_level=3, year=3,
+                                     use_dual=use_d, seed=42)
+        gen = sk.get('generation', '?')
+        print(f"  {q}: k={sk['k']}, gen={gen}, mode={sk['mode']}")
+        if sk['mode'] == 'dual' and 'score' in sk:
+            print(f"        {format_score_report(sk['score']).split(chr(10))[0]}")
+
+    # 29. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
@@ -2640,5 +3033,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v7: Kata optimizer, battle katas №1-4,")
-    print("    improved lead alternation + anti-symmetry.")
+    print("v8: Trajectory↔MSA bridge (k-deformation kata),")
+    print("    compact notation, kata analytics, spatial mapping.")
