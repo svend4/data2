@@ -5818,3 +5818,72 @@ get_group ──────────┼── DailyChallengeGenerator
 | Социальное         | 5           | ████████░░ 80%  |
 | Инфраструктура     | 10          | ██████████ 100% |
 | Документация       | 65 частей   | ██████████ 100% |
+
+---
+
+## Часть 66: Export Manager, Data Serializer, Report Generator (v51)
+
+### 66.1 ExportManager
+
+Унифицированный менеджер экспорта данных системы Scarab. Поддерживает
+форматы: dict, csv-string, text summary.
+
+```python
+em = ExportManager(school=school, registry=registry)
+
+# Экспорт студента
+data = em.export_student('Anna', fmt='dict')   # → dict
+csv = em.export_student('Anna', fmt='csv')      # → CSV string
+text = em.export_student('Anna', fmt='text')    # → text summary
+
+# Экспорт школы
+school_data = em.export_school(fmt='dict')
+school_csv = em.export_school(fmt='csv')
+
+# Экспорт реестра
+reg_text = em.export_registry(fmt='text')
+```
+
+### 66.2 DataSerializer
+
+Сериализация данных Scarab с поддержкой round-trip (serialize ↔ deserialize).
+
+```python
+# Сериализация студента
+payload = DataSerializer.serialize_student(student)
+# → {'__type__': 'StudentProfile', '__version__': '1.0', ...}
+
+# Валидация
+check = DataSerializer.validate_serialized(payload)
+# → {'valid': True, 'type': 'StudentProfile', 'version': '1.0'}
+
+# Десериализация (round-trip)
+restored = DataSerializer.deserialize_student(payload)
+
+# Школа
+school_payload = DataSerializer.serialize_school(school)
+school_restored = DataSerializer.deserialize_school(school_payload)
+```
+
+### 66.3 ReportGenerator
+
+Генератор отчётов: progress, comparison, summary.
+
+```python
+rg = ReportGenerator(school)
+
+# Прогресс-отчёт (тренд, последние оценки)
+prog = rg.progress_report('Anna')
+print(format_report(prog))
+
+# Сравнительный отчёт (рейтинг студентов)
+comp = rg.comparison_report(['Anna', 'Ivan', 'Lena'])
+print(format_report(comp))
+
+# Сводный отчёт по школе
+summ = rg.summary_report()
+print(format_report(summ))
+```
+
+Секции отчёта: Overview, Trend Analysis, Recent Performance,
+Rankings, School Overview, Mastery Distribution.

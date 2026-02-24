@@ -17328,6 +17328,389 @@ def format_changelog(changelog):
     return '\n'.join(lines)
 
 
+# ── v51: Export Manager, Data Serializer, Report Generator ──
+
+
+class ExportManager:
+    """Unified export manager for all Scarab data.
+
+    Consolidates various export functions into a single interface.
+    Supports multiple formats: dict, csv-string, text summary.
+    """
+
+    def __init__(self, school=None, registry=None):
+        self.school = school
+        self.registry = registry
+
+    def export_student(self, name, fmt='dict'):
+        """Export a single student's data."""
+        if not self.school or name not in self.school.students:
+            return None
+        st = self.school.students[name]
+        data = {
+            'name': st.name,
+            'mastery_level': getattr(st, 'mastery_level', 1),
+            'total_sessions': len(st.sessions),
+            'sessions': []
+        }
+        for i, s in enumerate(st.sessions):
+            entry = {
+                'index': i,
+                'pct': s.get('pct', 0),
+                'violations': len(s.get('violations', [])),
+                'length': s.get('length', 16)
+            }
+            data['sessions'].append(entry)
+
+        # Stats
+        scores = [s.get('pct', 0) for s in st.sessions]
+        if scores:
+            data['avg_score'] = round(sum(scores) / len(scores), 2)
+            data['best_score'] = round(max(scores), 2)
+            data['worst_score'] = round(min(scores), 2)
+        else:
+            data['avg_score'] = 0
+            data['best_score'] = 0
+            data['worst_score'] = 0
+
+        if fmt == 'csv':
+            return self._to_csv(data)
+        elif fmt == 'text':
+            return self._to_text(data)
+        return data
+
+    def export_school(self, fmt='dict'):
+        """Export all school data."""
+        if not self.school:
+            return None
+        result = {
+            'total_students': len(self.school.students),
+            'students': {}
+        }
+        for name in self.school.students:
+            result['students'][name] = self.export_student(name, 'dict')
+        if fmt == 'csv':
+            return self._school_to_csv(result)
+        elif fmt == 'text':
+            return self._school_to_text(result)
+        return result
+
+    def export_registry(self, fmt='dict'):
+        """Export registry data."""
+        if not self.registry:
+            return None
+        data = {
+            'total': len(self.registry._components),
+            'components': {}
+        }
+        for name, info in self.registry._components.items():
+            data['components'][name] = {
+                'kind': info['kind'],
+                'version': info['version'],
+                'description': info['description'],
+                'dependencies': info['dependencies']
+            }
+        if fmt == 'text':
+            lines = [f"Registry Export ({data['total']} components)"]
+            for n, c in data['components'].items():
+                lines.append(f"  {n} [{c['kind']}] {c['version']}: "
+                             f"{c['description']}")
+            return '\n'.join(lines)
+        return data
+
+    def _to_csv(self, data):
+        """Convert student data to CSV string."""
+        lines = ['index,pct,violations,length']
+        for s in data['sessions']:
+            lines.append(f"{s['index']},{s['pct']},"
+                         f"{s['violations']},{s['length']}")
+        return '\n'.join(lines)
+
+    def _to_text(self, data):
+        """Convert student data to text summary."""
+        lines = [f"Student: {data['name']}"]
+        lines.append(f"  Mastery: {data['mastery_level']}")
+        lines.append(f"  Sessions: {data['total_sessions']}")
+        lines.append(f"  Avg: {data['avg_score']}  "
+                     f"Best: {data['best_score']}  "
+                     f"Worst: {data['worst_score']}")
+        return '\n'.join(lines)
+
+    def _school_to_csv(self, result):
+        """Convert school data to CSV."""
+        lines = ['name,mastery,sessions,avg,best,worst']
+        for name, st in result['students'].items():
+            if st:
+                lines.append(
+                    f"{name},{st['mastery_level']},"
+                    f"{st['total_sessions']},{st['avg_score']},"
+                    f"{st['best_score']},{st['worst_score']}")
+        return '\n'.join(lines)
+
+    def _school_to_text(self, result):
+        """Convert school data to text."""
+        lines = [f"School Export ({result['total_students']} students)"]
+        for name, st in result['students'].items():
+            if st:
+                lines.append(f"  {name}: mastery={st['mastery_level']}, "
+                             f"sessions={st['total_sessions']}, "
+                             f"avg={st['avg_score']}")
+        return '\n'.join(lines)
+
+
+class DataSerializer:
+    """Serializes Scarab data structures to portable formats.
+
+    Supports round-trip serialization: serialize → deserialize.
+    Handles nested objects, custom types, and metadata.
+    """
+
+    VERSION = '1.0'
+
+    @staticmethod
+    def serialize_student(student):
+        """Serialize a StudentProfile to a portable dict."""
+        return {
+            '__type__': 'StudentProfile',
+            '__version__': DataSerializer.VERSION,
+            'name': student.name,
+            'mastery_level': getattr(student, 'mastery_level', 1),
+            'sessions': [
+                {
+                    'pct': s.get('pct', 0),
+                    'violations': s.get('violations', []),
+                    'length': s.get('length', 16),
+                    'sequence': s.get('sequence', [])
+                }
+                for s in student.sessions
+            ]
+        }
+
+    @staticmethod
+    def deserialize_student(data):
+        """Deserialize a dict back to a StudentProfile."""
+        if data.get('__type__') != 'StudentProfile':
+            raise ValueError(f"Expected StudentProfile, "
+                             f"got {data.get('__type__')}")
+        st = StudentProfile(data['name'])
+        st.mastery_level = data.get('mastery_level', 1)
+        st.sessions = data.get('sessions', [])
+        return st
+
+    @staticmethod
+    def serialize_school(school):
+        """Serialize an entire school."""
+        return {
+            '__type__': 'School',
+            '__version__': DataSerializer.VERSION,
+            'name': getattr(school, 'name', 'Scarab School'),
+            'students': {
+                name: DataSerializer.serialize_student(st)
+                for name, st in school.students.items()
+            }
+        }
+
+    @staticmethod
+    def deserialize_school(data):
+        """Deserialize a dict back to a School."""
+        if data.get('__type__') != 'School':
+            raise ValueError(f"Expected School, "
+                             f"got {data.get('__type__')}")
+        school = School(data.get('name', 'Scarab School'))
+        for name, st_data in data.get('students', {}).items():
+            st = DataSerializer.deserialize_student(st_data)
+            school.students[name] = st
+        return school
+
+    @staticmethod
+    def serialize_session(session_dict):
+        """Serialize a single session dict."""
+        return {
+            '__type__': 'Session',
+            '__version__': DataSerializer.VERSION,
+            'pct': session_dict.get('pct', 0),
+            'violations': session_dict.get('violations', []),
+            'length': session_dict.get('length', 16),
+            'sequence': session_dict.get('sequence', [])
+        }
+
+    @staticmethod
+    def validate_serialized(data):
+        """Validate a serialized data structure."""
+        if not isinstance(data, dict):
+            return {'valid': False, 'error': 'Not a dict'}
+        if '__type__' not in data:
+            return {'valid': False, 'error': 'Missing __type__'}
+        if '__version__' not in data:
+            return {'valid': False, 'error': 'Missing __version__'}
+        return {
+            'valid': True,
+            'type': data['__type__'],
+            'version': data['__version__']
+        }
+
+
+class ReportGenerator:
+    """Generates comprehensive reports for students and schools.
+
+    Report types: progress, comparison, detailed, summary.
+    Each report includes sections with headers and data.
+    """
+
+    def __init__(self, school):
+        self.school = school
+
+    def progress_report(self, name):
+        """Generate a progress report for a student."""
+        if name not in self.school.students:
+            return None
+        st = self.school.students[name]
+        scores = [s.get('pct', 0) for s in st.sessions]
+
+        report = {
+            'type': 'progress',
+            'student': name,
+            'sections': []
+        }
+
+        # Overview section
+        overview = {
+            'title': 'Overview',
+            'data': {
+                'mastery_level': getattr(st, 'mastery_level', 1),
+                'total_sessions': len(st.sessions),
+                'avg_score': round(sum(scores) / max(len(scores), 1), 2)
+            }
+        }
+        report['sections'].append(overview)
+
+        # Trend section
+        if len(scores) >= 2:
+            first_half = scores[:len(scores)//2]
+            second_half = scores[len(scores)//2:]
+            avg_first = sum(first_half) / len(first_half)
+            avg_second = sum(second_half) / len(second_half)
+            trend = 'improving' if avg_second > avg_first else \
+                    'declining' if avg_second < avg_first else 'stable'
+            report['sections'].append({
+                'title': 'Trend Analysis',
+                'data': {
+                    'first_half_avg': round(avg_first, 2),
+                    'second_half_avg': round(avg_second, 2),
+                    'trend': trend,
+                    'change': round(avg_second - avg_first, 2)
+                }
+            })
+
+        # Recent performance
+        recent = scores[-5:] if len(scores) >= 5 else scores
+        report['sections'].append({
+            'title': 'Recent Performance',
+            'data': {
+                'last_scores': [round(s, 1) for s in recent],
+                'recent_avg': round(
+                    sum(recent) / max(len(recent), 1), 2),
+                'best_recent': round(max(recent), 2) if recent else 0
+            }
+        })
+
+        return report
+
+    def comparison_report(self, names=None):
+        """Generate a comparison report for multiple students."""
+        if names is None:
+            names = list(self.school.students.keys())
+        report = {
+            'type': 'comparison',
+            'students': names,
+            'sections': []
+        }
+
+        rankings = []
+        for name in names:
+            st = self.school.students.get(name)
+            if st:
+                scores = [s.get('pct', 0) for s in st.sessions]
+                avg = sum(scores) / max(len(scores), 1)
+                rankings.append({
+                    'name': name,
+                    'avg_score': round(avg, 2),
+                    'sessions': len(st.sessions),
+                    'mastery': getattr(st, 'mastery_level', 1)
+                })
+
+        rankings.sort(key=lambda x: x['avg_score'], reverse=True)
+        for i, r in enumerate(rankings):
+            r['rank'] = i + 1
+
+        report['sections'].append({
+            'title': 'Rankings',
+            'data': rankings
+        })
+
+        return report
+
+    def summary_report(self):
+        """Generate a school-wide summary report."""
+        all_scores = []
+        for st in self.school.students.values():
+            for s in st.sessions:
+                all_scores.append(s.get('pct', 0))
+
+        report = {
+            'type': 'summary',
+            'sections': [{
+                'title': 'School Overview',
+                'data': {
+                    'total_students': len(self.school.students),
+                    'total_sessions': len(all_scores),
+                    'overall_avg': round(
+                        sum(all_scores) / max(len(all_scores), 1), 2),
+                    'highest': round(max(all_scores), 2)
+                    if all_scores else 0,
+                    'lowest': round(min(all_scores), 2)
+                    if all_scores else 0
+                }
+            }]
+        }
+
+        # Mastery distribution
+        m_dist = {}
+        for st in self.school.students.values():
+            ml = getattr(st, 'mastery_level', 1)
+            m_dist[ml] = m_dist.get(ml, 0) + 1
+        report['sections'].append({
+            'title': 'Mastery Distribution',
+            'data': m_dist
+        })
+
+        return report
+
+
+def format_report(report):
+    """Format any report type for display."""
+    lines = [f"=== {report['type'].title()} Report ==="]
+
+    if 'student' in report:
+        lines.append(f"Student: {report['student']}")
+
+    for section in report.get('sections', []):
+        lines.append(f"\n  [{section['title']}]")
+        data = section['data']
+        if isinstance(data, dict):
+            for k, v in data.items():
+                lines.append(f"    {k}: {v}")
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    parts = [f"{k}={v}" for k, v in item.items()]
+                    lines.append(f"    {', '.join(parts)}")
+                else:
+                    lines.append(f"    {item}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -19213,3 +19596,62 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v50: System registry, integrity validator, 25K milestone.")
+
+    # ── v51 demos ────────────────────────────────────────
+
+    # 164. Export Manager
+    print("\n--- Export Manager ---")
+    em = ExportManager(school=sim_school, registry=registry)
+    anna_text = em.export_student('Anna', fmt='text')
+    print(anna_text)
+    school_csv = em.export_school(fmt='csv')
+    csv_lines = school_csv.split('\n')
+    print(f"School CSV: {csv_lines[0]}")
+    for line in csv_lines[1:]:
+        print(f"  {line}")
+    reg_text = em.export_registry(fmt='text')
+    reg_lines = reg_text.split('\n')
+    print(f"\n{reg_lines[0]}")
+    for line in reg_lines[1:6]:
+        print(line)
+    print(f"  ... ({len(reg_lines) - 6} more)")
+
+    # 165. Data Serializer
+    print("\n--- Data Serializer ---")
+    anna_st = sim_school.students['Anna']
+    serialized = DataSerializer.serialize_student(anna_st)
+    print(f"Serialized type: {serialized['__type__']}")
+    print(f"Serialized version: {serialized['__version__']}")
+    print(f"Sessions in payload: {len(serialized['sessions'])}")
+
+    validation = DataSerializer.validate_serialized(serialized)
+    print(f"Validation: {validation}")
+
+    # Round-trip test
+    restored = DataSerializer.deserialize_student(serialized)
+    print(f"Round-trip: {restored.name}, "
+          f"sessions={len(restored.sessions)}, "
+          f"mastery={restored.mastery_level}")
+
+    school_ser = DataSerializer.serialize_school(sim_school)
+    print(f"School serialized: "
+          f"{len(school_ser['students'])} students")
+    school_restored = DataSerializer.deserialize_school(school_ser)
+    print(f"School restored: "
+          f"{len(school_restored.students)} students")
+
+    # 166. Report Generator
+    print("\n--- Report Generator ---")
+    rg = ReportGenerator(sim_school)
+
+    prog = rg.progress_report('Anna')
+    print(format_report(prog))
+
+    comp = rg.comparison_report()
+    print(format_report(comp))
+
+    summ = rg.summary_report()
+    print(format_report(summ))
+
+    print("\n" + "=" * 60)
+    print("v51: Export manager, data serializer, report generator.")
