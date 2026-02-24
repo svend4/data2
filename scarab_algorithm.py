@@ -6471,6 +6471,395 @@ def format_peer_review(pr):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# FEDERATION — multi-school network (v20)
+# ═══════════════════════════════════════════════════════════
+
+class Federation:
+    """
+    Network of multiple Schools that can interact.
+
+    Features:
+    - Register/remove schools
+    - Inter-school rankings
+    - Federation-wide statistics
+    - Cross-school tournaments
+    - Transfer students between schools
+    """
+
+    def __init__(self, name='Scarab Federation'):
+        self.name = name
+        self.schools = {}       # name → School
+        self.history = []       # federation events
+        self.tournaments = []   # inter-school tournaments
+
+    def register(self, school):
+        """Register a school in the federation."""
+        self.schools[school.name] = school
+        self.history.append({
+            'event': 'register', 'school': school.name,
+            'students': len(school.students),
+        })
+
+    def remove(self, school_name):
+        """Remove a school from the federation."""
+        if school_name in self.schools:
+            del self.schools[school_name]
+            self.history.append({'event': 'remove', 'school': school_name})
+
+    def transfer(self, student_name, from_school, to_school):
+        """Transfer a student between schools."""
+        if (from_school not in self.schools or
+                to_school not in self.schools):
+            return False
+        src = self.schools[from_school]
+        dst = self.schools[to_school]
+        if student_name not in src.students:
+            return False
+        student = src.students.pop(student_name)
+        dst.students[student_name] = student
+        self.history.append({
+            'event': 'transfer', 'student': student_name,
+            'from': from_school, 'to': to_school,
+        })
+        return True
+
+    def rankings(self):
+        """
+        Compute federation-wide school rankings.
+
+        Dimensions: avg grade, total sessions, graduation rate,
+        avg achievements, avg mastery level.
+        """
+        school_stats = []
+        for name, school in self.schools.items():
+            all_students = list(school.students.values())
+            if not all_students:
+                continue
+            n_students = len(all_students)
+            total_sess = sum(len(s.sessions) for s in all_students)
+            all_pcts = []
+            for s in all_students:
+                for sess in s.sessions:
+                    all_pcts.append(sess['pct'])
+            avg_pct = sum(all_pcts) / len(all_pcts) if all_pcts else 0
+            grad_rate = (len(school.graduated) / n_students * 100
+                         if n_students else 0)
+            avg_ml = (sum(s.mastery_level for s in all_students) /
+                      n_students)
+            total_ach = sum(len(check_achievements(s)['earned'])
+                           for s in all_students)
+            avg_ach = total_ach / n_students
+
+            school_stats.append({
+                'school': name,
+                'students': n_students,
+                'sessions': total_sess,
+                'avg_grade': round(avg_pct, 1),
+                'grad_rate': round(grad_rate, 1),
+                'avg_mastery': round(avg_ml, 1),
+                'avg_achievements': round(avg_ach, 1),
+            })
+
+        # Composite ranking
+        for dim in ['avg_grade', 'grad_rate', 'avg_mastery',
+                    'avg_achievements']:
+            sorted_s = sorted(school_stats, key=lambda x: x[dim],
+                              reverse=True)
+            for rank, s in enumerate(sorted_s):
+                s[f'rank_{dim}'] = rank
+
+        for s in school_stats:
+            s['composite_rank'] = sum(
+                s.get(f'rank_{d}', 0) for d in
+                ['avg_grade', 'grad_rate', 'avg_mastery',
+                 'avg_achievements'])
+
+        school_stats.sort(key=lambda x: x['composite_rank'])
+        return school_stats
+
+    def inter_tournament(self, seed=None):
+        """
+        Run a tournament with top students from each school.
+
+        Each school sends its best student (by avg grade).
+        """
+        rng = random.Random(seed)
+        contestants = {}
+
+        for school_name, school in self.schools.items():
+            active = [(n, s) for n, s in school.students.items()
+                      if n not in school.graduated and s.sessions]
+            if not active:
+                continue
+            best_name, best_st = max(
+                active,
+                key=lambda x: sum(s['pct'] for s in x[1].sessions) /
+                              len(x[1].sessions))
+            contestants[f"{best_name} ({school_name})"] = best_st
+
+        if len(contestants) < 2:
+            return {'error': 'Need at least 2 schools with active students'}
+
+        # Generate tournament kata for each
+        results = []
+        for label, student in contestants.items():
+            dma = DualMatchStickAutomaton(
+                mastery_level=student.mastery_level,
+                seed=rng.randint(0, 2**31))
+            kata = dma.generate_dual_kata(length=5)
+            score = score_dual_kata(kata)
+            results.append({
+                'contestant': label,
+                'mastery': student.mastery_level,
+                'grade': score['grade'],
+                'pct': score['pct'],
+            })
+
+        results.sort(key=lambda x: x['pct'], reverse=True)
+
+        # Record
+        self.tournaments.append({
+            'results': results,
+            'winner': results[0]['contestant'],
+        })
+        self.history.append({
+            'event': 'tournament',
+            'winner': results[0]['contestant'],
+            'participants': len(results),
+        })
+
+        return {
+            'results': results,
+            'winner': results[0]['contestant'],
+        }
+
+    def summary(self):
+        """Federation-wide summary statistics."""
+        total_students = sum(len(s.students) for s in self.schools.values())
+        total_graduated = sum(len(s.graduated) for s in self.schools.values())
+        total_sessions = sum(
+            sum(len(st.sessions) for st in s.students.values())
+            for s in self.schools.values())
+        return {
+            'name': self.name,
+            'n_schools': len(self.schools),
+            'total_students': total_students,
+            'total_graduated': total_graduated,
+            'total_sessions': total_sessions,
+            'tournaments': len(self.tournaments),
+        }
+
+
+def format_federation(fed):
+    """Format federation summary and rankings."""
+    s = fed.summary()
+    lines = []
+    lines.append("╔══════════════════════════════════════════╗")
+    lines.append(f"║  FEDERATION: {s['name']:<25s}  ║")
+    lines.append("╠══════════════════════════════════════════╣")
+    lines.append(f"║  Schools: {s['n_schools']}  "
+                 f"Students: {s['total_students']}  "
+                 f"Graduated: {s['total_graduated']}")
+    lines.append(f"║  Sessions: {s['total_sessions']}  "
+                 f"Tournaments: {s['tournaments']}")
+    lines.append("╠══════════════════════════════════════════╣")
+
+    rankings = fed.rankings()
+    lines.append("║  School Rankings:")
+    for i, r in enumerate(rankings, 1):
+        lines.append(
+            f"║   #{i} {r['school']:15s} "
+            f"avg={r['avg_grade']:5.1f}% "
+            f"grad={r['grad_rate']:4.0f}% "
+            f"ML={r['avg_mastery']:.1f}")
+
+    lines.append("╚══════════════════════════════════════════╝")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# TARGETED PATTERN GENERATOR — generate kata with specific
+# pattern constraints (v20)
+# ═══════════════════════════════════════════════════════════
+
+def generate_targeted_kata(target_pattern, mastery_level=3,
+                           length=5, max_attempts=50, seed=None):
+    """
+    Generate a kata that exhibits a specific named pattern.
+
+    Supported targets: ascent, descent, arch, valley, plateau,
+                       zigzag, cascade, mirror
+
+    Strategy: generate candidates and select the one that
+    matches the target pattern.
+    """
+    rng = random.Random(seed)
+
+    best_kata = None
+    best_match = False
+
+    for attempt in range(max_attempts):
+        dma = DualMatchStickAutomaton(
+            mastery_level=mastery_level,
+            seed=rng.randint(0, 2**31))
+        kata = dma.generate_dual_kata(length=length)
+        patterns = classify_kata_patterns(kata)
+
+        # Check if target pattern is present
+        all_names = set()
+        for hand in ['L', 'R', 'combined']:
+            for p in patterns[hand]:
+                all_names.add(p['name'].lower())
+
+        if target_pattern.lower() in all_names:
+            return {
+                'kata': kata,
+                'attempts': attempt + 1,
+                'patterns': patterns,
+                'matched': True,
+                'score': score_dual_kata(kata),
+            }
+
+        if best_kata is None:
+            best_kata = kata
+
+    # Fallback: return best attempt even if no match
+    return {
+        'kata': best_kata,
+        'attempts': max_attempts,
+        'patterns': classify_kata_patterns(best_kata),
+        'matched': False,
+        'score': score_dual_kata(best_kata),
+    }
+
+
+def format_targeted_result(res, target):
+    """Format targeted generation result."""
+    status = "MATCHED" if res['matched'] else "best effort"
+    lines = [f"Target pattern: {target} ({status}, "
+             f"{res['attempts']} attempts)"]
+    lines.append(f"  Grade: {res['score']['grade']} "
+                 f"({res['score']['pct']:.0f}%)")
+    lines.append(f"  {format_patterns(res['patterns'])}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PROGRESS TIMELINE — chronological milestone log (v20)
+# ═══════════════════════════════════════════════════════════
+
+def build_timeline(student):
+    """
+    Build a chronological timeline of milestones for a student.
+
+    Milestones:
+    - First session
+    - First Grade A
+    - Each mastery level up
+    - Achievement unlocks
+    - Best session ever
+    - Every 10th session
+    """
+    events = []
+    sessions = student.sessions
+    if not sessions:
+        return events
+
+    best_pct = 0
+    first_a = None
+    prev_ml = 1
+
+    for i, s in enumerate(sessions):
+        sess_num = i + 1
+
+        # First session
+        if i == 0:
+            events.append({
+                'session': sess_num,
+                'type': 'start',
+                'label': 'First session',
+                'detail': f"{s['grade']} ({s['pct']:.0f}%)",
+            })
+
+        # First Grade A
+        if s['grade'] == 'A' and first_a is None:
+            first_a = sess_num
+            events.append({
+                'session': sess_num,
+                'type': 'grade_a',
+                'label': 'First Grade A!',
+                'detail': f"{s['pct']:.0f}%",
+            })
+
+        # Best ever
+        if s['pct'] > best_pct:
+            best_pct = s['pct']
+            if i > 0:  # Skip first (trivially best)
+                events.append({
+                    'session': sess_num,
+                    'type': 'personal_best',
+                    'label': 'New personal best',
+                    'detail': f"{s['pct']:.0f}%",
+                })
+
+        # Level up
+        ml = s.get('mastery_level', prev_ml)
+        if ml > prev_ml:
+            events.append({
+                'session': sess_num,
+                'type': 'level_up',
+                'label': f'Level up! L{prev_ml} → L{ml}',
+                'detail': f"Mastery level {ml}",
+            })
+            prev_ml = ml
+
+        # Every 10th session
+        if sess_num % 10 == 0:
+            avg = sum(ss['pct'] for ss in sessions[:sess_num]) / sess_num
+            events.append({
+                'session': sess_num,
+                'type': 'milestone',
+                'label': f'{sess_num} sessions completed',
+                'detail': f'Running avg: {avg:.0f}%',
+            })
+
+    # Achievement milestones
+    ach = check_achievements(student)
+    for a in ach['earned']:
+        events.append({
+            'session': len(sessions),  # approximate
+            'type': 'achievement',
+            'label': f"Achievement: {a['name'] if isinstance(a, dict) else a}",
+            'detail': '',
+        })
+
+    events.sort(key=lambda e: (e['session'], e['type']))
+    return events
+
+
+def format_timeline(events, student_name='Student'):
+    """Format timeline as readable text."""
+    if not events:
+        return f"Timeline: {student_name} — no events"
+
+    lines = [f"Timeline: {student_name}"]
+    lines.append("─" * 45)
+    for e in events:
+        icon = {
+            'start': '●',
+            'grade_a': '★',
+            'personal_best': '▲',
+            'level_up': '⬆',
+            'milestone': '◆',
+            'achievement': '🏅',
+        }.get(e['type'], '·')
+        detail = f" — {e['detail']}" if e['detail'] else ""
+        lines.append(f"  #{e['session']:3d} {icon} {e['label']}{detail}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -7334,6 +7723,48 @@ if __name__ == '__main__':
     print(f"  {reviewer_st.name} reviews {author_st.name}'s kata:")
     print(format_peer_review(pr))
 
+    # 69. Federation
+    print("\n--- Federation ---")
+    fed = Federation('World Scarab Federation')
+    # Create multiple schools
+    school_names = ['Moscow Academy', 'Tokyo Dojo', 'Berlin Institut']
+    fed_schools = []
+    for si, sn in enumerate(school_names):
+        sch = School(sn)
+        for pn in [f"{sn[:3]}_{j}" for j in range(1, 4)]:
+            sch.enroll(pn, mastery_level=1)
+        # Train
+        for pn in sch.students:
+            for _ in range(6):
+                sch.train(pn, quarter='Q2', year=1,
+                          seed=hash(pn + sn) & 0x7FFFFFFF)
+        fed.register(sch)
+        fed_schools.append(sch)
+
+    print(format_federation(fed))
+
+    # Inter-school tournament
+    tourney = fed.inter_tournament(seed=42)
+    if 'error' not in tourney:
+        print(f"\n  Inter-school tournament winner: {tourney['winner']}")
+        for r in tourney['results']:
+            print(f"    {r['contestant']:25s} "
+                  f"{r['grade']} ({r['pct']:.0f}%)")
+
+    # 70. Targeted Pattern Generator
+    print("\n--- Targeted Pattern Generator ---")
+    for target in ['arch', 'zigzag', 'valley']:
+        res = generate_targeted_kata(target, mastery_level=3,
+                                     length=5, seed=42)
+        print(format_targeted_result(res, target))
+        print()
+
+    # 71. Progress Timeline
+    print("--- Progress Timeline ---")
+    # Use sim_school Anna who has 12 sessions
+    timeline_st = sim_school.students['Anna']
+    events = build_timeline(timeline_st)
+    print(format_timeline(events, student_name='Anna'))
+
     print("\n" + "=" * 60)
-    print("v19: Statistical analysis, CSV/text export,")
-    print("     peer review system.")
+    print("v20: Federation, targeted patterns, timeline.")

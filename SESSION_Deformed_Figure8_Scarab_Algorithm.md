@@ -3360,3 +3360,100 @@ Peer Review by Anna (L5)
   Creativity: 57%
   Subjective score: 66.9
 ```
+
+---
+
+## Часть 35: Федерация, целевые паттерны, хронология (v20)
+
+### 35.1 Федерация школ
+
+```python
+fed = Federation('World Scarab Federation')
+fed.register(school_a)
+fed.register(school_b)
+fed.transfer('Anna', 'Moscow', 'Tokyo')
+print(format_federation(fed))
+```
+
+Класс `Federation`:
+
+```
+Операции:
+  register(school)     — добавить школу
+  remove(school_name)  — удалить школу
+  transfer(student, from, to) — перевод ученика
+  rankings()           — рейтинг школ
+  inter_tournament()   — межшкольный турнир
+  summary()            — общая статистика
+
+Рейтинг школ (4 измерения):
+  avg_grade        — средняя оценка учеников
+  grad_rate        — % выпускников
+  avg_mastery      — средний ML
+  avg_achievements — среднее число бейджей
+  → composite_rank — сумма рангов
+```
+
+Пример:
+```
+╔══════════════════════════════════════════╗
+║  FEDERATION: World Scarab Federation    ║
+║  Schools: 3  Students: 9  Graduated: 0  ║
+║  #1 Moscow Academy   avg=80.6%          ║
+║  #2 Tokyo Dojo       avg=75.0%          ║
+║  #3 Berlin Institut  avg=75.0%          ║
+╚══════════════════════════════════════════╝
+```
+
+### 35.2 Генератор целевых паттернов
+
+```python
+res = generate_targeted_kata('arch', mastery_level=3, length=5)
+print(format_targeted_result(res, 'arch'))
+```
+
+Стратегия:
+```
+1. Генерировать кандидатов (до max_attempts=50)
+2. classify_kata_patterns() на каждом
+3. Если целевой паттерн найден → вернуть
+4. Иначе → вернуть лучший кандидат (best effort)
+```
+
+8 целевых паттернов:
+```
+ascent, descent, arch, valley,
+plateau, zigzag, cascade, mirror
+```
+
+### 35.3 Хронология прогресса
+
+```python
+events = build_timeline(student)
+print(format_timeline(events, student_name='Anna'))
+```
+
+6 типов событий:
+
+```
+Тип              Иконка  Триггер
+───────────────────────────────────────
+start            ●       Первая сессия
+grade_a          ★       Первая Grade A
+personal_best    ▲       Новый рекорд pct
+level_up         ⬆       Повышение ML
+milestone        ◆       Каждая 10-я сессия
+achievement      🏅       Разблокировка бейджа
+```
+
+Пример:
+```
+Timeline: Anna
+─────────────────────────────────────────────
+  #  1 ● First session — D (50%)
+  #  4 ▲ New personal best — 75%
+  #  7 ★ First Grade A! — 90%
+  # 10 ◆ 10 sessions completed — Running avg: 73%
+  # 12 🏅 Achievement: Master
+  # 12 ▲ New personal best — 93%
+```
