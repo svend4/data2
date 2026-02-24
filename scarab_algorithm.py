@@ -14281,6 +14281,241 @@ class DataPipeline:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# ADAPTIVE QUIZ (v42)
+# ═══════════════════════════════════════════════════════════
+
+class AdaptiveQuiz:
+    """
+    Adaptive quiz that adjusts difficulty based on answers.
+
+    Uses item response theory: correct → harder, wrong → easier.
+    """
+
+    def __init__(self, student, n_questions=10, seed=None):
+        self.student = student
+        self.n_questions = n_questions
+        self.questions = []
+        self.answers = []
+        self.current_difficulty = 3  # 1-7 scale (matches groups)
+        import random as _rnd_q
+        self._rnd = _rnd_q
+        if seed is not None:
+            self._rnd.seed(seed)
+
+    def generate_question(self):
+        """Generate next question based on current difficulty."""
+        group = max(1, min(7, self.current_difficulty))
+        # Pick a symbol from this group
+        candidates = [s for s in range(64) if get_group(s) == group]
+        if not candidates:
+            candidates = list(range(64))
+
+        sym = self._rnd.choice(candidates)
+        correct_group = get_group(sym)
+
+        question = {
+            'index': len(self.questions),
+            'symbol': sym,
+            'correct_answer': correct_group,
+            'difficulty': self.current_difficulty,
+            'type': 'identify_group',
+        }
+        self.questions.append(question)
+        return question
+
+    def answer(self, question_idx, given_answer):
+        """Submit an answer. Returns True if correct."""
+        q = self.questions[question_idx]
+        correct = given_answer == q['correct_answer']
+
+        self.answers.append({
+            'question': question_idx,
+            'given': given_answer,
+            'correct': q['correct_answer'],
+            'is_correct': correct,
+            'difficulty': q['difficulty'],
+        })
+
+        # Adapt difficulty
+        if correct:
+            self.current_difficulty = min(7,
+                self.current_difficulty + 0.5)
+        else:
+            self.current_difficulty = max(1,
+                self.current_difficulty - 0.7)
+
+        return correct
+
+    def score(self):
+        """Calculate quiz score."""
+        if not self.answers:
+            return 0
+        correct = sum(1 for a in self.answers if a['is_correct'])
+        # Weight by difficulty
+        weighted = sum(
+            a['difficulty'] for a in self.answers if a['is_correct'])
+        max_weight = sum(a['difficulty'] for a in self.answers)
+        return {
+            'raw': round(correct / len(self.answers) * 100, 1),
+            'weighted': round(weighted / max_weight * 100, 1)
+                        if max_weight else 0,
+            'correct': correct,
+            'total': len(self.answers),
+            'final_difficulty': round(self.current_difficulty, 1),
+        }
+
+    def format_quiz(self):
+        """Format quiz results."""
+        sc = self.score()
+        lines = [f"Adaptive Quiz: {self.student.name}"]
+        lines.append("─" * 45)
+        lines.append(f"  Score: {sc['correct']}/{sc['total']} "
+                     f"({sc['raw']}% raw, {sc['weighted']}% weighted)")
+        lines.append(f"  Final difficulty: {sc['final_difficulty']}")
+
+        lines.append("\n  Difficulty progression:")
+        diffs = [a['difficulty'] for a in self.answers]
+        for i, d in enumerate(diffs):
+            bar = '▓' * int(d * 3)
+            ans = '✓' if self.answers[i]['is_correct'] else '✗'
+            lines.append(f"    Q{i + 1}: {ans} D={d:.1f} {bar}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# GROUP PROFICIENCY MATRIX (v42)
+# ═══════════════════════════════════════════════════════════
+
+def compute_group_proficiency(student):
+    """
+    Compute proficiency level per Kryukov group.
+
+    Based on how often the student encounters and scores well
+    with each group's symbols.
+    """
+    sessions = student.sessions
+    group_scores = {g: [] for g in range(1, 8)}
+
+    for s in sessions:
+        pct = s['pct']
+        # Distribute score across groups (simplified model)
+        for g in range(1, 8):
+            # Higher groups get slightly penalized
+            adjusted = pct - (g - 1) * 2
+            group_scores[g].append(max(0, adjusted))
+
+    proficiency = {}
+    for g in range(1, 8):
+        scores = group_scores[g]
+        if scores:
+            avg = sum(scores) / len(scores)
+            proficiency[g] = {
+                'avg': round(avg, 1),
+                'sessions': len(scores),
+                'level': ('master' if avg >= 85 else
+                          'proficient' if avg >= 70 else
+                          'developing' if avg >= 55 else 'novice'),
+                'grade': ('A' if avg >= 85 else
+                          'B' if avg >= 70 else
+                          'C' if avg >= 55 else 'D'),
+            }
+        else:
+            proficiency[g] = {
+                'avg': 0, 'sessions': 0,
+                'level': 'unknown', 'grade': '?',
+            }
+
+    return proficiency
+
+
+def format_proficiency_matrix(proficiency, student_name=''):
+    """Format proficiency matrix."""
+    name = f" — {student_name}" if student_name else ''
+    lines = [f"Group Proficiency{name}"]
+    lines.append("═" * 50)
+
+    for g in range(1, 8):
+        p = proficiency[g]
+        bar_len = int(p['avg'] / 5)
+        bar = '▓' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  G{g}: [{bar}] {p['avg']:5.1f}%  "
+                     f"{p['grade']}  ({p['level']})")
+
+    # Overall
+    avgs = [proficiency[g]['avg'] for g in range(1, 8)]
+    overall = round(sum(avgs) / 7, 1)
+    weakest = min(range(1, 8), key=lambda g: proficiency[g]['avg'])
+    strongest = max(range(1, 8), key=lambda g: proficiency[g]['avg'])
+
+    lines.append(f"\n  Overall: {overall}%  |  "
+                 f"Strongest: G{strongest}  |  Weakest: G{weakest}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION JOURNAL (v42)
+# ═══════════════════════════════════════════════════════════
+
+class SessionJournal:
+    """
+    Personal training journal with notes, reflections, and tags.
+
+    Students can annotate their sessions with observations.
+    """
+
+    def __init__(self, student_name):
+        self.student_name = student_name
+        self.entries = []
+
+    def add_entry(self, session_idx, note, tags=None, mood=None):
+        """Add a journal entry."""
+        entry = {
+            'session': session_idx,
+            'note': note,
+            'tags': tags or [],
+            'mood': mood,  # 1-5 scale
+            'index': len(self.entries),
+        }
+        self.entries.append(entry)
+        return entry
+
+    def get_by_session(self, session_idx):
+        """Get entries for a specific session."""
+        return [e for e in self.entries if e['session'] == session_idx]
+
+    def get_by_tag(self, tag):
+        """Get entries by tag."""
+        return [e for e in self.entries if tag in e['tags']]
+
+    def mood_trend(self):
+        """Get mood trend over time."""
+        moods = [(e['session'], e['mood'])
+                 for e in self.entries if e['mood'] is not None]
+        return moods
+
+    def format_journal(self, last_n=10):
+        """Format journal entries."""
+        lines = [f"Session Journal: {self.student_name}"]
+        lines.append("═" * 50)
+
+        entries = self.entries[-last_n:]
+        mood_icons = {1: '😞', 2: '😕', 3: '😐', 4: '🙂', 5: '😊'}
+
+        for e in entries:
+            mood = mood_icons.get(e['mood'], '') if e['mood'] else ''
+            tags = ' '.join(f'#{t}' for t in e['tags'])
+            lines.append(f"\n  Session #{e['session']} {mood}")
+            lines.append(f"    {e['note']}")
+            if tags:
+                lines.append(f"    {tags}")
+
+        lines.append(f"\n  Total entries: {len(self.entries)}")
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -15855,3 +16090,43 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v41: Scenario engine, milestones, data pipeline.")
+
+    # 135. Adaptive Quiz
+    print("\n--- Adaptive Quiz ---")
+    quiz = AdaptiveQuiz(sim_school.students['Anna'], n_questions=8,
+                        seed=123)
+    import random as _rnd_quiz
+    _rnd_quiz.seed(123)
+    for qi in range(8):
+        q = quiz.generate_question()
+        # Simulate answer: 70% chance correct
+        ans = q['correct_answer'] if _rnd_quiz.random() < 0.7 \
+            else _rnd_quiz.randint(1, 7)
+        quiz.answer(qi, ans)
+    print(quiz.format_quiz())
+
+    # 136. Group Proficiency Matrix
+    print("\n--- Group Proficiency ---")
+    for sname in ['Anna', 'Ivan']:
+        prof = compute_group_proficiency(sim_school.students[sname])
+        print(format_proficiency_matrix(prof, student_name=sname))
+
+    # 137. Session Journal
+    print("\n--- Session Journal ---")
+    journal = SessionJournal('Anna')
+    journal.add_entry(1, 'First session, felt uncertain', ['start'], mood=3)
+    journal.add_entry(3, 'Improving quickly!', ['progress'], mood=4)
+    journal.add_entry(5, 'Struggled with G5 symbols',
+                      ['difficulty', 'G5'], mood=2)
+    journal.add_entry(8, 'Got my first A grade!',
+                      ['achievement', 'gradeA'], mood=5)
+    journal.add_entry(12, 'Feeling confident now',
+                      ['milestone'], mood=5)
+    print(journal.format_journal())
+
+    # Mood trend
+    moods = journal.mood_trend()
+    print(f"  Mood trend: {moods}")
+
+    print("\n" + "=" * 60)
+    print("v42: Adaptive quiz, group proficiency, session journal.")

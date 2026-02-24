@@ -4841,3 +4841,39 @@ results = pipe.load()
 ```
 
 Цепочки: extract → filter_by / sort_by / aggregate → transform → load.
+
+---
+
+## Часть 57: Adaptive quiz, proficiency, journal (v42)
+
+### 57.1 Адаптивный квиз
+
+```python
+quiz = AdaptiveQuiz(student, n_questions=10, seed=42)
+q = quiz.generate_question()
+quiz.answer(q['index'], given_answer=3)
+print(quiz.format_quiz())
+```
+
+IRT-подход: correct → difficulty +0.5, wrong → difficulty -0.7.
+
+### 57.2 Матрица владения группами
+
+```python
+prof = compute_group_proficiency(student)
+print(format_proficiency_matrix(prof, student_name='Anna'))
+```
+
+Уровни: novice (<55), developing (55-70), proficient (70-85), master (85+).
+
+### 57.3 Дневник тренировок
+
+```python
+journal = SessionJournal('Anna')
+journal.add_entry(1, 'First session', ['start'], mood=3)
+journal.get_by_tag('progress')
+moods = journal.mood_trend()
+print(journal.format_journal())
+```
+
+Настроение: 1-5 (😞→😊). Теги и фильтрация.
