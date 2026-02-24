@@ -16078,6 +16078,290 @@ def format_skill_assessment(assessment, student_name=''):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# NOTIFICATION RULES ENGINE (v49)
+# ═══════════════════════════════════════════════════════════
+
+class NotificationRule:
+    """A single notification rule with condition and action."""
+
+    def __init__(self, rule_id, name, condition_fn, message_fn,
+                 priority='normal'):
+        self.rule_id = rule_id
+        self.name = name
+        self.condition_fn = condition_fn
+        self.message_fn = message_fn
+        self.priority = priority
+        self.triggered_count = 0
+
+    def evaluate(self, student):
+        """Check if rule triggers for student."""
+        if self.condition_fn(student):
+            self.triggered_count += 1
+            return self.message_fn(student)
+        return None
+
+
+class NotificationRulesEngine:
+    """
+    Rule-based notification engine.
+
+    Evaluates all rules against student state and fires notifications.
+    """
+
+    def __init__(self):
+        self.rules = []
+        self._build_defaults()
+
+    def _build_defaults(self):
+        """Build default notification rules."""
+        self.add_rule(NotificationRule(
+            'NR01', 'Score Drop Alert',
+            lambda st: self._check_score_drop(st, 10),
+            lambda st: f"{st.name}: Score dropped >10% from recent average",
+            priority='high'))
+
+        self.add_rule(NotificationRule(
+            'NR02', 'Streak Achievement',
+            lambda st: self._check_win_streak(st, 5),
+            lambda st: f"{st.name}: Amazing 5+ win streak!",
+            priority='normal'))
+
+        self.add_rule(NotificationRule(
+            'NR03', 'Mastery Ready',
+            lambda st: self._check_mastery_ready(st),
+            lambda st: f"{st.name}: Ready for mastery level "
+                       f"{st.mastery_level + 1}!",
+            priority='normal'))
+
+        self.add_rule(NotificationRule(
+            'NR04', 'Inactivity Warning',
+            lambda st: len(st.sessions) > 0 and len(st.sessions) < 3,
+            lambda st: f"{st.name}: Only {len(st.sessions)} sessions — "
+                       f"keep training!",
+            priority='low'))
+
+    @staticmethod
+    def _check_score_drop(student, threshold):
+        scores = [s['pct'] for s in student.sessions]
+        if len(scores) < 3:
+            return False
+        recent_avg = sum(scores[-3:]) / 3
+        overall_avg = sum(scores) / len(scores)
+        return overall_avg - recent_avg > threshold
+
+    @staticmethod
+    def _check_win_streak(student, target):
+        scores = [s['pct'] for s in student.sessions]
+        streak = 0
+        for s in reversed(scores):
+            if s >= 70:
+                streak += 1
+            else:
+                break
+        return streak >= target
+
+    @staticmethod
+    def _check_mastery_ready(student):
+        scores = [s['pct'] for s in student.sessions]
+        if len(scores) < 5:
+            return False
+        recent = scores[-5:]
+        avg = sum(recent) / 5
+        thresholds = [0, 50, 60, 70, 75, 80, 85]
+        ml = student.mastery_level
+        if ml < 7:
+            return avg >= thresholds[ml] and len(scores) >= (ml + 1) * 3
+
+    def add_rule(self, rule):
+        """Add a notification rule."""
+        self.rules.append(rule)
+
+    def evaluate_all(self, student):
+        """Evaluate all rules for a student."""
+        notifications = []
+        for rule in self.rules:
+            msg = rule.evaluate(student)
+            if msg:
+                notifications.append({
+                    'rule': rule.rule_id,
+                    'name': rule.name,
+                    'message': msg,
+                    'priority': rule.priority,
+                })
+        return notifications
+
+    def format_notifications(self, notifications):
+        """Format notifications."""
+        lines = ["Notifications"]
+        lines.append("─" * 45)
+        if not notifications:
+            lines.append("  No notifications.")
+        else:
+            pri_icons = {'high': '🔴', 'normal': '🔔', 'low': '💬'}
+            for n in notifications:
+                icon = pri_icons.get(n['priority'], '•')
+                lines.append(f"  {icon} [{n['rule']}] {n['message']}")
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PROGRESS FORECAST (v49)
+# ═══════════════════════════════════════════════════════════
+
+def forecast_progress(student, future_sessions=10):
+    """
+    Forecast student progress over future sessions.
+
+    Uses linear trend to predict future scores, mastery,
+    and milestone targets.
+    """
+    scores = [s['pct'] for s in student.sessions]
+    n = len(scores)
+
+    if n < 3:
+        return {'forecasts': [], 'confidence': 'low'}
+
+    # Linear regression
+    x_mean = (n - 1) / 2
+    y_mean = sum(scores) / n
+    num = sum((i - x_mean) * (scores[i] - y_mean) for i in range(n))
+    den = sum((i - x_mean) ** 2 for i in range(n))
+    slope = num / den if den > 0 else 0
+    intercept = y_mean - slope * x_mean
+
+    forecasts = []
+    for i in range(1, future_sessions + 1):
+        future_idx = n + i - 1
+        pred = intercept + slope * future_idx
+        pred = max(0, min(100, pred))
+        forecasts.append({
+            'session': n + i,
+            'predicted_score': round(pred, 1),
+        })
+
+    # Estimate when milestones will be reached
+    targets = {'score_80': 80, 'score_90': 90, 'score_95': 95}
+    milestones = {}
+    for name, target in targets.items():
+        if slope > 0:
+            sessions_needed = max(0, (target - intercept) / slope - n + 1)
+            milestones[name] = round(sessions_needed)
+        else:
+            milestones[name] = -1  # unreachable
+
+    return {
+        'current_avg': round(y_mean, 1),
+        'slope': round(slope, 3),
+        'forecasts': forecasts,
+        'milestones': milestones,
+        'confidence': 'high' if n >= 10 else 'medium',
+    }
+
+
+def format_forecast(forecast, student_name=''):
+    """Format progress forecast."""
+    name = f" — {student_name}" if student_name else ''
+    lines = [f"Progress Forecast{name}"]
+    lines.append("═" * 50)
+    lines.append(f"  Current avg: {forecast['current_avg']}%  |  "
+                 f"Trend: {forecast['slope']:+.3f}/session  |  "
+                 f"Confidence: {forecast['confidence']}")
+
+    lines.append("\n  Predicted scores:")
+    for f in forecast['forecasts'][:5]:
+        bar_len = int(f['predicted_score'] / 5)
+        bar = '▓' * bar_len
+        lines.append(f"    S{f['session']:3d}: {bar} "
+                     f"{f['predicted_score']}%")
+
+    if forecast['milestones']:
+        lines.append("\n  Milestones ETA:")
+        for name, sess in forecast['milestones'].items():
+            if sess >= 0:
+                lines.append(f"    {name}: ~{sess} sessions away")
+            else:
+                lines.append(f"    {name}: unreachable at current pace")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# GROUP DRILL GENERATOR (v49)
+# ═══════════════════════════════════════════════════════════
+
+class GroupDrillGenerator:
+    """
+    Generate focused practice drills for specific Kryukov groups.
+
+    Creates targeted symbol sequences for weak group improvement.
+    """
+
+    def __init__(self, seed=None):
+        import random as _rnd_gd
+        self._rnd = _rnd_gd
+        if seed is not None:
+            self._rnd.seed(seed)
+
+    def generate_drill(self, focus_group, n_tacts=10,
+                       mix_ratio=0.3):
+        """
+        Generate a drill focused on a specific group.
+
+        mix_ratio: fraction of tacts from other groups (variety).
+        """
+        # Get symbols for focus group
+        focus_syms = [s for s in range(64)
+                      if get_group(s) == focus_group]
+        other_syms = [s for s in range(64)
+                      if get_group(s) != focus_group]
+
+        if not focus_syms:
+            focus_syms = list(range(64))
+
+        sequence = []
+        for _ in range(n_tacts):
+            if self._rnd.random() < mix_ratio and other_syms:
+                sequence.append(self._rnd.choice(other_syms))
+            else:
+                sequence.append(self._rnd.choice(focus_syms))
+
+        groups = [get_group(s) for s in sequence]
+        focus_count = sum(1 for g in groups if g == focus_group)
+
+        return {
+            'focus_group': focus_group,
+            'sequence': sequence,
+            'n_tacts': len(sequence),
+            'focus_percentage': round(focus_count / len(sequence) * 100, 1),
+            'groups_used': sorted(set(groups)),
+        }
+
+    def auto_drill(self, student, n_tacts=10):
+        """Generate drill for student's weakest group."""
+        prof = compute_group_proficiency(student)
+        weakest = min(range(1, 8), key=lambda g: prof[g]['avg'])
+        return self.generate_drill(weakest, n_tacts)
+
+    def format_drill(self, drill):
+        """Format drill display."""
+        lines = [f"Group Drill: G{drill['focus_group']}"]
+        lines.append("─" * 40)
+        lines.append(f"  Focus: {drill['focus_percentage']}% G"
+                     f"{drill['focus_group']} symbols")
+        lines.append(f"  Groups used: {drill['groups_used']}")
+
+        # Show sequence with group markers
+        row = []
+        for s in drill['sequence']:
+            g = get_group(s)
+            marker = '*' if g == drill['focus_group'] else ' '
+            row.append(f"S{s:02d}{marker}")
+        lines.append(f"  Sequence: {' '.join(row)}")
+
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -17875,3 +18159,32 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v48: Training log, competition history, skill assessment.")
+
+    # 156. Notification Rules
+    print("\n--- Notification Rules ---")
+    nre = NotificationRulesEngine()
+    for sname in ['Anna', 'Ivan', 'Lena']:
+        notifs = nre.evaluate_all(sim_school.students[sname])
+        if notifs:
+            print(nre.format_notifications(notifs))
+        else:
+            print(f"  {sname}: No notifications")
+
+    # 157. Progress Forecast
+    print("\n--- Progress Forecast ---")
+    for sname in ['Anna', 'Ivan']:
+        fc = forecast_progress(sim_school.students[sname],
+                               future_sessions=8)
+        print(format_forecast(fc, student_name=sname))
+
+    # 158. Group Drill Generator
+    print("\n--- Group Drill ---")
+    gdg = GroupDrillGenerator(seed=42)
+    drill = gdg.generate_drill(focus_group=7, n_tacts=8)
+    print(gdg.format_drill(drill))
+
+    auto = gdg.auto_drill(sim_school.students['Anna'], n_tacts=8)
+    print(gdg.format_drill(auto))
+
+    print("\n" + "=" * 60)
+    print("v49: Notification rules, progress forecast, group drills.")

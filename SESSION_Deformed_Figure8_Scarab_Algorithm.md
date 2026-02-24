@@ -5089,3 +5089,35 @@ print(format_skill_assessment(sa, student_name='Anna'))
 ```
 
 Grades: S (90+), A (75+), B (60+), C (40+), D (<40).
+
+---
+
+## Часть 64: Notifications, forecast, drills (v49)
+
+### 64.1 NotificationRulesEngine
+
+```python
+nre = NotificationRulesEngine()
+notifs = nre.evaluate_all(student)
+print(nre.format_notifications(notifs))
+```
+
+4 правила: Score Drop, Streak Achievement, Mastery Ready, Inactivity Warning.
+
+### 64.2 Progress Forecast
+
+```python
+fc = forecast_progress(student, future_sessions=10)
+print(format_forecast(fc))
+```
+
+Linear trend + milestone ETA (score_80, score_90, score_95).
+
+### 64.3 Group Drill Generator
+
+```python
+gdg = GroupDrillGenerator(seed=42)
+drill = gdg.generate_drill(focus_group=7, n_tacts=10)
+auto = gdg.auto_drill(student, n_tacts=10)  # weakest group
+print(gdg.format_drill(drill))
+```
