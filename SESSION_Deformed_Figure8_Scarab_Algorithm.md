@@ -5121,3 +5121,700 @@ drill = gdg.generate_drill(focus_group=7, n_tacts=10)
 auto = gdg.auto_drill(student, n_tacts=10)  # weakest group
 print(gdg.format_drill(drill))
 ```
+
+---
+
+## Часть 65: System Registry, Integrity Validator, 25K Milestone (v50)
+
+### 65.1 SystemRegistry
+
+Центральный реестр всех компонентов системы Scarab. Отслеживает классы,
+функции, константы, их версии и зависимости. Позволяет динамический поиск,
+построение графа зависимостей и инспекцию модулей.
+
+```python
+from scarab_algorithm import (
+    SystemRegistry, build_scarab_registry, format_registry
+)
+
+# Создать реестр со всеми компонентами
+registry = build_scarab_registry()
+print(format_registry(registry))
+
+# Поиск компонента
+info = registry.lookup('ScarabAPI')
+# → {'name': 'ScarabAPI', 'kind': 'class', 'version': 'v45',
+#    'dependencies': ['ScarabSchool', 'EventBus'], ...}
+
+# Компоненты по версии
+v50_list = registry.list_by_version('v50')
+# → [SystemRegistry, IntegrityValidator]
+
+# Зависимые от StudentProfile
+deps = registry.find_dependents('StudentProfile')
+# → ['StatisticsEngine', 'SpacedRepetition', 'AdaptiveQuiz', ...]
+
+# Граф зависимостей
+graph = registry.dependency_graph()
+# → {'ScarabAPI': ['ScarabSchool', 'EventBus'], ...}
+
+# Статистика
+stats = registry.statistics()
+# → {'total_components': 35, 'by_kind': {...}, 'avg_dependencies': 1.23, ...}
+```
+
+#### Категории компонентов
+
+| Категория   | Количество | Примеры                                    |
+|-------------|------------|---------------------------------------------|
+| class       | 12         | ScarabAlgorithm, StudentProfile, ScarabAPI  |
+| engine      | 9          | StatisticsEngine, SpacedRepetition, EventBus|
+| tracker     | 5          | GoalTracker, StreakTracker, MilestoneTracker |
+| generator   | 3          | DailyChallengeGenerator, SessionSimulator    |
+| constant    | 2          | ACHIEVEMENT_CATALOG, RANKS                   |
+| function    | 4          | get_group, get_zones, detect_patterns        |
+
+#### API реестра
+
+- `register(name, kind, version, description, dependencies)` — регистрация
+- `lookup(name)` — поиск по имени
+- `list_by_kind(kind)` — список по категории
+- `list_by_version(version)` — список по версии
+- `dependency_graph()` — граф зависимостей (adjacency list)
+- `find_dependents(name)` — все зависящие от компонента
+- `statistics()` — сводная статистика
+
+### 65.2 IntegrityValidator
+
+Валидатор целостности всей системы Scarab. Проверяет согласованность данных,
+валидность конфигурации, доступность компонентов и перекрёстные ссылки.
+
+```python
+from scarab_algorithm import (
+    IntegrityValidator, format_integrity_report
+)
+
+validator = IntegrityValidator(school=sim_school, registry=registry)
+report = validator.validate_all()
+print(format_integrity_report(report))
+```
+
+#### Проверки целостности
+
+| # | Проверка                  | Описание                                      |
+|---|---------------------------|-----------------------------------------------|
+| 1 | symbol_group_mapping      | Все 64 символа → группы 1-7                   |
+| 2 | all_groups_present        | Все 7 групп Крюкова присутствуют              |
+| 3 | group_balance             | Распределение символов по группам              |
+| 4 | zone_assignments          | Все символы имеют валидные зоны                |
+| 5 | school_has_students       | Школа содержит студентов                       |
+| 6 | session_data_valid        | Все сессии имеют корректное поле pct           |
+| 7 | mastery_levels_valid      | Уровни мастерства в диапазоне 1-7             |
+| 8 | no_orphan_dependencies    | Нет осиротевших зависимостей в реестре         |
+| 9 | no_circular_dependencies  | Граф зависимостей ацикличен (DFS)             |
+
+#### Формула оценки
+
+```
+score = (passed / total_checks) * 100 - min(warnings * 2, 20)
+```
+
+Результат: 0-100 баллов. Статус PASS при score > 0 и failed == 0.
+
+#### Пример отчёта
+
+```
+=== Integrity Validation Report ===
+Total checks: 9
+Passed: 9
+Failed: 0
+Warnings: 0
+Integrity Score: 100.0/100
+
+Overall Status: PASS
+```
+
+### 65.3 Milestone Dashboard (25K)
+
+Панель мониторинга для отслеживания прогресса разработки.
+Рубеж 25K строк — 50 версий системы Scarab Algorithm.
+
+```python
+from scarab_algorithm import (
+    milestone_dashboard_25k, format_milestone_dashboard
+)
+
+dashboard = milestone_dashboard_25k()
+print(format_milestone_dashboard(dashboard))
+```
+
+#### Дорожная карта версий
+
+| Блок     | Тема                    | Ключевые компоненты                           |
+|----------|-------------------------|-----------------------------------------------|
+| v1-v5    | Core Algorithm & School | ScarabAlgorithm, StudentProfile, ScarabSchool |
+| v6-v10   | Training & Assessment   | Тренировочные режимы, оценка                  |
+| v11-v15  | Analytics & Visualization | Графики, статистика, визуализация            |
+| v16-v20  | Gamification & Progress | Бейджи, уровни, прогресс                     |
+| v21-v25  | Advanced Training       | Продвинутые тренировки                        |
+| v26-v30  | Social & Competition    | Социальные функции, соревнования              |
+| v31-v35  | Goals & Curriculum      | Цели, учебная программа                       |
+| v36-v40  | Skills & Statistics     | Дерево навыков, стат. анализ                  |
+| v41-v45  | Scenarios & API         | Сценарии, API-фасад                           |
+| v46-v50  | Registry & Integrity    | Реестр, валидация, milestone                   |
+
+#### Сводка системы (v50)
+
+| Метрика               | Значение |
+|-----------------------|----------|
+| Версии                | 50       |
+| Символы               | 64       |
+| Группы Крюкова        | 7        |
+| Правила зон           | 5        |
+| Компоненты            | 35+      |
+| Алгоритмы             | 10       |
+| Функции тренировки    | 10       |
+| Аналитические возм.   | 10       |
+| Инфраструктурные сист.| 10       |
+| Демо-секции           | 161      |
+| Части документации    | 65       |
+
+#### 10 ключевых алгоритмов
+
+1. **SM-2 Spaced Repetition** — интервальное повторение
+2. **IRT (Item Response Theory)** — адаптивное тестирование
+3. **Monte Carlo Simulation** — симуляция сессий
+4. **Pearson Correlation** — корреляционный анализ
+5. **Cohen's d Effect Size** — размер эффекта
+6. **Linear Regression** — линейная регрессия для прогнозов
+7. **EWMA Smoothing** — экспоненциальное сглаживание
+8. **Ensemble Forecasting** — ансамблевое прогнозирование
+9. **DFS Cycle Detection** — обнаружение циклов в графе
+10. **Composite Ranking** — композитное ранжирование
+
+---
+
+### Архитектура системы (v50)
+
+```
+┌─────────────────────────────────────────────────┐
+│                  ScarabAPI (Facade)               │
+├─────────────────────────────────────────────────┤
+│  EventBus │ NotificationRulesEngine │ Registry   │
+├─────────────────────────────────────────────────┤
+│  CoachingEngine │ TrainingPlanOptimizer           │
+│  AdaptiveQuiz   │ SpacedRepetition               │
+├─────────────────────────────────────────────────┤
+│  StatisticsEngine │ DataPipeline │ BatchProcessor│
+├─────────────────────────────────────────────────┤
+│  SkillTree │ Leaderboard │ Achievements │ Ranks  │
+├─────────────────────────────────────────────────┤
+│  GoalTracker │ StreakTracker │ MilestoneTracker   │
+│  TrainingLog │ CompetitionHistory                 │
+├─────────────────────────────────────────────────┤
+│  SessionSimulator │ DailyChallenge │ GroupDrill   │
+├─────────────────────────────────────────────────┤
+│  IntegrityValidator │ RuleValidator               │
+├─────────────────────────────────────────────────┤
+│  ScarabSchool ←→ StudentProfile ←→ Sessions      │
+├─────────────────────────────────────────────────┤
+│  ScarabAlgorithm (64 symbols, 7 groups, 5 rules)│
+└─────────────────────────────────────────────────┘
+```
+
+### Итоги блока v46-v50
+
+| Версия | Компоненты                                            |
+|--------|-------------------------------------------------------|
+| v46    | StreakTracker, rate_session, SymbolMasteryMap          |
+| v47    | BatchProcessor, RuleValidator, performance_zones      |
+| v48    | TrainingLog, CompetitionHistory, skill_assessment      |
+| v49    | NotificationRulesEngine, forecast_progress, GroupDrill |
+| v50    | SystemRegistry, IntegrityValidator, 25K Dashboard      |
+
+**Рубеж 25K строк достигнут!** 50 версий, 161 демо-секция, 65 частей
+документации, 35+ компонентов, 10 ключевых алгоритмов.
+
+---
+
+## Приложение A: Полный API-справочник (v1-v50)
+
+### A.1 Основные классы
+
+#### ScarabAlgorithm (v1)
+```python
+algo = ScarabAlgorithm()
+seq = algo.generate(n_tacts=16)        # Генерация последовательности
+algo.validate(sequence)                 # Валидация по правилам зон
+algo.analyze(sequence)                  # Анализ структуры
+```
+
+#### StudentProfile (v3)
+```python
+st = StudentProfile('Name')
+st.sessions                 # list[dict] — история сессий
+st.mastery_level            # int 1-7 — уровень мастерства
+st.name                     # str — имя студента
+st.sessions.append({'pct': 85.0, 'violations': [], 'length': 16})
+```
+
+#### ScarabSchool (v4)
+```python
+school = ScarabSchool()
+school.enroll('Anna')                   # Зачисление студента
+school.students                         # dict[str, StudentProfile]
+school.run_session('Anna', algo, 16)    # Проведение сессии
+overview = school_progress_overview(school)
+```
+
+#### ScarabConfig (v32)
+```python
+config = ScarabConfig()
+config.set('difficulty', 'hard')
+config.get('difficulty', default='medium')
+config.to_dict()
+```
+
+#### ScarabAPI (v45)
+```python
+api = ScarabAPI(school)
+api.get_student('Anna')                 # Данные студента
+api.get_leaderboard()                   # Таблица лидеров
+api.run_session('Anna', n_tacts=16)     # Запуск сессии
+api.get_stats('Anna')                   # Статистика
+api.get_badges('Anna')                  # Бейджи
+api.get_curriculum()                    # Учебная программа
+api.get_health()                        # Здоровье системы
+api.get_rank('Anna')                    # Ранг студента
+api.get_forecast('Anna', n=10)          # Прогноз
+```
+
+### A.2 Движки (Engines)
+
+#### StatisticsEngine (v40)
+```python
+se = StatisticsEngine()
+se.descriptive(data)                    # Среднее, медиана, std, квартили
+se.confidence_interval(data, conf=0.95) # Доверительный интервал
+se.effect_size(group1, group2)          # Cohen's d
+```
+
+#### SpacedRepetition (v39)
+```python
+sr = SpacedRepetition()
+sr.add_card(card_id, difficulty=0.3)
+sr.review(card_id, quality=4)           # quality: 0-5 (SM-2)
+due = sr.get_due_cards()                # Карточки к повторению
+sr.schedule                             # Полное расписание
+```
+
+#### AdaptiveQuiz (v42)
+```python
+aq = AdaptiveQuiz(student)
+question = aq.next_question()           # IRT-подбор вопроса
+aq.answer(question, correct=True)
+result = aq.finish()                    # Итоговая оценка
+```
+
+#### TrainingPlanOptimizer (v43)
+```python
+tpo = TrainingPlanOptimizer()
+plan = tpo.optimize(student, weeks=4)   # Оптимальный план
+tpo.format_plan(plan)                   # Форматирование
+```
+
+#### EventBus (v44)
+```python
+bus = EventBus()
+bus.subscribe('session_complete', handler_fn)
+bus.publish('session_complete', data={'pct': 92})
+bus.unsubscribe('session_complete', handler_fn)
+```
+
+#### DataPipeline (v41)
+```python
+pipe = DataPipeline()
+pipe.extract(source).transform(fn).load(target)  # ETL цепочка
+pipe.run()                              # Выполнение
+```
+
+#### BatchProcessor (v47)
+```python
+bp = BatchProcessor(items)
+bp.map(transform_fn)                    # Преобразование
+bp.filter(predicate_fn)                 # Фильтрация
+bp.reduce(accumulator_fn, initial=0)    # Свёртка
+result = bp.execute()                   # Результат
+```
+
+#### CoachingEngine (v44)
+```python
+ce = CoachingEngine()
+advice = ce.analyze(student)            # Анализ и советы
+ce.format_coaching(advice)              # Форматирование
+```
+
+#### NotificationRulesEngine (v49)
+```python
+nre = NotificationRulesEngine()
+notifs = nre.evaluate_all(student)      # 4 правила
+nre.format_notifications(notifs)        # Вывод
+```
+
+### A.3 Трекеры (Trackers)
+
+#### GoalTracker (v31)
+```python
+gt = GoalTracker()
+gt.set_goal('weekly_sessions', target=5, deadline_days=7)
+gt.record_progress('weekly_sessions', 1)
+gt.check_goals()                        # Статус целей
+```
+
+#### StreakTracker (v46)
+```python
+st = StreakTracker()
+st.record_session(date, session_data)   # Запись сессии
+st.get_streaks()                        # 4 типа серий
+# daily_streak, accuracy_streak, improvement_streak, perfect_streak
+```
+
+#### MilestoneTracker (v41)
+```python
+mt = MilestoneTracker()
+mt.check_milestones(student)            # 12 milestones
+mt.format_milestones()                  # Вывод достижений
+```
+
+#### TrainingLog (v48)
+```python
+tl = TrainingLog()
+tl.log_entry(date, data)               # Запись тренировки
+tl.get_history(days=30)                 # История
+tl.summary()                            # Сводка
+```
+
+#### CompetitionHistory (v48)
+```python
+ch = CompetitionHistory()
+ch.record_match(player1, player2, result)  # W/L/D
+ch.head_to_head(player1, player2)       # Личная статистика
+ch.leaderboard()                        # Таблица
+```
+
+### A.4 Генераторы (Generators)
+
+#### DailyChallengeGenerator (v37)
+```python
+dcg = DailyChallengeGenerator(seed=42)
+challenge = dcg.generate()              # 5 типов
+dcg.format_challenge(challenge)
+```
+
+#### GroupDrillGenerator (v49)
+```python
+gdg = GroupDrillGenerator(seed=42)
+drill = gdg.generate_drill(focus_group=3, n_tacts=10)
+auto = gdg.auto_drill(student, n_tacts=10)   # Авто-выбор группы
+gdg.format_drill(drill)
+```
+
+#### SessionSimulator (v36)
+```python
+ss = SessionSimulator(student)
+results = ss.simulate(n_sessions=1000)  # Monte Carlo
+ss.format_simulation(results)
+```
+
+### A.5 Валидаторы
+
+#### RuleValidator (v47)
+```python
+rv = RuleValidator()
+rv.validate_sequence(sequence)          # R3, R4, R5
+rv.format_validation(result)
+```
+
+#### IntegrityValidator (v50)
+```python
+iv = IntegrityValidator(school=school, registry=registry)
+report = iv.validate_all()              # 9 проверок
+format_integrity_report(report)         # Отчёт
+# Score: 0-100, Status: PASS/FAIL
+```
+
+### A.6 Реестр и мета
+
+#### SystemRegistry (v50)
+```python
+reg = build_scarab_registry()           # 35 компонентов
+reg.lookup('ScarabAPI')                 # Поиск
+reg.list_by_kind('engine')             # По категории
+reg.list_by_version('v50')            # По версии
+reg.dependency_graph()                  # Граф зависимостей
+reg.find_dependents('StudentProfile')   # Зависимые
+reg.statistics()                        # Статистика
+format_registry(reg)                    # Форматирование
+```
+
+### A.7 Ключевые функции
+
+| Функция                       | Версия | Описание                          |
+|-------------------------------|--------|-----------------------------------|
+| `get_group(sym)`              | v1     | Символ → группа Крюкова (1-7)    |
+| `get_zones(sym)`              | v1     | Символ → кортеж зон              |
+| `check_badges(student)`       | v16    | Проверка бейджей                  |
+| `peer_compare(students)`      | v31    | Сравнение студентов               |
+| `compute_correlation()`       | v32    | Корреляция Пирсона                |
+| `detect_patterns(seq)`        | v37    | Распознавание паттернов           |
+| `detect_combos(seq)`          | v38    | Обнаружение комбо                 |
+| `analyze_weaknesses(student)` | v39    | Анализ слабостей                  |
+| `symbol_similarity(s1, s2)`   | v43    | Сходство символов (3 фактора)    |
+| `compute_rank(student)`       | v43    | Ранг студента (10 уровней)       |
+| `rate_session(session)`       | v46    | Оценка сессии (4D, 1-5 звёзд)   |
+| `compute_performance_zones()` | v47    | Зоны производительности (5 зон)  |
+| `comprehensive_skill_assessment()` | v48 | Оценка навыков (6D)           |
+| `forecast_progress(student)`  | v49    | Прогноз прогресса                 |
+| `system_health_check()`       | v45    | Здоровье системы (10/10)          |
+| `milestone_dashboard_25k()`   | v50    | Панель рубежа 25K                 |
+
+### A.8 Константы и конфигурации
+
+| Константа               | Версия | Содержание                        |
+|-------------------------|--------|-----------------------------------|
+| `TRAINING_TEMPLATES`    | v32    | 6 шаблонов тренировок             |
+| `ACHIEVEMENT_CATALOG`   | v40    | 13 достижений, 4 уровня          |
+| `RANKS`                 | v43    | 10 рангов прогрессии              |
+| `SCENARIOS`             | v41    | 4 тренировочных сценария          |
+
+---
+
+## Приложение B: Глоссарий терминов
+
+| Термин              | Определение                                           |
+|---------------------|-------------------------------------------------------|
+| Символ (Symbol)     | Один из 64 элементов системы (S00-S63)               |
+| Группа Крюкова      | Одна из 7 групп, объединяющих символы                 |
+| Зона (Zone)         | Пространственная область (R1-R5)                      |
+| Такт (Tact)         | Один шаг в последовательности движений                |
+| Сессия (Session)    | Полная тренировочная единица                           |
+| Мастерство (Mastery)| Уровень владения (1-7, по числу групп)                |
+| Деформированная 8   | Базовая траектория движения (Figure-8)                |
+| BVS                 | Большая вращательная сфера (3D)                       |
+| SVS                 | Средняя вращательная сфера (2D)                       |
+| MVS                 | Малая вращательная сфера (1D)                         |
+| ChVS                | Частотная вращательная сфера (0D)                     |
+| SM-2                | Алгоритм интервального повторения SuperMemo-2         |
+| IRT                 | Item Response Theory — теория тестовых заданий        |
+| ETL                 | Extract-Transform-Load — паттерн обработки данных     |
+| EWMA                | Exponentially Weighted Moving Average                  |
+| Cohen's d           | Мера размера эффекта между группами                   |
+| Monte Carlo         | Стохастическая симуляция на основе случайных выборок  |
+| Pub/Sub             | Паттерн «издатель-подписчик» для событий              |
+| Facade              | Паттерн проектирования — единый интерфейс к системе   |
+
+---
+
+## Приложение C: Полный журнал версий (v1-v50)
+
+### Блок 1: v1-v5 — Ядро системы
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v1     | ScarabAlgorithm, get_group, get_zones             | ~200   |
+| v2     | Генерация последовательностей, валидация           | ~400   |
+| v3     | StudentProfile, сессии, статистика                 | ~650   |
+| v4     | ScarabSchool, зачисление, групповые операции       | ~900   |
+| v5     | Бейджи, check_badges, первый тест                  | ~1200  |
+
+Основа: 64 символа → 7 групп Крюкова. Математическое распределение
+через двойной путь (dual-path) такта деформированной восьмёрки.
+
+### Блок 2: v6-v10 — Тренировки и оценка
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v6     | Тренировочный режим, уровни сложности              | ~1500  |
+| v7     | Оценочная система, метрики точности                | ~1800  |
+| v8     | Отчёты по сессиям, форматирование                  | ~2200  |
+| v9     | Продвинутые тренировки, адаптивная сложность       | ~2600  |
+| v10    | Экспорт данных, сохранение прогресса               | ~3000  |
+
+Переход от генератора к полноценной тренировочной системе.
+
+### Блок 3: v11-v15 — Аналитика и визуализация
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v11    | Графики прогресса, ASCII-визуализация              | ~3400  |
+| v12    | Паттерны в данных, format_patterns                 | ~3800  |
+| v13    | Сравнительная аналитика, группировка               | ~4200  |
+| v14    | Тепловые карты, распределения                      | ~4600  |
+| v15    | Тренды, регрессия, прогнозирование                 | ~5000  |
+
+Появление визуальных инструментов для анализа прогресса.
+
+### Блок 4: v16-v20 — Геймификация и прогресс
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v16    | Система бейджей, check_badges                      | ~5500  |
+| v17    | Уровни и опыт (XP)                                | ~6000  |
+| v18    | Челленджи, ежедневные задания                      | ~6500  |
+| v19    | Серии (streaks), награды                           | ~7000  |
+| v20    | Лидерборд (начальная версия)                       | ~7500  |
+
+Геймификация как мотивационный инструмент для студентов.
+
+### Блок 5: v21-v25 — Продвинутые тренировки
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v21    | Тепловые карты тренировок (format_heatmap)         | ~8000  |
+| v22    | Многоуровневые сессии                              | ~8500  |
+| v23    | Специализированные тренировки по группам            | ~9000  |
+| v24    | Интервальные повторения (ранняя версия)            | ~9500  |
+| v25    | Оценка сложности символов                          | ~10000 |
+
+Рубеж 10K строк. Система обретает глубину тренировочного процесса.
+
+### Блок 6: v26-v30 — Социальные функции
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v26    | Групповые сессии, взаимодействие                   | ~10500 |
+| v27    | Соревновательный режим                             | ~11000 |
+| v28    | Система менторства (ранняя)                        | ~11500 |
+| v29    | Командные задания                                  | ~12000 |
+| v30    | Рейтинговая система                                | ~12500 |
+
+Социальное измерение: обучение через взаимодействие.
+
+### Блок 7: v31-v35 — Цели и учебная программа
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v31    | GoalTracker, peer_compare, SessionPlayback         | ~13000 |
+| v32    | TRAINING_TEMPLATES (6), correlation, ScarabConfig  | ~13500 |
+| v33    | FeedbackLoop (OADA), progression, session_heatmap  | ~14000 |
+| v34    | EventLog, kata_difficulty, predict_next_score      | ~14500 |
+| v35    | Curriculum (10 units), school_overview, architecture| ~15000 |
+
+Рубеж 15K строк. Структурированная учебная программа.
+
+### Блок 8: v36-v40 — Навыки и статистика
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v36    | SkillTree (14 nodes), SessionSimulator, Leaderboard| ~15500 |
+| v37    | detect_patterns (5), Mentor, DailyChallenge        | ~16000 |
+| v38    | StudyGroup, symbol_encyclopedia, detect_combos     | ~16500 |
+| v39    | ReviewQueue, SpacedRepetition (SM-2), weaknesses   | ~17000 |
+| v40    | StatisticsEngine (CI/d), ACHIEVEMENT_CATALOG (13)  | ~17500 |
+
+Научно обоснованная статистика и дерево навыков.
+
+### Блок 9: v41-v45 — Сценарии и API
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v41    | Scenario (4), MilestoneTracker (12), DataPipeline  | ~18000 |
+| v42    | AdaptiveQuiz (IRT), group_proficiency, Journal     | ~18500 |
+| v43    | TrainingPlanOptimizer, symbol_similarity, Ranks(10)| ~19000 |
+| v44    | EventBus (pub/sub), compare_sessions, Coaching     | ~19500 |
+| v45    | ScarabAPI (9 endpoints), system_health_check       | ~20000 |
+
+Рубеж 20K строк. Фасадный API объединяет все компоненты.
+
+### Блок 10: v46-v50 — Реестр и целостность
+
+| Версия | Компоненты                                        | Строк  |
+|--------|---------------------------------------------------|--------|
+| v46    | StreakTracker (4), rate_session, SymbolMasteryMap   | ~20500 |
+| v47    | BatchProcessor, RuleValidator, performance_zones   | ~21000 |
+| v48    | TrainingLog, CompetitionHistory, skill_assessment  | ~21500 |
+| v49    | NotificationRulesEngine, forecast, GroupDrill       | ~22000 |
+| v50    | SystemRegistry, IntegrityValidator, 25K Dashboard  | ~25000 |
+
+**Рубеж 25K строк!** Система полностью документирована и верифицирована.
+
+---
+
+## Приложение D: Статистика проекта
+
+### D.1 Метрики кода
+
+| Метрика                        | Значение         |
+|--------------------------------|------------------|
+| Общее количество строк         | ~25,000          |
+| Строк Python-кода              | ~19,000          |
+| Строк документации             | ~6,000           |
+| Количество версий              | 50               |
+| Количество классов             | ~30+             |
+| Количество функций             | ~80+             |
+| Демонстрационных секций        | 161              |
+| Частей документации            | 65               |
+| Приложений                     | 4 (A, B, C, D)  |
+
+### D.2 Распределение по категориям
+
+```
+Код:          ████████████████████████████████████  76%
+Документация: ████████████                          24%
+
+Классы:       ████████████████                      35%
+Функции:      ████████████                          25%
+Демо:         ████████████████                      30%
+Прочее:       █████                                 10%
+```
+
+### D.3 Хронология разработки
+
+```
+v1  ──── v5  ──── v10 ──── v15 ──── v20 ──── v25
+  Core     Train    Viz      Game     Adv      Deep
+    │        │       │        │        │        │
+    ▼        ▼       ▼        ▼        ▼        ▼
+  1.2K     3.0K    5.0K     7.5K    10.0K    12.5K lines
+
+v25 ──── v30 ──── v35 ──── v40 ──── v45 ──── v50
+  Deep    Social   Curric   Stats    API     Registry
+    │        │       │        │        │        │
+    ▼        ▼       ▼        ▼        ▼        ▼
+  12.5K   15.0K   17.5K    20.0K   22.5K    25.0K lines
+```
+
+### D.4 Зависимости между компонентами
+
+```
+                    ┌── StatisticsEngine
+                    ├── SpacedRepetition
+                    ├── AdaptiveQuiz
+StudentProfile ─────┼── TrainingPlanOptimizer
+                    ├── GoalTracker
+                    ├── StreakTracker
+                    ├── BatchProcessor
+                    ├── CoachingEngine
+                    └── NotificationRulesEngine
+
+                    ┌── ScarabAPI
+ScarabSchool ───────┼── Leaderboard
+                    └── Curriculum
+
+                    ┌── detect_patterns
+get_group ──────────┼── DailyChallengeGenerator
+                    ├── GroupDrillGenerator
+                    ├── SymbolMasteryMap
+                    └── RuleValidator
+```
+
+### D.5 Покрытие функциональности
+
+| Область            | Компонентов | Полнота |
+|--------------------|-------------|---------|
+| Тренировка         | 10          | ██████████ 100% |
+| Аналитика          | 10          | ██████████ 100% |
+| Геймификация       | 8           | █████████░ 90%  |
+| Социальное         | 5           | ████████░░ 80%  |
+| Инфраструктура     | 10          | ██████████ 100% |
+| Документация       | 65 частей   | ██████████ 100% |

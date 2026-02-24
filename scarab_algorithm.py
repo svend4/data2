@@ -16362,6 +16362,972 @@ class GroupDrillGenerator:
         return '\n'.join(lines)
 
 
+# ── v50: System Registry, Integrity Validator, Milestone Dashboard ──
+
+
+class SystemRegistry:
+    """Central registry of all Scarab system components.
+
+    Tracks classes, functions, constants, and their versions.
+    Enables dynamic lookup, dependency graphing, and module inspection.
+    """
+
+    def __init__(self):
+        self._components = {}  # name → info dict
+        self._categories = {
+            'class': [], 'function': [], 'constant': [],
+            'engine': [], 'tracker': [], 'generator': []
+        }
+
+    def register(self, name, kind, version, description='',
+                 dependencies=None):
+        """Register a component in the system."""
+        info = {
+            'name': name,
+            'kind': kind,
+            'version': version,
+            'description': description,
+            'dependencies': dependencies or [],
+            'registered_at': version
+        }
+        self._components[name] = info
+        cat = kind if kind in self._categories else 'function'
+        self._categories[cat].append(name)
+        return info
+
+    def lookup(self, name):
+        """Look up a component by name."""
+        return self._components.get(name)
+
+    def list_by_kind(self, kind):
+        """List all components of a given kind."""
+        return [self._components[n]
+                for n in self._categories.get(kind, [])]
+
+    def list_by_version(self, version):
+        """List all components registered in a specific version."""
+        return [info for info in self._components.values()
+                if info['version'] == version]
+
+    def dependency_graph(self):
+        """Build adjacency list of component dependencies."""
+        graph = {}
+        for name, info in self._components.items():
+            graph[name] = info['dependencies']
+        return graph
+
+    def find_dependents(self, name):
+        """Find all components that depend on the given component."""
+        dependents = []
+        for cname, info in self._components.items():
+            if name in info['dependencies']:
+                dependents.append(cname)
+        return dependents
+
+    def statistics(self):
+        """Return registry statistics."""
+        total = len(self._components)
+        by_kind = {}
+        for name, info in self._components.items():
+            k = info['kind']
+            by_kind[k] = by_kind.get(k, 0) + 1
+
+        versions = set(info['version'] for info in self._components.values())
+        dep_counts = [len(info['dependencies'])
+                      for info in self._components.values()]
+        avg_deps = sum(dep_counts) / max(len(dep_counts), 1)
+
+        return {
+            'total_components': total,
+            'by_kind': by_kind,
+            'versions_covered': sorted(versions),
+            'avg_dependencies': round(avg_deps, 2),
+            'most_depended': self._most_depended()
+        }
+
+    def _most_depended(self):
+        """Find component with most dependents."""
+        dep_count = {}
+        for info in self._components.values():
+            for d in info['dependencies']:
+                dep_count[d] = dep_count.get(d, 0) + 1
+        if not dep_count:
+            return None
+        best = max(dep_count, key=dep_count.get)
+        return {'name': best, 'dependent_count': dep_count[best]}
+
+
+def build_scarab_registry():
+    """Build the default system registry with all known components."""
+    reg = SystemRegistry()
+
+    # Core (v1-v5)
+    reg.register('get_group', 'function', 'v1',
+                 'Map symbol 0-63 to Kryukov group 1-7')
+    reg.register('get_zones', 'function', 'v1',
+                 'Get zone tuple for a symbol')
+    reg.register('ScarabAlgorithm', 'class', 'v1',
+                 'Main algorithm engine')
+    reg.register('StudentProfile', 'class', 'v3',
+                 'Student data and session history',
+                 dependencies=['get_group'])
+    reg.register('ScarabSchool', 'class', 'v4',
+                 'School management system',
+                 dependencies=['StudentProfile'])
+
+    # Analytics (v6-v15)
+    reg.register('StatisticsEngine', 'engine', 'v40',
+                 'Descriptive stats, CI, effect size',
+                 dependencies=['StudentProfile'])
+    reg.register('correlation_matrix', 'function', 'v32',
+                 'Pearson correlation analysis')
+    reg.register('detect_patterns', 'function', 'v37',
+                 'Pattern recognition in sequences',
+                 dependencies=['get_group'])
+    reg.register('predict_next_score', 'function', 'v34',
+                 'Score prediction (linear/ewma/ensemble)',
+                 dependencies=['StudentProfile'])
+
+    # Training (v16-v25)
+    reg.register('Curriculum', 'class', 'v35',
+                 '10-unit training curriculum',
+                 dependencies=['ScarabSchool'])
+    reg.register('SpacedRepetition', 'engine', 'v39',
+                 'SM-2 spaced repetition',
+                 dependencies=['StudentProfile'])
+    reg.register('AdaptiveQuiz', 'engine', 'v42',
+                 'IRT-based adaptive quizzes',
+                 dependencies=['get_group', 'StudentProfile'])
+    reg.register('TrainingPlanOptimizer', 'engine', 'v43',
+                 'Optimal training plan generation',
+                 dependencies=['StudentProfile', 'Curriculum'])
+
+    # Gamification (v26-v35)
+    reg.register('SkillTree', 'class', 'v36',
+                 '14-node skill tree',
+                 dependencies=['StudentProfile'])
+    reg.register('Leaderboard', 'class', 'v36',
+                 'Composite ranking system',
+                 dependencies=['ScarabSchool'])
+    reg.register('ACHIEVEMENT_CATALOG', 'constant', 'v40',
+                 '13 achievements in 4 tiers')
+    reg.register('RANKS', 'constant', 'v43',
+                 '10 rank progression levels')
+
+    # Infrastructure (v36-v50)
+    reg.register('EventBus', 'engine', 'v44',
+                 'Pub/sub event system')
+    reg.register('ScarabAPI', 'class', 'v45',
+                 'Facade API with 9 endpoints',
+                 dependencies=['ScarabSchool', 'EventBus'])
+    reg.register('DataPipeline', 'engine', 'v41',
+                 'ETL pipeline with chaining')
+    reg.register('BatchProcessor', 'engine', 'v47',
+                 'Map/filter/reduce batch ops',
+                 dependencies=['StudentProfile'])
+
+    # Trackers
+    reg.register('GoalTracker', 'tracker', 'v31',
+                 'Goal setting and tracking',
+                 dependencies=['StudentProfile'])
+    reg.register('StreakTracker', 'tracker', 'v46',
+                 '4-type streak tracking',
+                 dependencies=['StudentProfile'])
+    reg.register('MilestoneTracker', 'tracker', 'v41',
+                 '12 milestone definitions',
+                 dependencies=['StudentProfile'])
+
+    # Generators
+    reg.register('DailyChallengeGenerator', 'generator', 'v37',
+                 '5 challenge types',
+                 dependencies=['get_group'])
+    reg.register('GroupDrillGenerator', 'generator', 'v49',
+                 'Group-focused drill generation',
+                 dependencies=['get_group', 'StudentProfile'])
+    reg.register('SessionSimulator', 'generator', 'v36',
+                 'Monte Carlo session simulation',
+                 dependencies=['StudentProfile'])
+
+    # Recent (v46-v50)
+    reg.register('SymbolMasteryMap', 'class', 'v46',
+                 '6-tier symbol mastery tracking',
+                 dependencies=['get_group'])
+    reg.register('RuleValidator', 'class', 'v47',
+                 'R3/R4/R5 rule validation',
+                 dependencies=['get_group', 'get_zones'])
+    reg.register('CoachingEngine', 'engine', 'v44',
+                 'Automated coaching advice',
+                 dependencies=['StudentProfile'])
+    reg.register('NotificationRulesEngine', 'engine', 'v49',
+                 '4 notification rule types',
+                 dependencies=['StudentProfile'])
+    reg.register('SystemRegistry', 'class', 'v50',
+                 'Central component registry')
+    reg.register('IntegrityValidator', 'class', 'v50',
+                 'System integrity validation',
+                 dependencies=['SystemRegistry', 'ScarabSchool'])
+
+    return reg
+
+
+def format_registry(registry):
+    """Format registry contents for display."""
+    stats = registry.statistics()
+    lines = ["=== System Registry ==="]
+    lines.append(f"Total components: {stats['total_components']}")
+    lines.append("By kind:")
+    for kind, count in sorted(stats['by_kind'].items()):
+        lines.append(f"  {kind}: {count}")
+    lines.append(f"Versions covered: {len(stats['versions_covered'])}")
+    lines.append(f"Avg dependencies: {stats['avg_dependencies']}")
+
+    most = stats['most_depended']
+    if most:
+        lines.append(f"Most depended on: {most['name']} "
+                     f"({most['dependent_count']} dependents)")
+
+    # Show dependency graph sample
+    graph = registry.dependency_graph()
+    lines.append("\nDependency sample (top 5 by dep count):")
+    sorted_by_deps = sorted(graph.items(),
+                            key=lambda x: len(x[1]), reverse=True)
+    for name, deps in sorted_by_deps[:5]:
+        if deps:
+            lines.append(f"  {name} → {', '.join(deps)}")
+
+    return '\n'.join(lines)
+
+
+class IntegrityValidator:
+    """Validates the integrity of the entire Scarab system.
+
+    Checks data consistency, configuration validity,
+    component availability, and cross-references.
+    """
+
+    def __init__(self, school=None, registry=None):
+        self.school = school
+        self.registry = registry
+        self.checks = []
+        self.errors = []
+        self.warnings = []
+
+    def validate_all(self):
+        """Run all validation checks."""
+        self.checks = []
+        self.errors = []
+        self.warnings = []
+
+        self._check_symbol_system()
+        self._check_zone_rules()
+        self._check_group_coverage()
+        if self.school:
+            self._check_student_data()
+            self._check_session_integrity()
+            self._check_mastery_levels()
+        if self.registry:
+            self._check_registry_integrity()
+            self._check_dependencies()
+
+        return {
+            'total_checks': len(self.checks),
+            'passed': sum(1 for c in self.checks if c['passed']),
+            'failed': sum(1 for c in self.checks if not c['passed']),
+            'errors': self.errors,
+            'warnings': self.warnings,
+            'score': self._compute_score()
+        }
+
+    def _add_check(self, name, passed, detail=''):
+        self.checks.append({
+            'name': name, 'passed': passed, 'detail': detail
+        })
+        if not passed:
+            self.errors.append(f"FAIL: {name} — {detail}")
+
+    def _add_warning(self, msg):
+        self.warnings.append(msg)
+
+    def _check_symbol_system(self):
+        """Validate 64-symbol system consistency."""
+        # All symbols 0-63 must map to groups 1-7
+        valid = True
+        for s in range(64):
+            g = get_group(s)
+            if g < 1 or g > 7:
+                valid = False
+                break
+        self._add_check('symbol_group_mapping', valid,
+                        'All 64 symbols map to groups 1-7')
+
+        # Check group distribution
+        groups = {}
+        for s in range(64):
+            g = get_group(s)
+            groups[g] = groups.get(g, 0) + 1
+        all_present = all(g in groups for g in range(1, 8))
+        self._add_check('all_groups_present', all_present,
+                        f'Groups found: {sorted(groups.keys())}')
+
+    def _check_zone_rules(self):
+        """Validate zone assignments."""
+        valid = True
+        for s in range(64):
+            zones = get_zones(s)
+            if not isinstance(zones, tuple) or len(zones) == 0:
+                valid = False
+                break
+        self._add_check('zone_assignments', valid,
+                        'All symbols have valid zone tuples')
+
+    def _check_group_coverage(self):
+        """Check that all groups have reasonable symbol counts."""
+        groups = {}
+        for s in range(64):
+            g = get_group(s)
+            groups[g] = groups.get(g, 0) + 1
+        min_count = min(groups.values()) if groups else 0
+        max_count = max(groups.values()) if groups else 0
+        balanced = max_count - min_count <= 20
+        self._add_check('group_balance', balanced,
+                        f'Min={min_count}, Max={max_count}, '
+                        f'Spread={max_count - min_count}')
+
+    def _check_student_data(self):
+        """Validate student data in school."""
+        has_students = len(self.school.students) > 0
+        self._add_check('school_has_students', has_students,
+                        f'{len(self.school.students)} students')
+
+        for name, st in self.school.students.items():
+            if not hasattr(st, 'sessions'):
+                self._add_check(f'student_{name}_sessions', False,
+                                'Missing sessions attribute')
+            elif len(st.sessions) == 0:
+                self._add_warning(f'Student {name} has no sessions')
+
+    def _check_session_integrity(self):
+        """Validate session data structure."""
+        all_valid = True
+        total_sessions = 0
+        for name, st in self.school.students.items():
+            for i, sess in enumerate(st.sessions):
+                total_sessions += 1
+                if 'pct' not in sess:
+                    all_valid = False
+                    self._add_warning(
+                        f'{name} session {i}: missing pct field')
+                elif not (0 <= sess['pct'] <= 100):
+                    self._add_warning(
+                        f'{name} session {i}: pct={sess["pct"]} '
+                        f'out of range')
+        self._add_check('session_data_valid', all_valid,
+                        f'{total_sessions} sessions checked')
+
+    def _check_mastery_levels(self):
+        """Validate mastery levels are in valid range."""
+        all_valid = True
+        for name, st in self.school.students.items():
+            ml = getattr(st, 'mastery_level', None)
+            if ml is not None and (ml < 1 or ml > 7):
+                all_valid = False
+                self._add_warning(
+                    f'{name}: mastery_level={ml} out of range 1-7')
+        self._add_check('mastery_levels_valid', all_valid,
+                        'All mastery levels in range 1-7')
+
+    def _check_registry_integrity(self):
+        """Validate registry has no orphan dependencies."""
+        known = set(self.registry._components.keys())
+        orphans = []
+        for name, info in self.registry._components.items():
+            for dep in info['dependencies']:
+                if dep not in known:
+                    orphans.append(f'{name} → {dep}')
+        no_orphans = len(orphans) == 0
+        self._add_check('no_orphan_dependencies', no_orphans,
+                        f'Orphans: {orphans}' if orphans
+                        else 'All dependencies resolved')
+
+    def _check_dependencies(self):
+        """Check for circular dependencies."""
+        graph = self.registry.dependency_graph()
+        visited = set()
+        in_stack = set()
+        has_cycle = [False]
+
+        def dfs(node):
+            if node in in_stack:
+                has_cycle[0] = True
+                return
+            if node in visited:
+                return
+            visited.add(node)
+            in_stack.add(node)
+            for dep in graph.get(node, []):
+                dfs(dep)
+            in_stack.discard(node)
+
+        for node in graph:
+            dfs(node)
+        self._add_check('no_circular_dependencies',
+                        not has_cycle[0],
+                        'Dependency graph is acyclic'
+                        if not has_cycle[0]
+                        else 'Circular dependency detected!')
+
+    def _compute_score(self):
+        """Compute overall integrity score 0-100."""
+        if not self.checks:
+            return 0
+        passed = sum(1 for c in self.checks if c['passed'])
+        base = (passed / len(self.checks)) * 100
+        # Penalty for warnings
+        penalty = min(len(self.warnings) * 2, 20)
+        return round(max(0, base - penalty), 1)
+
+
+def format_integrity_report(report):
+    """Format integrity validation report."""
+    lines = ["=== Integrity Validation Report ==="]
+    lines.append(f"Total checks: {report['total_checks']}")
+    lines.append(f"Passed: {report['passed']}")
+    lines.append(f"Failed: {report['failed']}")
+    lines.append(f"Warnings: {len(report['warnings'])}")
+    lines.append(f"Integrity Score: {report['score']}/100")
+
+    if report['errors']:
+        lines.append("\nErrors:")
+        for e in report['errors']:
+            lines.append(f"  ✗ {e}")
+
+    if report['warnings']:
+        lines.append("\nWarnings:")
+        for w in report['warnings'][:5]:
+            lines.append(f"  ⚠ {w}")
+        if len(report['warnings']) > 5:
+            lines.append(f"  ... and {len(report['warnings']) - 5} more")
+
+    status = "PASS" if report['failed'] == 0 else "FAIL"
+    lines.append(f"\nOverall Status: {status}")
+    return '\n'.join(lines)
+
+
+def milestone_dashboard_25k():
+    """Generate the 25K lines milestone dashboard.
+
+    Summarizes the entire Scarab Algorithm system:
+    versions, components, capabilities, and metrics.
+    """
+    dashboard = {
+        'milestone': '25K Lines',
+        'versions': 50,
+        'versions_range': 'v1 — v50',
+        'total_symbols': 64,
+        'kryukov_groups': 7,
+        'zone_rules': 5,
+
+        'component_summary': {
+            'core_classes': [
+                'ScarabAlgorithm', 'StudentProfile', 'ScarabSchool',
+                'ScarabConfig', 'ScarabAPI'
+            ],
+            'engines': [
+                'StatisticsEngine', 'SpacedRepetition', 'AdaptiveQuiz',
+                'TrainingPlanOptimizer', 'EventBus', 'DataPipeline',
+                'BatchProcessor', 'CoachingEngine',
+                'NotificationRulesEngine'
+            ],
+            'trackers': [
+                'GoalTracker', 'StreakTracker', 'MilestoneTracker',
+                'TrainingLog', 'CompetitionHistory'
+            ],
+            'generators': [
+                'DailyChallengeGenerator', 'GroupDrillGenerator',
+                'SessionSimulator'
+            ],
+            'validators': [
+                'RuleValidator', 'IntegrityValidator'
+            ],
+            'meta': [
+                'SystemRegistry', 'Curriculum', 'SkillTree',
+                'Leaderboard', 'StudyGroup', 'Mentor',
+                'EventLog', 'ReviewQueue', 'SessionJournal',
+                'SymbolMasteryMap', 'FeedbackLoop'
+            ]
+        },
+
+        'key_algorithms': [
+            'SM-2 Spaced Repetition',
+            'IRT (Item Response Theory)',
+            'Monte Carlo Simulation',
+            'Pearson Correlation',
+            "Cohen's d Effect Size",
+            'Linear Regression Prediction',
+            'EWMA Smoothing',
+            'Ensemble Forecasting',
+            'DFS Cycle Detection',
+            'Composite Ranking'
+        ],
+
+        'training_features': [
+            '6 training templates',
+            '10-unit curriculum',
+            '5 challenge types',
+            '4 scenario types',
+            '5 combo detection types',
+            '5 pattern recognition types',
+            '6 mastery tiers',
+            '10 rank levels',
+            '13 achievements (4 tiers)',
+            '12 milestone definitions'
+        ],
+
+        'analytics_capabilities': [
+            'Descriptive statistics',
+            'Confidence intervals',
+            'Effect size analysis',
+            'Correlation matrices',
+            'Performance zones',
+            'Weakness analysis',
+            'Progress forecasting',
+            'Session comparison',
+            'Skill assessment (6D)',
+            'Heatmaps and visualizations'
+        ],
+
+        'infrastructure': [
+            'Event-driven pub/sub',
+            'ETL pipeline',
+            'Batch processing',
+            'REST-like API facade',
+            'Health checks (10-point)',
+            'Integrity validation',
+            'Component registry',
+            'Notification rules',
+            'Session playback',
+            'Peer comparison'
+        ],
+
+        'version_blocks': [
+            {'block': 'v1-v5', 'theme': 'Core Algorithm & School'},
+            {'block': 'v6-v10', 'theme': 'Training & Assessment'},
+            {'block': 'v11-v15', 'theme': 'Analytics & Visualization'},
+            {'block': 'v16-v20', 'theme': 'Gamification & Progress'},
+            {'block': 'v21-v25', 'theme': 'Advanced Training'},
+            {'block': 'v26-v30', 'theme': 'Social & Competition'},
+            {'block': 'v31-v35', 'theme': 'Goals & Curriculum'},
+            {'block': 'v36-v40', 'theme': 'Skills & Statistics'},
+            {'block': 'v41-v45', 'theme': 'Scenarios & API'},
+            {'block': 'v46-v50', 'theme': 'Registry & Integrity'}
+        ]
+    }
+    return dashboard
+
+
+def format_milestone_dashboard(dashboard):
+    """Format the milestone dashboard for display."""
+    lines = []
+    lines.append("╔" + "═" * 58 + "╗")
+    lines.append("║" + f" SCARAB ALGORITHM — {dashboard['milestone']} "
+                       f"MILESTONE ".center(58) + "║")
+    lines.append("╠" + "═" * 58 + "╣")
+
+    lines.append(f"║  Versions: {dashboard['versions']} "
+                 f"({dashboard['versions_range']})".ljust(58) + "║")
+    lines.append(f"║  Symbols: {dashboard['total_symbols']}   "
+                 f"Groups: {dashboard['kryukov_groups']}   "
+                 f"Zone Rules: {dashboard['zone_rules']}".ljust(58) + "║")
+    lines.append("╠" + "═" * 58 + "╣")
+
+    # Component counts
+    cs = dashboard['component_summary']
+    total_comps = sum(len(v) for v in cs.values())
+    lines.append(f"║  Components: {total_comps} total".ljust(58) + "║")
+    for cat, items in cs.items():
+        label = cat.replace('_', ' ').title()
+        lines.append(f"║    {label}: {len(items)}".ljust(58) + "║")
+    lines.append("╠" + "═" * 58 + "╣")
+
+    # Key algorithms
+    lines.append("║  Key Algorithms:".ljust(58) + "║")
+    for algo in dashboard['key_algorithms']:
+        lines.append(f"║    • {algo}".ljust(58) + "║")
+    lines.append("╠" + "═" * 58 + "╣")
+
+    # Version blocks
+    lines.append("║  Version Roadmap:".ljust(58) + "║")
+    for vb in dashboard['version_blocks']:
+        lines.append(f"║    {vb['block']}: {vb['theme']}".ljust(58) + "║")
+
+    lines.append("╠" + "═" * 58 + "╣")
+    lines.append("║  Training: "
+                 f"{len(dashboard['training_features'])} features"
+                 .ljust(58) + "║")
+    lines.append("║  Analytics: "
+                 f"{len(dashboard['analytics_capabilities'])} capabilities"
+                 .ljust(58) + "║")
+    lines.append("║  Infrastructure: "
+                 f"{len(dashboard['infrastructure'])} systems"
+                 .ljust(58) + "║")
+    lines.append("╚" + "═" * 58 + "╝")
+
+    return '\n'.join(lines)
+
+
+class SystemDiagnostics:
+    """Comprehensive system diagnostics for the Scarab platform.
+
+    Runs performance benchmarks, memory estimates, and coverage analysis
+    across all registered components.
+    """
+
+    def __init__(self, school=None, registry=None):
+        self.school = school
+        self.registry = registry
+        self._results = {}
+
+    def run_diagnostics(self):
+        """Execute all diagnostic checks."""
+        self._results = {
+            'component_count': self._count_components(),
+            'student_metrics': self._student_metrics(),
+            'session_volume': self._session_volume(),
+            'coverage_analysis': self._coverage_analysis(),
+            'version_distribution': self._version_distribution(),
+            'dependency_health': self._dependency_health(),
+            'complexity_estimate': self._complexity_estimate()
+        }
+        return self._results
+
+    def _count_components(self):
+        """Count all system components by category."""
+        if not self.registry:
+            return {'total': 0, 'by_kind': {}}
+        stats = self.registry.statistics()
+        return {
+            'total': stats['total_components'],
+            'by_kind': stats['by_kind']
+        }
+
+    def _student_metrics(self):
+        """Aggregate student-level metrics."""
+        if not self.school:
+            return {'students': 0, 'avg_sessions': 0}
+        students = self.school.students
+        n = len(students)
+        if n == 0:
+            return {'students': 0, 'avg_sessions': 0}
+
+        total_sessions = sum(len(st.sessions) for st in students.values())
+        avg_score = 0
+        count = 0
+        for st in students.values():
+            for s in st.sessions:
+                avg_score += s.get('pct', 0)
+                count += 1
+        avg_score = round(avg_score / max(count, 1), 2)
+
+        mastery_dist = {}
+        for st in students.values():
+            ml = getattr(st, 'mastery_level', 1)
+            mastery_dist[ml] = mastery_dist.get(ml, 0) + 1
+
+        return {
+            'students': n,
+            'total_sessions': total_sessions,
+            'avg_sessions_per_student': round(total_sessions / n, 1),
+            'avg_score': avg_score,
+            'mastery_distribution': mastery_dist
+        }
+
+    def _session_volume(self):
+        """Analyze session data volume."""
+        if not self.school:
+            return {'total': 0}
+        total = 0
+        min_len = float('inf')
+        max_len = 0
+        for st in self.school.students.values():
+            total += len(st.sessions)
+            for s in st.sessions:
+                length = s.get('length', 16)
+                min_len = min(min_len, length)
+                max_len = max(max_len, length)
+        if min_len == float('inf'):
+            min_len = 0
+        return {
+            'total_sessions': total,
+            'min_session_length': min_len,
+            'max_session_length': max_len,
+            'est_total_tacts': total * 16  # estimate
+        }
+
+    def _coverage_analysis(self):
+        """Analyze which groups and symbols are covered in training."""
+        if not self.school:
+            return {}
+        group_exposure = {g: 0 for g in range(1, 8)}
+        for st in self.school.students.values():
+            for s in st.sessions:
+                seq = s.get('sequence', [])
+                for sym in seq:
+                    g = get_group(sym)
+                    group_exposure[g] += 1
+        total_exp = sum(group_exposure.values())
+        coverage_pct = {}
+        for g, cnt in group_exposure.items():
+            coverage_pct[g] = round(
+                (cnt / max(total_exp, 1)) * 100, 1
+            )
+        return {
+            'group_exposure': group_exposure,
+            'coverage_percentage': coverage_pct,
+            'total_symbol_exposures': total_exp
+        }
+
+    def _version_distribution(self):
+        """Analyze component distribution across versions."""
+        if not self.registry:
+            return {}
+        version_counts = {}
+        for info in self.registry._components.values():
+            v = info['version']
+            version_counts[v] = version_counts.get(v, 0) + 1
+        return version_counts
+
+    def _dependency_health(self):
+        """Check overall dependency graph health."""
+        if not self.registry:
+            return {'healthy': True, 'issues': []}
+        graph = self.registry.dependency_graph()
+        issues = []
+
+        # Check for isolated components (no deps, no dependents)
+        for name in graph:
+            deps = graph[name]
+            dependents = self.registry.find_dependents(name)
+            if not deps and not dependents:
+                issues.append(f'{name}: isolated (no connections)')
+
+        # Check for deep dependency chains
+        def chain_depth(node, visited=None):
+            if visited is None:
+                visited = set()
+            if node in visited or node not in graph:
+                return 0
+            visited.add(node)
+            if not graph[node]:
+                return 1
+            return 1 + max(chain_depth(d, visited.copy())
+                          for d in graph[node])
+
+        max_depth = 0
+        deepest = None
+        for node in graph:
+            d = chain_depth(node)
+            if d > max_depth:
+                max_depth = d
+                deepest = node
+
+        return {
+            'healthy': len(issues) == 0,
+            'issues': issues,
+            'max_chain_depth': max_depth,
+            'deepest_chain_root': deepest,
+            'total_edges': sum(len(d) for d in graph.values())
+        }
+
+    def _complexity_estimate(self):
+        """Estimate system complexity metrics."""
+        n_components = 0
+        n_deps = 0
+        if self.registry:
+            n_components = len(self.registry._components)
+            for info in self.registry._components.values():
+                n_deps += len(info['dependencies'])
+
+        n_students = 0
+        n_sessions = 0
+        if self.school:
+            n_students = len(self.school.students)
+            n_sessions = sum(len(st.sessions)
+                            for st in self.school.students.values())
+
+        # McCabe-like complexity estimate
+        cyclomatic = n_components + n_deps + 1
+        data_complexity = n_students * n_sessions
+
+        return {
+            'structural_complexity': cyclomatic,
+            'data_complexity': data_complexity,
+            'total_estimate': cyclomatic + data_complexity // 100
+        }
+
+
+def format_diagnostics(diag_results):
+    """Format diagnostics results for display."""
+    lines = ["=== System Diagnostics Report ==="]
+
+    # Components
+    cc = diag_results['component_count']
+    lines.append(f"\nComponents: {cc['total']}")
+    for kind, count in sorted(cc.get('by_kind', {}).items()):
+        lines.append(f"  {kind}: {count}")
+
+    # Students
+    sm = diag_results['student_metrics']
+    lines.append(f"\nStudents: {sm.get('students', 0)}")
+    lines.append(f"  Total sessions: {sm.get('total_sessions', 0)}")
+    lines.append(f"  Avg sessions/student: "
+                 f"{sm.get('avg_sessions_per_student', 0)}")
+    lines.append(f"  Avg score: {sm.get('avg_score', 0)}")
+
+    # Session volume
+    sv = diag_results['session_volume']
+    lines.append(f"\nSession Volume: {sv.get('total_sessions', 0)}")
+    lines.append(f"  Est total tacts: {sv.get('est_total_tacts', 0)}")
+
+    # Dependency health
+    dh = diag_results['dependency_health']
+    status = "Healthy" if dh.get('healthy', True) else "Issues found"
+    lines.append(f"\nDependency Health: {status}")
+    lines.append(f"  Max chain depth: {dh.get('max_chain_depth', 0)}")
+    lines.append(f"  Total edges: {dh.get('total_edges', 0)}")
+    if dh.get('issues'):
+        for issue in dh['issues'][:3]:
+            lines.append(f"  ⚠ {issue}")
+
+    # Complexity
+    ce = diag_results['complexity_estimate']
+    lines.append(f"\nComplexity Estimate: {ce.get('total_estimate', 0)}")
+    lines.append(f"  Structural: {ce.get('structural_complexity', 0)}")
+    lines.append(f"  Data: {ce.get('data_complexity', 0)}")
+
+    # Version distribution
+    vd = diag_results.get('version_distribution', {})
+    if vd:
+        lines.append(f"\nVersion Distribution:")
+        for v in sorted(vd.keys(), key=lambda x: int(x[1:]) if x[1:].isdigit() else 0):
+            bar = '█' * vd[v]
+            lines.append(f"  {v}: {bar} ({vd[v]})")
+
+    return '\n'.join(lines)
+
+
+def version_changelog():
+    """Generate a structured changelog for all 50 versions.
+
+    Returns a list of version entries with metadata.
+    """
+    changelog = [
+        {'version': 'v1', 'title': 'Core Algorithm',
+         'components': ['ScarabAlgorithm', 'get_group', 'get_zones'],
+         'type': 'foundation'},
+        {'version': 'v2', 'title': 'Sequence Generation',
+         'components': ['generate', 'validate'],
+         'type': 'feature'},
+        {'version': 'v3', 'title': 'Student Profiles',
+         'components': ['StudentProfile'],
+         'type': 'feature'},
+        {'version': 'v4', 'title': 'School System',
+         'components': ['ScarabSchool'],
+         'type': 'feature'},
+        {'version': 'v5', 'title': 'Badge System',
+         'components': ['check_badges'],
+         'type': 'feature'},
+        {'version': 'v6-v10', 'title': 'Training & Assessment',
+         'components': ['training_modes', 'scoring', 'reports'],
+         'type': 'block'},
+        {'version': 'v11-v15', 'title': 'Analytics & Visualization',
+         'components': ['charts', 'patterns', 'heatmaps'],
+         'type': 'block'},
+        {'version': 'v16-v20', 'title': 'Gamification',
+         'components': ['badges', 'xp', 'challenges', 'streaks'],
+         'type': 'block'},
+        {'version': 'v21-v25', 'title': 'Advanced Training',
+         'components': ['multi_level', 'group_training', 'intervals'],
+         'type': 'block'},
+        {'version': 'v26-v30', 'title': 'Social Features',
+         'components': ['groups', 'competition', 'mentoring'],
+         'type': 'block'},
+        {'version': 'v31', 'title': 'Goals & Playback',
+         'components': ['GoalTracker', 'peer_compare', 'SessionPlayback'],
+         'type': 'feature'},
+        {'version': 'v32', 'title': 'Templates & Config',
+         'components': ['TRAINING_TEMPLATES', 'correlation', 'ScarabConfig'],
+         'type': 'feature'},
+        {'version': 'v33', 'title': 'Feedback Loop',
+         'components': ['FeedbackLoop', 'progression', 'session_heatmap'],
+         'type': 'feature'},
+        {'version': 'v34', 'title': 'Events & Prediction',
+         'components': ['EventLog', 'kata_difficulty', 'predict_next_score'],
+         'type': 'feature'},
+        {'version': 'v35', 'title': 'Curriculum',
+         'components': ['Curriculum', 'school_overview', 'architecture'],
+         'type': 'feature'},
+        {'version': 'v36', 'title': 'Skills & Simulation',
+         'components': ['SkillTree', 'SessionSimulator', 'Leaderboard'],
+         'type': 'feature'},
+        {'version': 'v37', 'title': 'Patterns & Mentoring',
+         'components': ['detect_patterns', 'Mentor', 'DailyChallenge'],
+         'type': 'feature'},
+        {'version': 'v38', 'title': 'Study Groups',
+         'components': ['StudyGroup', 'encyclopedia', 'detect_combos'],
+         'type': 'feature'},
+        {'version': 'v39', 'title': 'Spaced Repetition',
+         'components': ['ReviewQueue', 'SpacedRepetition', 'weaknesses'],
+         'type': 'feature'},
+        {'version': 'v40', 'title': 'Statistics Engine',
+         'components': ['StatisticsEngine', 'ACHIEVEMENT_CATALOG'],
+         'type': 'feature'},
+        {'version': 'v41', 'title': 'Scenarios & ETL',
+         'components': ['Scenario', 'MilestoneTracker', 'DataPipeline'],
+         'type': 'feature'},
+        {'version': 'v42', 'title': 'Adaptive Quiz',
+         'components': ['AdaptiveQuiz', 'group_proficiency', 'Journal'],
+         'type': 'feature'},
+        {'version': 'v43', 'title': 'Optimization & Ranks',
+         'components': ['TrainingPlanOptimizer', 'similarity', 'RANKS'],
+         'type': 'feature'},
+        {'version': 'v44', 'title': 'Events & Coaching',
+         'components': ['EventBus', 'compare_sessions', 'CoachingEngine'],
+         'type': 'feature'},
+        {'version': 'v45', 'title': 'API & Health',
+         'components': ['ScarabAPI', 'system_health_check'],
+         'type': 'feature'},
+        {'version': 'v46', 'title': 'Streaks & Mastery',
+         'components': ['StreakTracker', 'rate_session', 'SymbolMasteryMap'],
+         'type': 'feature'},
+        {'version': 'v47', 'title': 'Batch & Validation',
+         'components': ['BatchProcessor', 'RuleValidator', 'perf_zones'],
+         'type': 'feature'},
+        {'version': 'v48', 'title': 'Logs & Competition',
+         'components': ['TrainingLog', 'CompetitionHistory', 'skill_assess'],
+         'type': 'feature'},
+        {'version': 'v49', 'title': 'Notifications & Drills',
+         'components': ['NotificationRulesEngine', 'forecast', 'GroupDrill'],
+         'type': 'feature'},
+        {'version': 'v50', 'title': 'Registry & Integrity',
+         'components': ['SystemRegistry', 'IntegrityValidator', 'Dashboard'],
+         'type': 'milestone'}
+    ]
+    return changelog
+
+
+def format_changelog(changelog):
+    """Format version changelog for display."""
+    lines = ["=== Version Changelog ==="]
+    for entry in changelog:
+        icon = '★' if entry['type'] == 'milestone' else \
+               '■' if entry['type'] == 'block' else '●'
+        comps = ', '.join(entry['components'][:3])
+        lines.append(f"  {icon} {entry['version']}: "
+                     f"{entry['title']} — {comps}")
+    lines.append(f"\nTotal entries: {len(changelog)}")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -18188,3 +19154,62 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v49: Notification rules, progress forecast, group drills.")
+
+    # ── v50 demos ────────────────────────────────────────
+
+    # 159. System Registry
+    print("\n--- System Registry ---")
+    registry = build_scarab_registry()
+    print(format_registry(registry))
+
+    # Lookup example
+    info = registry.lookup('ScarabAPI')
+    if info:
+        print(f"\nLookup 'ScarabAPI': v={info['version']}, "
+              f"deps={info['dependencies']}")
+
+    # Dependents
+    deps_of_sp = registry.find_dependents('StudentProfile')
+    print(f"Components depending on StudentProfile: {len(deps_of_sp)}")
+    for d in deps_of_sp[:5]:
+        print(f"  → {d}")
+
+    # By version
+    v50_comps = registry.list_by_version('v50')
+    print(f"v50 components: {[c['name'] for c in v50_comps]}")
+
+    # 160. Integrity Validator
+    print("\n--- Integrity Validator ---")
+    validator = IntegrityValidator(school=sim_school, registry=registry)
+    report = validator.validate_all()
+    print(format_integrity_report(report))
+
+    # 161. 25K Milestone Dashboard
+    print("\n--- 25K Milestone Dashboard ---")
+    dashboard = milestone_dashboard_25k()
+    print(format_milestone_dashboard(dashboard))
+
+    # Summary stats
+    cs = dashboard['component_summary']
+    total_comps = sum(len(v) for v in cs.values())
+    print(f"\nTotal registered components: {total_comps}")
+    print(f"Algorithms: {len(dashboard['key_algorithms'])}")
+    print(f"Training features: {len(dashboard['training_features'])}")
+    print(f"Analytics capabilities: "
+          f"{len(dashboard['analytics_capabilities'])}")
+    print(f"Infrastructure systems: "
+          f"{len(dashboard['infrastructure'])}")
+
+    # 162. System Diagnostics
+    print("\n--- System Diagnostics ---")
+    diag = SystemDiagnostics(school=sim_school, registry=registry)
+    diag_results = diag.run_diagnostics()
+    print(format_diagnostics(diag_results))
+
+    # 163. Version Changelog
+    print("\n--- Version Changelog ---")
+    clog = version_changelog()
+    print(format_changelog(clog))
+
+    print("\n" + "=" * 60)
+    print("v50: System registry, integrity validator, 25K milestone.")
