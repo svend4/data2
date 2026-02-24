@@ -24523,6 +24523,326 @@ def format_export_formatter(ef):
     return '\n'.join(lines)
 
 
+# ══════════════════════════════════════════════════════════════
+# v64: API Gateway, Middleware Chain, Request Validator
+# ══════════════════════════════════════════════════════════════
+
+class APIGateway:
+    """API Gateway that routes requests to registered endpoints.
+
+    Supports route registration, middleware integration,
+    versioned APIs, and request/response logging.
+    """
+
+    def __init__(self, name='scarab-api'):
+        self.name = name
+        self._routes = {}
+        self._middleware = None
+        self._log = []
+        self._counter = 0
+
+    def register_route(self, method, path, handler, description=''):
+        """Register an API route."""
+        key = f"{method.upper()} {path}"
+        self._routes[key] = {
+            'method': method.upper(),
+            'path': path,
+            'handler': handler,
+            'description': description
+        }
+
+    def set_middleware(self, middleware):
+        """Set middleware chain for request processing."""
+        self._middleware = middleware
+
+    def handle(self, method, path, body=None, headers=None):
+        """Handle an incoming request."""
+        self._counter += 1
+        request = {
+            'id': self._counter,
+            'method': method.upper(),
+            'path': path,
+            'body': body or {},
+            'headers': headers or {}
+        }
+
+        # Run through middleware
+        if self._middleware:
+            result = self._middleware.process(request)
+            if result.get('blocked'):
+                response = {
+                    'status': result.get('status', 403),
+                    'body': {'error': result.get('reason', 'blocked')},
+                    'request_id': self._counter
+                }
+                self._log.append({
+                    'request': request, 'response': response})
+                return response
+
+        # Route lookup
+        key = f"{request['method']} {path}"
+        route = self._routes.get(key)
+
+        if not route:
+            response = {
+                'status': 404,
+                'body': {'error': f'Route not found: {key}'},
+                'request_id': self._counter
+            }
+        else:
+            try:
+                result = route['handler'](request)
+                response = {
+                    'status': 200,
+                    'body': result,
+                    'request_id': self._counter
+                }
+            except Exception as e:
+                response = {
+                    'status': 500,
+                    'body': {'error': str(e)},
+                    'request_id': self._counter
+                }
+
+        self._log.append({
+            'request': request, 'response': response})
+        return response
+
+    def list_routes(self):
+        """List all registered routes."""
+        return [
+            {
+                'method': r['method'],
+                'path': r['path'],
+                'description': r['description']
+            }
+            for r in self._routes.values()
+        ]
+
+    def get_log(self, limit=10):
+        """Get recent request/response log."""
+        return self._log[-limit:]
+
+    def statistics(self):
+        """Get gateway statistics."""
+        status_counts = {}
+        for entry in self._log:
+            s = entry['response']['status']
+            status_counts[s] = status_counts.get(s, 0) + 1
+
+        return {
+            'name': self.name,
+            'routes': len(self._routes),
+            'total_requests': self._counter,
+            'status_codes': status_counts,
+            'has_middleware': self._middleware is not None
+        }
+
+
+def format_api_gateway(gw):
+    """Format API gateway status."""
+    stats = gw.statistics()
+    lines = [f"=== API Gateway: {stats['name']} ==="]
+    lines.append(f"Routes: {stats['routes']}")
+    lines.append(f"Requests: {stats['total_requests']}")
+    lines.append(f"Middleware: {'yes' if stats['has_middleware'] else 'no'}")
+
+    if stats['status_codes']:
+        lines.append("\nStatus codes:")
+        for code, count in sorted(stats['status_codes'].items()):
+            lines.append(f"  {code}: {count}")
+
+    routes = gw.list_routes()
+    if routes:
+        lines.append("\nRoutes:")
+        for r in routes:
+            lines.append(f"  {r['method']:6} {r['path']} "
+                         f"— {r['description']}")
+
+    return '\n'.join(lines)
+
+
+class MiddlewareChain:
+    """Chainable middleware for request processing.
+
+    Each middleware can inspect, modify, or block requests
+    before they reach the route handler.
+    """
+
+    def __init__(self):
+        self._middlewares = []
+
+    def use(self, name, fn, priority=0):
+        """Add middleware to the chain."""
+        self._middlewares.append({
+            'name': name,
+            'fn': fn,
+            'priority': priority,
+            'enabled': True
+        })
+        # Sort by priority (lower = first)
+        self._middlewares.sort(key=lambda m: m['priority'])
+
+    def disable(self, name):
+        """Disable a middleware."""
+        for m in self._middlewares:
+            if m['name'] == name:
+                m['enabled'] = False
+
+    def enable(self, name):
+        """Enable a middleware."""
+        for m in self._middlewares:
+            if m['name'] == name:
+                m['enabled'] = True
+
+    def process(self, request):
+        """Process request through all enabled middlewares."""
+        context = {'blocked': False}
+
+        for mw in self._middlewares:
+            if not mw['enabled']:
+                continue
+
+            result = mw['fn'](request, context)
+            if isinstance(result, dict):
+                context.update(result)
+            if context.get('blocked'):
+                return context
+
+        return context
+
+    def list_middlewares(self):
+        """List all middlewares."""
+        return [
+            {
+                'name': m['name'],
+                'priority': m['priority'],
+                'enabled': m['enabled']
+            }
+            for m in self._middlewares
+        ]
+
+    def statistics(self):
+        """Get middleware statistics."""
+        return {
+            'total': len(self._middlewares),
+            'enabled': sum(1 for m in self._middlewares
+                           if m['enabled']),
+            'disabled': sum(1 for m in self._middlewares
+                            if not m['enabled'])
+        }
+
+
+def format_middleware_chain(mc):
+    """Format middleware chain status."""
+    stats = mc.statistics()
+    lines = ["=== Middleware Chain ==="]
+    lines.append(f"Middlewares: {stats['total']} "
+                 f"({stats['enabled']} enabled, "
+                 f"{stats['disabled']} disabled)")
+
+    for m in mc.list_middlewares():
+        status = '●' if m['enabled'] else '○'
+        lines.append(f"  {status} [{m['priority']}] {m['name']}")
+
+    return '\n'.join(lines)
+
+
+class RequestValidator:
+    """Validates API requests against defined schemas.
+
+    Checks request bodies, query parameters, and headers
+    against registered validation rules.
+    """
+
+    def __init__(self):
+        self._schemas = {}
+
+    def register_schema(self, route_key, schema):
+        """Register validation schema for a route."""
+        self._schemas[route_key] = schema
+
+    def validate(self, route_key, request):
+        """Validate a request against its schema."""
+        schema = self._schemas.get(route_key)
+        if not schema:
+            return {'valid': True, 'note': 'no schema registered'}
+
+        errors = []
+        body = request.get('body', {})
+
+        # Check required fields
+        for field in schema.get('required', []):
+            if field not in body:
+                errors.append(f"Missing required field: {field}")
+
+        # Check field types
+        for field, expected_type in schema.get('types', {}).items():
+            if field in body:
+                value = body[field]
+                if expected_type == 'string' and not isinstance(
+                        value, str):
+                    errors.append(f"{field}: expected string")
+                elif expected_type == 'number' and not isinstance(
+                        value, (int, float)):
+                    errors.append(f"{field}: expected number")
+                elif expected_type == 'list' and not isinstance(
+                        value, list):
+                    errors.append(f"{field}: expected list")
+
+        # Check field constraints
+        for field, constraints in schema.get('constraints', {}).items():
+            if field in body:
+                value = body[field]
+                if 'min' in constraints and isinstance(
+                        value, (int, float)):
+                    if value < constraints['min']:
+                        errors.append(
+                            f"{field}: {value} < min({constraints['min']})")
+                if 'max' in constraints and isinstance(
+                        value, (int, float)):
+                    if value > constraints['max']:
+                        errors.append(
+                            f"{field}: {value} > max({constraints['max']})")
+                if 'min_length' in constraints and isinstance(
+                        value, str):
+                    if len(value) < constraints['min_length']:
+                        errors.append(
+                            f"{field}: too short "
+                            f"(min {constraints['min_length']})")
+
+        return {
+            'valid': len(errors) == 0,
+            'errors': errors,
+            'checked_fields': len(schema.get('required', [])) +
+                              len(schema.get('types', {}))
+        }
+
+    def list_schemas(self):
+        """List all registered schemas."""
+        return {
+            key: {
+                'required': schema.get('required', []),
+                'typed_fields': list(schema.get('types', {}).keys())
+            }
+            for key, schema in self._schemas.items()
+        }
+
+
+def format_request_validator(rv):
+    """Format request validator status."""
+    schemas = rv.list_schemas()
+    lines = ["=== Request Validator ==="]
+    lines.append(f"Schemas: {len(schemas)}")
+
+    for key, info in schemas.items():
+        lines.append(f"\n  {key}:")
+        lines.append(f"    Required: {info['required']}")
+        lines.append(f"    Typed: {info['typed_fields']}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -27641,3 +27961,172 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v63: Template engine, report builder, export formatter.")
+
+    # ── v64: API Gateway, Middleware Chain, Request Validator ──
+
+    # 216. API Gateway
+    print("\n" + "=" * 60)
+    print("--- API Gateway ---")
+
+    gw = APIGateway('scarab-api-v1')
+
+    # Register routes
+    gw.register_route('GET', '/students',
+        lambda req: {
+            'students': ['Anna', 'Ivan', 'Lena', 'Max'],
+            'count': 4
+        },
+        description='List all students')
+
+    gw.register_route('GET', '/student/score',
+        lambda req: {
+            'student': req['body'].get('name', 'unknown'),
+            'avg_score': 75.1
+        },
+        description='Get student score')
+
+    gw.register_route('POST', '/session',
+        lambda req: {
+            'created': True,
+            'session_id': 42,
+            'student': req['body'].get('student', 'unknown')
+        },
+        description='Record new session')
+
+    gw.register_route('GET', '/health',
+        lambda req: {'status': 'healthy', 'version': 'v64'},
+        description='Health check')
+
+    # Make requests
+    r1 = gw.handle('GET', '/students')
+    print(f"GET /students: {r1['status']} "
+          f"— {r1['body']}")
+
+    r2 = gw.handle('GET', '/student/score',
+                    body={'name': 'Anna'})
+    print(f"GET /student/score: {r2['status']} "
+          f"— {r2['body']}")
+
+    r3 = gw.handle('POST', '/session',
+                    body={'student': 'Anna', 'score': 85.0})
+    print(f"POST /session: {r3['status']} "
+          f"— {r3['body']}")
+
+    r4 = gw.handle('DELETE', '/nonexistent')
+    print(f"DELETE /nonexistent: {r4['status']} "
+          f"— {r4['body']}")
+
+    print(f"\n{format_api_gateway(gw)}")
+
+    # 217. Middleware Chain
+    print("\n--- Middleware Chain ---")
+
+    mc = MiddlewareChain()
+
+    # Auth middleware
+    def auth_mw(req, ctx):
+        token = req.get('headers', {}).get('auth_token')
+        if token == 'valid_token':
+            return {'authenticated': True}
+        if token:
+            return {'authenticated': False}
+        return {}
+
+    # Rate limit middleware
+    mw_counter = [0]
+    def rate_mw(req, ctx):
+        mw_counter[0] += 1
+        if mw_counter[0] > 100:
+            return {'blocked': True, 'reason': 'rate limit exceeded',
+                    'status': 429}
+        return {}
+
+    # Logging middleware
+    mw_log = []
+    def log_mw(req, ctx):
+        mw_log.append(f"{req['method']} {req['path']}")
+        return {}
+
+    mc.use('auth', auth_mw, priority=1)
+    mc.use('rate_limit', rate_mw, priority=2)
+    mc.use('logging', log_mw, priority=3)
+
+    print(format_middleware_chain(mc))
+
+    # Process requests through middleware
+    test_req = {'method': 'GET', 'path': '/test',
+                'headers': {'auth_token': 'valid_token'},
+                'body': {}}
+    ctx = mc.process(test_req)
+    print(f"\nAuth request: authenticated={ctx.get('authenticated')}")
+
+    # Set middleware on gateway
+    gw.set_middleware(mc)
+    r5 = gw.handle('GET', '/health',
+                    headers={'auth_token': 'valid_token'})
+    print(f"GET /health with middleware: {r5['status']}")
+    print(f"Log entries: {mw_log}")
+
+    # Disable middleware
+    mc.disable('auth')
+    print(f"\nAfter disabling auth: "
+          f"{mc.statistics()['enabled']} enabled")
+
+    # 218. Request Validator
+    print("\n--- Request Validator ---")
+
+    rv = RequestValidator()
+
+    # Register schemas
+    rv.register_schema('POST /session', {
+        'required': ['student', 'score'],
+        'types': {
+            'student': 'string',
+            'score': 'number',
+            'notes': 'string'
+        },
+        'constraints': {
+            'score': {'min': 0, 'max': 100},
+            'student': {'min_length': 2}
+        }
+    })
+
+    rv.register_schema('POST /student', {
+        'required': ['name'],
+        'types': {'name': 'string', 'level': 'number'},
+        'constraints': {
+            'name': {'min_length': 2},
+            'level': {'min': 1, 'max': 7}
+        }
+    })
+
+    # Valid request
+    v1 = rv.validate('POST /session', {
+        'body': {'student': 'Anna', 'score': 85.0}
+    })
+    print(f"Valid session: valid={v1['valid']}, "
+          f"fields checked={v1['checked_fields']}")
+
+    # Invalid — missing field
+    v2 = rv.validate('POST /session', {
+        'body': {'student': 'Anna'}
+    })
+    print(f"Missing score: valid={v2['valid']}, "
+          f"errors={v2['errors']}")
+
+    # Invalid — out of range
+    v3 = rv.validate('POST /session', {
+        'body': {'student': 'A', 'score': 150}
+    })
+    print(f"Out of range: valid={v3['valid']}, "
+          f"errors={v3['errors']}")
+
+    # No schema
+    v4 = rv.validate('GET /unknown', {'body': {}})
+    print(f"No schema: valid={v4['valid']}, "
+          f"note={v4.get('note')}")
+
+    print(f"\n{format_request_validator(rv)}")
+
+    print("\n" + "=" * 60)
+    print("v64: API gateway, middleware chain, request validator.")
