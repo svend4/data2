@@ -4544,3 +4544,69 @@ print(format_prediction(pred, student_name='Anna'))
 - **ensemble**: среднее linear + ewma
 
 Confidence = `100 - σ` (10-95%).
+
+---
+
+## Часть 50: Curriculum, school overview, итоги (v35)
+
+### 50.1 Система учебного плана (Curriculum)
+
+10 стандартных юнитов:
+```
+U01 Foundations       → 1 session
+U02 Zone Mastery      → 3 sessions, 55%+
+U03 Group Awareness   → 5 sessions, 60%+
+U04 Consistency       → 8 sessions, 65%+, L2
+U05 Intermediate Flow → 10 sessions, 70%+, L3
+U06 Speed & Precision → 12 sessions, 75%+, L3
+U07 Advanced          → 15 sessions, 80%+, L4
+U08 Peak Defense      → 20 sessions, 85%+, L5
+U09 Mastery           → 25 sessions, 90%+, L6, 8 badges
+U10 Grand Master      → 30 sessions, 95%+, L7, 10 badges
+```
+
+```python
+curriculum = Curriculum().build_standard()
+ev = curriculum.evaluate(student)
+print(curriculum.format_curriculum(ev))
+```
+
+### 50.2 Обзор школы
+
+```python
+overview = school_progress_overview(school, curriculum=curriculum)
+print(format_school_overview(overview))
+```
+
+Включает: avg score, avg mastery, mastery distribution, curriculum progress per student.
+
+### 50.3 Архитектурная сводка
+
+```python
+print(architecture_summary())
+```
+
+**46 компонентов в 21 категории, v1-v35:**
+
+| Категория | Кол-во | Ключевые |
+|-----------|--------|----------|
+| Analysis | 7 | resonance, correlation, predictor |
+| Core | 4 | symbols, zones, tacts, config |
+| Training | 4 | sessions, adaptive, templates, feedback |
+| Progression | 4 | mastery, graduation, goals, curriculum |
+| Management | 3 | school, federation, progress tracker |
+| Visualization | 3 | SVG, progression path, heatmap |
+| + 15 more | ... | ... |
+
+### Итоговая статистика проекта
+
+```
+Код:          ~13800 строк Python
+Документация: ~4600 строк Markdown
+Итого:        ~18400 строк
+Демо:         116 секций
+Части:        50
+Версии:       v1 — v35
+Компоненты:   46
+Категории:    21
+```

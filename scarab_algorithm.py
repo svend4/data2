@@ -12148,6 +12148,318 @@ def format_prediction(pred_result, student_name=''):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# CURRICULUM SYSTEM (v35)
+# ═══════════════════════════════════════════════════════════
+
+class CurriculumUnit:
+    """A single unit in the curriculum."""
+
+    def __init__(self, unit_id, title, description, requirements,
+                 template_id=None):
+        self.unit_id = unit_id
+        self.title = title
+        self.description = description
+        self.requirements = requirements  # dict: min_mastery, min_score, etc.
+        self.template_id = template_id
+        self.completed = False
+
+    def check_completion(self, student):
+        """Check if student meets unit requirements."""
+        req = self.requirements
+        ml = student.mastery_level
+        scores = [s['pct'] for s in student.sessions]
+        n = len(scores)
+        recent = scores[-5:] if len(scores) >= 5 else scores
+        avg = sum(recent) / len(recent) if recent else 0
+
+        passed = True
+        if 'min_mastery' in req and ml < req['min_mastery']:
+            passed = False
+        if 'min_score' in req and avg < req['min_score']:
+            passed = False
+        if 'min_sessions' in req and n < req['min_sessions']:
+            passed = False
+        if 'min_badges' in req:
+            badges = check_badges(student)
+            if len(badges) < req['min_badges']:
+                passed = False
+
+        self.completed = passed
+        return passed
+
+
+class Curriculum:
+    """
+    Structured learning curriculum with ordered units.
+
+    Units progress from fundamentals through mastery.
+    """
+
+    def __init__(self, name='Scarab Standard Curriculum'):
+        self.name = name
+        self.units = []
+
+    def add_unit(self, unit):
+        """Add a unit to the curriculum."""
+        self.units.append(unit)
+
+    def build_standard(self):
+        """Build the standard Scarab curriculum."""
+        standard_units = [
+            ('U01', 'Foundations', 'Basic symbols and zones',
+             {'min_sessions': 1}, 'warmup'),
+            ('U02', 'Zone Mastery', 'Accurate zone placement',
+             {'min_sessions': 3, 'min_score': 55}, 'drill_zone'),
+            ('U03', 'Group Awareness', 'Kryukov group transitions',
+             {'min_sessions': 5, 'min_score': 60}, 'group_flow'),
+            ('U04', 'Consistency', 'Maintain steady performance',
+             {'min_sessions': 8, 'min_score': 65, 'min_mastery': 2}, None),
+            ('U05', 'Intermediate Flow', 'Complex sequences',
+             {'min_sessions': 10, 'min_score': 70, 'min_mastery': 3},
+             'endurance'),
+            ('U06', 'Speed & Precision', 'Fast accurate execution',
+             {'min_sessions': 12, 'min_score': 75, 'min_mastery': 3},
+             'speed_run'),
+            ('U07', 'Advanced Techniques', 'High-group symbols',
+             {'min_sessions': 15, 'min_score': 80, 'min_mastery': 4}, None),
+            ('U08', 'Peak Defense', 'Group 7 mastery',
+             {'min_sessions': 20, 'min_score': 85, 'min_mastery': 5},
+             'peak_challenge'),
+            ('U09', 'Mastery', 'Full proficiency',
+             {'min_sessions': 25, 'min_score': 90, 'min_mastery': 6,
+              'min_badges': 8}, None),
+            ('U10', 'Grand Master', 'Peak performance',
+             {'min_sessions': 30, 'min_score': 95, 'min_mastery': 7,
+              'min_badges': 10}, None),
+        ]
+
+        for uid, title, desc, reqs, tmpl in standard_units:
+            self.add_unit(CurriculumUnit(uid, title, desc, reqs, tmpl))
+
+        return self
+
+    def evaluate(self, student):
+        """Evaluate student progress through curriculum."""
+        results = []
+        current_unit = None
+        for unit in self.units:
+            passed = unit.check_completion(student)
+            results.append({
+                'unit_id': unit.unit_id,
+                'title': unit.title,
+                'completed': passed,
+                'template': unit.template_id,
+            })
+            if not passed and current_unit is None:
+                current_unit = unit
+
+        completed = sum(1 for r in results if r['completed'])
+        return {
+            'student': student.name,
+            'total_units': len(self.units),
+            'completed': completed,
+            'progress_pct': round(completed / len(self.units) * 100, 1)
+                            if self.units else 0,
+            'current_unit': current_unit,
+            'units': results,
+        }
+
+    def format_curriculum(self, eval_result):
+        """Format curriculum progress."""
+        lines = [f"Curriculum: {self.name}"]
+        lines.append(f"Student: {eval_result['student']}")
+        lines.append("═" * 55)
+
+        for r in eval_result['units']:
+            icon = '✓' if r['completed'] else '○'
+            tmpl = f" [{r['template']}]" if r['template'] else ''
+            lines.append(f"  {icon} {r['unit_id']} {r['title']}{tmpl}")
+
+        cu = eval_result['current_unit']
+        curr_str = cu.title if cu else 'COMPLETE'
+        lines.append("─" * 55)
+        lines.append(f"  Progress: {eval_result['completed']}/"
+                     f"{eval_result['total_units']} "
+                     f"({eval_result['progress_pct']}%)  "
+                     f"Current: {curr_str}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SCHOOL PROGRESS TRACKER (v35)
+# ═══════════════════════════════════════════════════════════
+
+def school_progress_overview(school, curriculum=None):
+    """
+    Compute school-wide progress overview.
+
+    Aggregates stats across all students.
+    """
+    students = school.students
+    n = len(students)
+    if n == 0:
+        return {'n_students': 0}
+
+    all_scores = []
+    all_sessions = 0
+    masteries = []
+    badge_counts = []
+
+    for name, st in students.items():
+        scores = [s['pct'] for s in st.sessions]
+        all_scores.extend(scores)
+        all_sessions += len(scores)
+        masteries.append(st.mastery_level)
+        badge_counts.append(len(check_badges(st)))
+
+    avg_score = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
+    avg_mastery = round(sum(masteries) / n, 1)
+    avg_badges = round(sum(badge_counts) / n, 1)
+
+    # Curriculum progress per student
+    curriculum_data = []
+    if curriculum:
+        for name, st in students.items():
+            ev = curriculum.evaluate(st)
+            curriculum_data.append({
+                'name': name,
+                'progress': ev['progress_pct'],
+                'completed': ev['completed'],
+                'total': ev['total_units'],
+            })
+
+    return {
+        'school_name': school.name,
+        'n_students': n,
+        'total_sessions': all_sessions,
+        'avg_score': avg_score,
+        'avg_mastery': avg_mastery,
+        'avg_badges': avg_badges,
+        'mastery_distribution': {
+            i: sum(1 for m in masteries if m == i) for i in range(1, 8)
+        },
+        'curriculum': curriculum_data,
+    }
+
+
+def format_school_overview(overview):
+    """Format school progress overview."""
+    lines = []
+    lines.append("╔" + "═" * 56 + "╗")
+    title = f"School Overview: {overview['school_name']}"
+    lines.append("║" + f"  {title:^52s}" + "  ║")
+    lines.append("╚" + "═" * 56 + "╝")
+
+    lines.append(f"\n  Students: {overview['n_students']}  |  "
+                 f"Total sessions: {overview['total_sessions']}")
+    lines.append(f"  Avg score: {overview['avg_score']}%  |  "
+                 f"Avg mastery: L{overview['avg_mastery']}  |  "
+                 f"Avg badges: {overview['avg_badges']}")
+
+    # Mastery distribution
+    md = overview['mastery_distribution']
+    lines.append("\n  Mastery Distribution:")
+    for lvl in range(1, 8):
+        count = md.get(lvl, 0)
+        bar = '█' * (count * 3)
+        lines.append(f"    L{lvl}: {bar} {count}")
+
+    # Curriculum
+    if overview['curriculum']:
+        lines.append("\n  Curriculum Progress:")
+        for cd in overview['curriculum']:
+            bar_len = int(cd['progress'] / 5)
+            bar = '▓' * bar_len + '░' * (20 - bar_len)
+            lines.append(f"    {cd['name']:12s} [{bar}] "
+                         f"{cd['completed']}/{cd['total']} "
+                         f"({cd['progress']}%)")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# GRAND ARCHITECTURE SUMMARY (v35)
+# ═══════════════════════════════════════════════════════════
+
+def architecture_summary():
+    """
+    Generate a summary of the entire Scarab algorithm architecture.
+
+    Lists all major components with version and category.
+    """
+    components = [
+        # (name, version, category)
+        ('Symbol mapping (64 sym, 7 groups)', 'v1', 'Core'),
+        ('Zone rules (R1-R5)', 'v1', 'Core'),
+        ('Dual-path tact structure', 'v1', 'Core'),
+        ('StudentTracker', 'v2', 'Tracking'),
+        ('Mastery levels (L1-L7)', 'v3', 'Progression'),
+        ('ScarabSchool', 'v7', 'Management'),
+        ('Library system', 'v8', 'Content'),
+        ('Session generation', 'v9', 'Training'),
+        ('Violation engine', 'v10', 'Validation'),
+        ('Resonance analysis', 'v11', 'Analysis'),
+        ('Group interaction matrix', 'v12', 'Analysis'),
+        ('Adaptive difficulty', 'v13', 'Training'),
+        ('ELO rating system', 'v14', 'Ranking'),
+        ('Export/Import JSON', 'v15', 'Data'),
+        ('Tournament system', 'v16', 'Competition'),
+        ('Multi-school federation', 'v17', 'Management'),
+        ('SVG diagram generator', 'v18', 'Visualization'),
+        ('Compact kata notation', 'v19', 'Encoding'),
+        ('Timeline system', 'v20', 'History'),
+        ('Group×Rule heatmap', 'v21', 'Analysis'),
+        ('Matchmaking', 'v22', 'Competition'),
+        ('Graduation system', 'v23', 'Progression'),
+        ('Kata grading engine', 'v25', 'Assessment'),
+        ('Kata diff / comparison', 'v28', 'Analysis'),
+        ('Achievement / badge system', 'v28', 'Gamification'),
+        ('Annotated replay', 'v28', 'Review'),
+        ('Data export CSV/JSON', 'v29', 'Data'),
+        ('Notification manager', 'v29', 'Communication'),
+        ('Report generator', 'v29', 'Reporting'),
+        ('Training scheduler', 'v30', 'Planning'),
+        ('Analytics dashboard', 'v30', 'Analysis'),
+        ('Custom rule builder', 'v30', 'Validation'),
+        ('Goal tracking', 'v31', 'Progression'),
+        ('Peer comparison', 'v31', 'Ranking'),
+        ('Session playback', 'v31', 'Review'),
+        ('Training templates', 'v32', 'Training'),
+        ('Correlation analysis', 'v32', 'Analysis'),
+        ('System configuration', 'v32', 'Core'),
+        ('Feedback loop', 'v33', 'Training'),
+        ('Progression path', 'v33', 'Visualization'),
+        ('Session heatmap', 'v33', 'Visualization'),
+        ('Event log', 'v34', 'Logging'),
+        ('Kata difficulty scorer', 'v34', 'Assessment'),
+        ('Performance predictor', 'v34', 'Analysis'),
+        ('Curriculum system', 'v35', 'Progression'),
+        ('School progress tracker', 'v35', 'Management'),
+    ]
+
+    # Group by category
+    categories = {}
+    for name, ver, cat in components:
+        categories.setdefault(cat, []).append((name, ver))
+
+    lines = ["SCARAB ALGORITHM — Architecture Summary"]
+    lines.append("═" * 55)
+    lines.append(f"  Components: {len(components)}  |  "
+                 f"Categories: {len(categories)}  |  "
+                 f"Versions: v1-v35")
+
+    for cat in sorted(categories.keys()):
+        items = categories[cat]
+        lines.append(f"\n  [{cat}] ({len(items)} components)")
+        for name, ver in items:
+            lines.append(f"    {ver:4s} │ {name}")
+
+    lines.append("\n" + "═" * 55)
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -13507,3 +13819,23 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v34: Event log, kata difficulty scorer, performance predictor.")
+
+    # 114. Curriculum System
+    print("\n--- Curriculum ---")
+    curriculum = Curriculum().build_standard()
+    for sname in ['Anna', 'Ivan']:
+        ev = curriculum.evaluate(sim_school.students[sname])
+        print(curriculum.format_curriculum(ev))
+
+    # 115. School Progress Overview
+    print("\n--- School Progress Overview ---")
+    overview = school_progress_overview(sim_school, curriculum=curriculum)
+    print(format_school_overview(overview))
+
+    # 116. Architecture Summary
+    print("\n--- Architecture Summary ---")
+    print(architecture_summary())
+
+    print("\n" + "=" * 60)
+    print("v35: Curriculum, school progress, architecture summary.")
+    print(f"\nFINAL: 116 demos, 50 parts, v1-v35.")
