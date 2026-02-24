@@ -27454,6 +27454,1522 @@ def version_history_v70():
     return '\n'.join(lines)
 
 
+# ============================================================
+# v71 — L2 Cache, CDN Simulator, Connection Pool
+# ============================================================
+
+class L2Cache:
+    """Two-level cache: fast L1 (small) + slower L2 (large)."""
+
+    def __init__(self, l1_size=50, l2_size=500):
+        self.l1 = {}
+        self.l2 = {}
+        self.l1_size = l1_size
+        self.l2_size = l2_size
+        self.l1_order = []
+        self.l2_order = []
+        self.stats = {'l1_hits': 0, 'l2_hits': 0, 'misses': 0,
+                      'promotions': 0, 'evictions': 0}
+
+    def get(self, key):
+        if key in self.l1:
+            self.stats['l1_hits'] += 1
+            self.l1_order.remove(key)
+            self.l1_order.append(key)
+            return self.l1[key]
+        if key in self.l2:
+            self.stats['l2_hits'] += 1
+            value = self.l2.pop(key)
+            self.l2_order.remove(key)
+            self._put_l1(key, value)
+            self.stats['promotions'] += 1
+            return value
+        self.stats['misses'] += 1
+        return None
+
+    def put(self, key, value):
+        if key in self.l1:
+            self.l1[key] = value
+            self.l1_order.remove(key)
+            self.l1_order.append(key)
+            return
+        self._put_l1(key, value)
+
+    def _put_l1(self, key, value):
+        if len(self.l1) >= self.l1_size:
+            evicted_key = self.l1_order.pop(0)
+            evicted_val = self.l1.pop(evicted_key)
+            self._put_l2(evicted_key, evicted_val)
+        self.l1[key] = value
+        self.l1_order.append(key)
+
+    def _put_l2(self, key, value):
+        if len(self.l2) >= self.l2_size:
+            old_key = self.l2_order.pop(0)
+            self.l2.pop(old_key, None)
+            self.stats['evictions'] += 1
+        self.l2[key] = value
+        self.l2_order.append(key)
+
+    def invalidate(self, key):
+        self.l1.pop(key, None)
+        self.l2.pop(key, None)
+        if key in self.l1_order:
+            self.l1_order.remove(key)
+        if key in self.l2_order:
+            self.l2_order.remove(key)
+
+    def clear(self):
+        self.l1.clear()
+        self.l2.clear()
+        self.l1_order.clear()
+        self.l2_order.clear()
+
+    def get_hit_rate(self):
+        total = (self.stats['l1_hits'] + self.stats['l2_hits']
+                 + self.stats['misses'])
+        if total == 0:
+            return 0.0
+        return (self.stats['l1_hits'] + self.stats['l2_hits']) / total
+
+    def get_stats(self):
+        return {
+            'l1_size': len(self.l1),
+            'l2_size': len(self.l2),
+            'l1_capacity': self.l1_size,
+            'l2_capacity': self.l2_size,
+            **self.stats,
+            'hit_rate': self.get_hit_rate(),
+        }
+
+
+class CDNSimulator:
+    """Content Delivery Network simulator with edge nodes."""
+
+    def __init__(self):
+        self.origin = {}
+        self.edges = {}
+        self.request_log = []
+        self.latency = {'origin': 100, 'edge': 10}
+
+    def add_edge(self, edge_id, region='default'):
+        self.edges[edge_id] = {
+            'region': region,
+            'cache': {},
+            'hits': 0,
+            'misses': 0,
+        }
+
+    def set_origin(self, key, value):
+        self.origin[key] = value
+
+    def request(self, edge_id, key):
+        if edge_id not in self.edges:
+            return None
+        edge = self.edges[edge_id]
+        if key in edge['cache']:
+            edge['hits'] += 1
+            self.request_log.append({
+                'edge': edge_id, 'key': key,
+                'source': 'edge', 'latency': self.latency['edge'],
+            })
+            return edge['cache'][key]
+        edge['misses'] += 1
+        if key in self.origin:
+            value = self.origin[key]
+            edge['cache'][key] = value
+            self.request_log.append({
+                'edge': edge_id, 'key': key,
+                'source': 'origin', 'latency': self.latency['origin'],
+            })
+            return value
+        self.request_log.append({
+            'edge': edge_id, 'key': key,
+            'source': 'miss', 'latency': self.latency['origin'],
+        })
+        return None
+
+    def invalidate(self, key):
+        for edge in self.edges.values():
+            edge['cache'].pop(key, None)
+
+    def purge_edge(self, edge_id):
+        if edge_id in self.edges:
+            self.edges[edge_id]['cache'].clear()
+
+    def get_edge_stats(self, edge_id):
+        if edge_id not in self.edges:
+            return None
+        edge = self.edges[edge_id]
+        total = edge['hits'] + edge['misses']
+        return {
+            'region': edge['region'],
+            'cached_items': len(edge['cache']),
+            'hits': edge['hits'],
+            'misses': edge['misses'],
+            'hit_rate': edge['hits'] / max(total, 1),
+        }
+
+    def get_stats(self):
+        total_hits = sum(e['hits'] for e in self.edges.values())
+        total_misses = sum(e['misses'] for e in self.edges.values())
+        total = total_hits + total_misses
+        avg_latency = (sum(r['latency'] for r in self.request_log)
+                       / max(len(self.request_log), 1))
+        return {
+            'edges': len(self.edges),
+            'origin_items': len(self.origin),
+            'total_requests': total,
+            'overall_hit_rate': total_hits / max(total, 1),
+            'avg_latency': avg_latency,
+        }
+
+
+class ConnectionPool:
+    """Connection pool for resource management."""
+
+    def __init__(self, max_size=10, min_size=2):
+        self.max_size = max_size
+        self.min_size = min_size
+        self.available = []
+        self.in_use = {}
+        self.next_id = 1
+        self.stats = {'acquired': 0, 'released': 0,
+                      'created': 0, 'destroyed': 0,
+                      'waits': 0}
+        for _ in range(min_size):
+            self._create_connection()
+
+    def _create_connection(self):
+        conn_id = f"conn_{self.next_id}"
+        self.next_id += 1
+        conn = {'id': conn_id, 'status': 'available', 'uses': 0}
+        self.available.append(conn)
+        self.stats['created'] += 1
+        return conn
+
+    def acquire(self, client_id='default'):
+        if self.available:
+            conn = self.available.pop(0)
+        elif len(self.in_use) < self.max_size:
+            conn = self._create_connection()
+            self.available.remove(conn)
+        else:
+            self.stats['waits'] += 1
+            return None
+        conn['status'] = 'in_use'
+        conn['uses'] += 1
+        self.in_use[conn['id']] = {
+            'conn': conn, 'client': client_id,
+        }
+        self.stats['acquired'] += 1
+        return conn['id']
+
+    def release(self, conn_id):
+        if conn_id not in self.in_use:
+            return False
+        entry = self.in_use.pop(conn_id)
+        conn = entry['conn']
+        conn['status'] = 'available'
+        self.available.append(conn)
+        self.stats['released'] += 1
+        return True
+
+    def destroy(self, conn_id):
+        if conn_id in self.in_use:
+            self.in_use.pop(conn_id)
+        else:
+            self.available = [c for c in self.available
+                              if c['id'] != conn_id]
+        self.stats['destroyed'] += 1
+
+    def get_pool_size(self):
+        return len(self.available) + len(self.in_use)
+
+    def get_stats(self):
+        return {
+            'pool_size': self.get_pool_size(),
+            'available': len(self.available),
+            'in_use': len(self.in_use),
+            'max_size': self.max_size,
+            **self.stats,
+        }
+
+
+def format_l2_cache(cache):
+    stats = cache.get_stats()
+    lines = ["=== L2 Cache ==="]
+    lines.append(f"L1: {stats['l1_size']}/{stats['l1_capacity']}")
+    lines.append(f"L2: {stats['l2_size']}/{stats['l2_capacity']}")
+    lines.append(f"L1 hits: {stats['l1_hits']}, "
+                 f"L2 hits: {stats['l2_hits']}, "
+                 f"Misses: {stats['misses']}")
+    lines.append(f"Hit rate: {stats['hit_rate']:.1%}")
+    lines.append(f"Promotions: {stats['promotions']}, "
+                 f"Evictions: {stats['evictions']}")
+    return '\n'.join(lines)
+
+
+def format_cdn(cdn):
+    stats = cdn.get_stats()
+    lines = ["=== CDN Simulator ==="]
+    lines.append(f"Edge nodes: {stats['edges']}")
+    lines.append(f"Origin items: {stats['origin_items']}")
+    lines.append(f"Total requests: {stats['total_requests']}")
+    lines.append(f"Hit rate: {stats['overall_hit_rate']:.1%}")
+    lines.append(f"Avg latency: {stats['avg_latency']:.0f}ms")
+    return '\n'.join(lines)
+
+
+def format_connection_pool(pool):
+    stats = pool.get_stats()
+    lines = ["=== Connection Pool ==="]
+    lines.append(f"Pool: {stats['pool_size']}/{stats['max_size']}")
+    lines.append(f"Available: {stats['available']}, "
+                 f"In use: {stats['in_use']}")
+    lines.append(f"Created: {stats['created']}, "
+                 f"Destroyed: {stats['destroyed']}")
+    lines.append(f"Waits: {stats['waits']}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v72 — ORM System, Query Builder, Schema Migration
+# ============================================================
+
+class ORMSystem:
+    """Object-Relational Mapping system with in-memory tables."""
+
+    def __init__(self):
+        self.tables = {}
+        self.next_ids = {}
+
+    def define_table(self, name, columns):
+        self.tables[name] = {
+            'columns': columns,
+            'rows': [],
+            'indexes': {},
+        }
+        self.next_ids[name] = 1
+
+    def insert(self, table, data):
+        if table not in self.tables:
+            return None
+        row_id = self.next_ids[table]
+        self.next_ids[table] += 1
+        row = {'id': row_id, **data}
+        self.tables[table]['rows'].append(row)
+        return row_id
+
+    def select(self, table, where=None):
+        if table not in self.tables:
+            return []
+        rows = self.tables[table]['rows']
+        if where is None:
+            return [dict(r) for r in rows]
+        return [dict(r) for r in rows if where(r)]
+
+    def update(self, table, where, updates):
+        if table not in self.tables:
+            return 0
+        count = 0
+        for row in self.tables[table]['rows']:
+            if where(row):
+                row.update(updates)
+                count += 1
+        return count
+
+    def delete(self, table, where):
+        if table not in self.tables:
+            return 0
+        original = len(self.tables[table]['rows'])
+        self.tables[table]['rows'] = [
+            r for r in self.tables[table]['rows']
+            if not where(r)
+        ]
+        return original - len(self.tables[table]['rows'])
+
+    def count(self, table, where=None):
+        return len(self.select(table, where))
+
+    def create_index(self, table, column):
+        if table not in self.tables:
+            return False
+        idx = {}
+        for row in self.tables[table]['rows']:
+            val = row.get(column)
+            if val not in idx:
+                idx[val] = []
+            idx[val].append(row['id'])
+        self.tables[table]['indexes'][column] = idx
+        return True
+
+    def get_tables(self):
+        return list(self.tables.keys())
+
+    def get_stats(self):
+        total_rows = sum(len(t['rows']) for t in self.tables.values())
+        return {
+            'tables': len(self.tables),
+            'total_rows': total_rows,
+            'indexes': sum(len(t['indexes'])
+                          for t in self.tables.values()),
+        }
+
+
+class QueryBuilder:
+    """Fluent query builder for constructing complex queries."""
+
+    def __init__(self, orm):
+        self.orm = orm
+        self._table = None
+        self._filters = []
+        self._order_by = None
+        self._order_dir = 'asc'
+        self._limit_val = None
+        self._offset_val = 0
+        self._select_cols = None
+
+    def table(self, name):
+        self._table = name
+        self._filters = []
+        self._order_by = None
+        self._limit_val = None
+        self._offset_val = 0
+        self._select_cols = None
+        return self
+
+    def where(self, field, op, value):
+        self._filters.append((field, op, value))
+        return self
+
+    def order_by(self, field, direction='asc'):
+        self._order_by = field
+        self._order_dir = direction
+        return self
+
+    def limit(self, n):
+        self._limit_val = n
+        return self
+
+    def offset(self, n):
+        self._offset_val = n
+        return self
+
+    def columns(self, *cols):
+        self._select_cols = list(cols)
+        return self
+
+    def _match(self, row):
+        for field, op, value in self._filters:
+            rv = row.get(field)
+            if op == '=' and rv != value:
+                return False
+            elif op == '!=' and rv == value:
+                return False
+            elif op == '>' and not (rv is not None and rv > value):
+                return False
+            elif op == '<' and not (rv is not None and rv < value):
+                return False
+            elif op == '>=' and not (rv is not None and rv >= value):
+                return False
+            elif op == '<=' and not (rv is not None and rv <= value):
+                return False
+            elif op == 'in' and rv not in value:
+                return False
+            elif op == 'like' and value not in str(rv):
+                return False
+        return True
+
+    def execute(self):
+        rows = self.orm.select(self._table,
+                               lambda r: self._match(r))
+        if self._order_by:
+            rev = self._order_dir == 'desc'
+            rows.sort(key=lambda r: r.get(self._order_by, ''),
+                      reverse=rev)
+        if self._offset_val:
+            rows = rows[self._offset_val:]
+        if self._limit_val:
+            rows = rows[:self._limit_val]
+        if self._select_cols:
+            rows = [{c: r.get(c) for c in self._select_cols}
+                    for r in rows]
+        return rows
+
+    def count(self):
+        return len(self.execute())
+
+    def first(self):
+        rows = self.execute()
+        return rows[0] if rows else None
+
+
+class SchemaMigration:
+    """Schema migration system for database evolution."""
+
+    def __init__(self, orm):
+        self.orm = orm
+        self.migrations = []
+        self.applied = []
+        self.version = 0
+
+    def add_migration(self, name, up_fn, down_fn):
+        self.migrations.append({
+            'name': name,
+            'up': up_fn,
+            'down': down_fn,
+            'version': len(self.migrations) + 1,
+        })
+
+    def migrate_up(self, steps=1):
+        applied = []
+        for _ in range(steps):
+            if self.version >= len(self.migrations):
+                break
+            migration = self.migrations[self.version]
+            migration['up'](self.orm)
+            self.version += 1
+            self.applied.append(migration['name'])
+            applied.append(migration['name'])
+        return applied
+
+    def migrate_down(self, steps=1):
+        rolled_back = []
+        for _ in range(steps):
+            if self.version <= 0:
+                break
+            self.version -= 1
+            migration = self.migrations[self.version]
+            migration['down'](self.orm)
+            if self.applied:
+                self.applied.pop()
+            rolled_back.append(migration['name'])
+        return rolled_back
+
+    def migrate_to(self, target_version):
+        if target_version > self.version:
+            return self.migrate_up(target_version - self.version)
+        elif target_version < self.version:
+            return self.migrate_down(self.version - target_version)
+        return []
+
+    def get_status(self):
+        return {
+            'current_version': self.version,
+            'total_migrations': len(self.migrations),
+            'applied': list(self.applied),
+            'pending': [m['name'] for m in
+                        self.migrations[self.version:]],
+        }
+
+
+def format_orm(orm):
+    stats = orm.get_stats()
+    lines = ["=== ORM System ==="]
+    lines.append(f"Tables: {stats['tables']}")
+    lines.append(f"Total rows: {stats['total_rows']}")
+    lines.append(f"Indexes: {stats['indexes']}")
+    for tbl in orm.get_tables():
+        rows = len(orm.tables[tbl]['rows'])
+        lines.append(f"  {tbl}: {rows} rows")
+    return '\n'.join(lines)
+
+
+def format_query_result(rows):
+    lines = ["=== Query Result ==="]
+    lines.append(f"Rows: {len(rows)}")
+    for r in rows[:5]:
+        lines.append(f"  {r}")
+    if len(rows) > 5:
+        lines.append(f"  ... and {len(rows) - 5} more")
+    return '\n'.join(lines)
+
+
+def format_schema_migration(sm):
+    status = sm.get_status()
+    lines = ["=== Schema Migration ==="]
+    lines.append(f"Version: {status['current_version']}"
+                 f"/{status['total_migrations']}")
+    lines.append(f"Applied: {', '.join(status['applied'])}")
+    if status['pending']:
+        lines.append(f"Pending: {', '.join(status['pending'])}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v73 — Template Compiler, AST Parser, Expression Evaluator
+# ============================================================
+
+class TemplateCompiler:
+    """Compiles templates into executable instruction sequences."""
+
+    def __init__(self):
+        self.compiled = {}
+
+    def compile(self, name, source):
+        instructions = []
+        pos = 0
+        while pos < len(source):
+            start = source.find('{{', pos)
+            if start == -1:
+                instructions.append(('text', source[pos:]))
+                break
+            if start > pos:
+                instructions.append(('text', source[pos:start]))
+            end = source.find('}}', start)
+            if end == -1:
+                instructions.append(('text', source[pos:]))
+                break
+            expr = source[start + 2:end].strip()
+            if expr.startswith('if '):
+                instructions.append(('if', expr[3:].strip()))
+            elif expr == 'endif':
+                instructions.append(('endif', ''))
+            elif expr.startswith('for '):
+                parts = expr[4:].split(' in ')
+                if len(parts) == 2:
+                    instructions.append(
+                        ('for', (parts[0].strip(), parts[1].strip())))
+            elif expr == 'endfor':
+                instructions.append(('endfor', ''))
+            elif expr.startswith('call '):
+                instructions.append(('call', expr[5:].strip()))
+            else:
+                instructions.append(('var', expr))
+            pos = end + 2
+        self.compiled[name] = instructions
+        return len(instructions)
+
+    def execute(self, name, context):
+        if name not in self.compiled:
+            return ''
+        instructions = self.compiled[name]
+        return self._run(instructions, context)
+
+    def _run(self, instructions, context):
+        output = []
+        i = 0
+        while i < len(instructions):
+            op, arg = instructions[i]
+            if op == 'text':
+                output.append(arg)
+            elif op == 'var':
+                val = context.get(arg, '')
+                output.append(str(val))
+            elif op == 'if':
+                condition_val = context.get(arg, False)
+                if_block = []
+                depth = 1
+                i += 1
+                while i < len(instructions) and depth > 0:
+                    if instructions[i][0] == 'if':
+                        depth += 1
+                    elif instructions[i][0] == 'endif':
+                        depth -= 1
+                    if depth > 0:
+                        if_block.append(instructions[i])
+                    i += 1
+                if condition_val:
+                    output.append(self._run(if_block, context))
+                continue
+            elif op == 'for':
+                var_name, list_name = arg
+                items = context.get(list_name, [])
+                for_block = []
+                depth = 1
+                i += 1
+                while i < len(instructions) and depth > 0:
+                    if instructions[i][0] == 'for':
+                        depth += 1
+                    elif instructions[i][0] == 'endfor':
+                        depth -= 1
+                    if depth > 0:
+                        for_block.append(instructions[i])
+                    i += 1
+                for item in items:
+                    ctx = dict(context)
+                    ctx[var_name] = item
+                    output.append(self._run(for_block, ctx))
+                continue
+            elif op == 'call':
+                fn = context.get(arg)
+                if callable(fn):
+                    output.append(str(fn(context)))
+            i += 1
+        return ''.join(output)
+
+    def get_compiled_names(self):
+        return list(self.compiled.keys())
+
+
+class ASTParser:
+    """Abstract Syntax Tree parser for simple expressions."""
+
+    def __init__(self):
+        self.parsed = {}
+
+    def parse(self, expression):
+        tokens = self._tokenize(expression)
+        ast = self._parse_expr(tokens, 0)
+        return ast[0]
+
+    def _tokenize(self, expr):
+        tokens = []
+        i = 0
+        while i < len(expr):
+            if expr[i].isspace():
+                i += 1
+            elif expr[i].isdigit() or (expr[i] == '.'
+                                        and i + 1 < len(expr)
+                                        and expr[i + 1].isdigit()):
+                j = i
+                while j < len(expr) and (expr[j].isdigit()
+                                          or expr[j] == '.'):
+                    j += 1
+                tokens.append(('num', float(expr[i:j])))
+                i = j
+            elif expr[i].isalpha() or expr[i] == '_':
+                j = i
+                while j < len(expr) and (expr[j].isalnum()
+                                          or expr[j] == '_'):
+                    j += 1
+                tokens.append(('id', expr[i:j]))
+                i = j
+            elif expr[i] in '+-':
+                tokens.append(('op', expr[i]))
+                i += 1
+            elif expr[i] in '*/':
+                tokens.append(('op', expr[i]))
+                i += 1
+            elif expr[i] == '(':
+                tokens.append(('lparen', '('))
+                i += 1
+            elif expr[i] == ')':
+                tokens.append(('rparen', ')'))
+                i += 1
+            elif expr[i] == ',':
+                tokens.append(('comma', ','))
+                i += 1
+            else:
+                i += 1
+        return tokens
+
+    def _parse_expr(self, tokens, pos):
+        left, pos = self._parse_term(tokens, pos)
+        while (pos < len(tokens) and tokens[pos][0] == 'op'
+               and tokens[pos][1] in '+-'):
+            op = tokens[pos][1]
+            pos += 1
+            right, pos = self._parse_term(tokens, pos)
+            left = {'type': 'binop', 'op': op,
+                    'left': left, 'right': right}
+        return left, pos
+
+    def _parse_term(self, tokens, pos):
+        left, pos = self._parse_factor(tokens, pos)
+        while (pos < len(tokens) and tokens[pos][0] == 'op'
+               and tokens[pos][1] in '*/'):
+            op = tokens[pos][1]
+            pos += 1
+            right, pos = self._parse_factor(tokens, pos)
+            left = {'type': 'binop', 'op': op,
+                    'left': left, 'right': right}
+        return left, pos
+
+    def _parse_factor(self, tokens, pos):
+        if pos >= len(tokens):
+            return {'type': 'num', 'value': 0}, pos
+        tok = tokens[pos]
+        if tok[0] == 'num':
+            return {'type': 'num', 'value': tok[1]}, pos + 1
+        elif tok[0] == 'id':
+            name = tok[1]
+            if (pos + 1 < len(tokens)
+                    and tokens[pos + 1][0] == 'lparen'):
+                pos += 2
+                args = []
+                while pos < len(tokens) and tokens[pos][0] != 'rparen':
+                    arg, pos = self._parse_expr(tokens, pos)
+                    args.append(arg)
+                    if (pos < len(tokens)
+                            and tokens[pos][0] == 'comma'):
+                        pos += 1
+                if pos < len(tokens):
+                    pos += 1
+                return {'type': 'call', 'name': name,
+                        'args': args}, pos
+            return {'type': 'var', 'name': name}, pos + 1
+        elif tok[0] == 'lparen':
+            pos += 1
+            node, pos = self._parse_expr(tokens, pos)
+            if pos < len(tokens) and tokens[pos][0] == 'rparen':
+                pos += 1
+            return node, pos
+        return {'type': 'num', 'value': 0}, pos + 1
+
+    def evaluate(self, ast, context=None):
+        ctx = context or {}
+        return self._eval_node(ast, ctx)
+
+    def _eval_node(self, node, ctx):
+        if node['type'] == 'num':
+            return node['value']
+        elif node['type'] == 'var':
+            return ctx.get(node['name'], 0)
+        elif node['type'] == 'binop':
+            left = self._eval_node(node['left'], ctx)
+            right = self._eval_node(node['right'], ctx)
+            if node['op'] == '+':
+                return left + right
+            elif node['op'] == '-':
+                return left - right
+            elif node['op'] == '*':
+                return left * right
+            elif node['op'] == '/':
+                return left / right if right != 0 else 0
+        elif node['type'] == 'call':
+            fn = ctx.get(node['name'])
+            if callable(fn):
+                args = [self._eval_node(a, ctx) for a in node['args']]
+                return fn(*args)
+        return 0
+
+
+class ExpressionEvaluator:
+    """Safe expression evaluator with variable binding."""
+
+    def __init__(self):
+        self.variables = {}
+        self.functions = {
+            'abs': abs,
+            'min': min,
+            'max': max,
+            'round': round,
+        }
+        self.parser = ASTParser()
+        self.history = []
+
+    def set_variable(self, name, value):
+        self.variables[name] = value
+
+    def set_function(self, name, fn):
+        self.functions[name] = fn
+
+    def evaluate(self, expression):
+        ctx = {**self.variables, **self.functions}
+        ast = self.parser.parse(expression)
+        result = self.parser.evaluate(ast, ctx)
+        self.history.append({
+            'expression': expression,
+            'result': result,
+        })
+        return result
+
+    def batch_evaluate(self, expressions):
+        return [self.evaluate(e) for e in expressions]
+
+    def get_history(self, limit=10):
+        return self.history[-limit:]
+
+    def clear_variables(self):
+        self.variables.clear()
+
+
+def format_template_compiler(tc):
+    lines = ["=== Template Compiler ==="]
+    names = tc.get_compiled_names()
+    lines.append(f"Compiled templates: {len(names)}")
+    for n in names:
+        lines.append(f"  {n}: "
+                     f"{len(tc.compiled[n])} instructions")
+    return '\n'.join(lines)
+
+
+def format_ast_node(node, indent=0):
+    prefix = "  " * indent
+    if node['type'] == 'num':
+        return f"{prefix}NUM({node['value']})"
+    elif node['type'] == 'var':
+        return f"{prefix}VAR({node['name']})"
+    elif node['type'] == 'binop':
+        lines = [f"{prefix}OP({node['op']})"]
+        lines.append(format_ast_node(node['left'], indent + 1))
+        lines.append(format_ast_node(node['right'], indent + 1))
+        return '\n'.join(lines)
+    elif node['type'] == 'call':
+        lines = [f"{prefix}CALL({node['name']})"]
+        for a in node['args']:
+            lines.append(format_ast_node(a, indent + 1))
+        return '\n'.join(lines)
+    return f"{prefix}UNKNOWN"
+
+
+def format_expression_evaluator(ee):
+    lines = ["=== Expression Evaluator ==="]
+    lines.append(f"Variables: {len(ee.variables)}")
+    lines.append(f"Functions: {len(ee.functions)}")
+    lines.append(f"History: {len(ee.history)} evaluations")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v74 — Reactive Stream, Observable, Event Emitter
+# ============================================================
+
+class ReactiveStream:
+    """Reactive stream with map, filter, reduce operators."""
+
+    def __init__(self, source=None):
+        self.source = list(source) if source else []
+        self.operators = []
+        self.subscribers = []
+
+    def of(self, *items):
+        self.source = list(items)
+        return self
+
+    def from_list(self, lst):
+        self.source = list(lst)
+        return self
+
+    def map(self, fn):
+        self.operators.append(('map', fn))
+        return self
+
+    def filter(self, fn):
+        self.operators.append(('filter', fn))
+        return self
+
+    def take(self, n):
+        self.operators.append(('take', n))
+        return self
+
+    def skip(self, n):
+        self.operators.append(('skip', n))
+        return self
+
+    def distinct(self):
+        self.operators.append(('distinct', None))
+        return self
+
+    def flatten(self):
+        self.operators.append(('flatten', None))
+        return self
+
+    def reduce(self, fn, initial=0):
+        self.operators.append(('reduce', (fn, initial)))
+        return self
+
+    def subscribe(self, on_next, on_error=None, on_complete=None):
+        self.subscribers.append({
+            'on_next': on_next,
+            'on_error': on_error,
+            'on_complete': on_complete,
+        })
+        return self
+
+    def execute(self):
+        data = list(self.source)
+        for op_type, op_arg in self.operators:
+            if op_type == 'map':
+                data = [op_arg(x) for x in data]
+            elif op_type == 'filter':
+                data = [x for x in data if op_arg(x)]
+            elif op_type == 'take':
+                data = data[:op_arg]
+            elif op_type == 'skip':
+                data = data[op_arg:]
+            elif op_type == 'distinct':
+                seen = set()
+                unique = []
+                for x in data:
+                    h = x if isinstance(x, (int, float, str)) else id(x)
+                    if h not in seen:
+                        seen.add(h)
+                        unique.append(x)
+                data = unique
+            elif op_type == 'flatten':
+                flat = []
+                for x in data:
+                    if isinstance(x, (list, tuple)):
+                        flat.extend(x)
+                    else:
+                        flat.append(x)
+                data = flat
+            elif op_type == 'reduce':
+                fn, initial = op_arg
+                acc = initial
+                for x in data:
+                    acc = fn(acc, x)
+                data = [acc]
+        for sub in self.subscribers:
+            try:
+                for item in data:
+                    sub['on_next'](item)
+                if sub['on_complete']:
+                    sub['on_complete']()
+            except Exception as e:
+                if sub['on_error']:
+                    sub['on_error'](e)
+        return data
+
+    def to_list(self):
+        return self.execute()
+
+
+class Observable:
+    """Observable pattern with subscription management."""
+
+    def __init__(self, name=''):
+        self.name = name
+        self.value = None
+        self.observers = []
+        self.history = []
+
+    def set(self, value):
+        old = self.value
+        self.value = value
+        self.history.append({'old': old, 'new': value})
+        self._notify(value)
+
+    def get(self):
+        return self.value
+
+    def observe(self, callback):
+        obs_id = len(self.observers)
+        self.observers.append({
+            'id': obs_id,
+            'callback': callback,
+            'active': True,
+        })
+        return obs_id
+
+    def unobserve(self, obs_id):
+        for obs in self.observers:
+            if obs['id'] == obs_id:
+                obs['active'] = False
+                return True
+        return False
+
+    def _notify(self, value):
+        for obs in self.observers:
+            if obs['active']:
+                obs['callback'](value)
+
+    def computed(self, transform_fn):
+        derived = Observable(f"derived_{self.name}")
+        def update(val):
+            derived.set(transform_fn(val))
+        self.observe(update)
+        if self.value is not None:
+            derived.set(transform_fn(self.value))
+        return derived
+
+    def get_history(self):
+        return list(self.history)
+
+    def get_observer_count(self):
+        return sum(1 for o in self.observers if o['active'])
+
+
+class EventEmitter:
+    """Node.js-style event emitter with once and wildcard."""
+
+    def __init__(self):
+        self.listeners = {}
+        self.once_listeners = {}
+        self.wildcard_listeners = []
+        self.emit_count = 0
+        self.max_listeners = 50
+
+    def on(self, event, callback):
+        if event not in self.listeners:
+            self.listeners[event] = []
+        if len(self.listeners[event]) >= self.max_listeners:
+            return False
+        self.listeners[event].append(callback)
+        return True
+
+    def once(self, event, callback):
+        if event not in self.once_listeners:
+            self.once_listeners[event] = []
+        self.once_listeners[event].append(callback)
+        return True
+
+    def on_any(self, callback):
+        self.wildcard_listeners.append(callback)
+
+    def off(self, event, callback=None):
+        if callback is None:
+            self.listeners.pop(event, None)
+            self.once_listeners.pop(event, None)
+        else:
+            if event in self.listeners:
+                self.listeners[event] = [
+                    cb for cb in self.listeners[event]
+                    if cb != callback
+                ]
+
+    def emit(self, event, *args, **kwargs):
+        self.emit_count += 1
+        count = 0
+        for cb in self.listeners.get(event, []):
+            cb(*args, **kwargs)
+            count += 1
+        for cb in self.once_listeners.pop(event, []):
+            cb(*args, **kwargs)
+            count += 1
+        for cb in self.wildcard_listeners:
+            cb(event, *args, **kwargs)
+            count += 1
+        return count
+
+    def event_names(self):
+        return list(set(list(self.listeners.keys())
+                        + list(self.once_listeners.keys())))
+
+    def listener_count(self, event):
+        return (len(self.listeners.get(event, []))
+                + len(self.once_listeners.get(event, [])))
+
+    def get_stats(self):
+        total = sum(len(v) for v in self.listeners.values())
+        return {
+            'events': len(self.listeners),
+            'total_listeners': total,
+            'wildcard_listeners': len(self.wildcard_listeners),
+            'emits': self.emit_count,
+        }
+
+
+def format_reactive_stream(rs):
+    lines = ["=== Reactive Stream ==="]
+    lines.append(f"Source items: {len(rs.source)}")
+    lines.append(f"Operators: {len(rs.operators)}")
+    lines.append(f"Subscribers: {len(rs.subscribers)}")
+    return '\n'.join(lines)
+
+
+def format_observable(obs):
+    lines = [f"=== Observable '{obs.name}' ==="]
+    lines.append(f"Value: {obs.value}")
+    lines.append(f"Observers: {obs.get_observer_count()}")
+    lines.append(f"History: {len(obs.history)} changes")
+    return '\n'.join(lines)
+
+
+def format_event_emitter(ee):
+    stats = ee.get_stats()
+    lines = ["=== Event Emitter ==="]
+    lines.append(f"Events: {stats['events']}")
+    lines.append(f"Listeners: {stats['total_listeners']}")
+    lines.append(f"Wildcards: {stats['wildcard_listeners']}")
+    lines.append(f"Emits: {stats['emits']}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v75 — Distributed Lock, Consensus Protocol, Resource Manager
+#        Semaphore, Throttle, 50K milestone
+# ============================================================
+
+class DistributedLock:
+    """Distributed lock manager for resource synchronization."""
+
+    def __init__(self):
+        self.locks = {}
+        self.wait_queue = {}
+        self.lock_history = []
+
+    def acquire(self, resource, owner, timeout=None):
+        if resource not in self.locks:
+            self.locks[resource] = {
+                'owner': owner,
+                'acquired': True,
+                'reentrant_count': 1,
+            }
+            self.lock_history.append({
+                'action': 'acquire',
+                'resource': resource,
+                'owner': owner,
+            })
+            return True
+        lock = self.locks[resource]
+        if lock['owner'] == owner:
+            lock['reentrant_count'] += 1
+            return True
+        if resource not in self.wait_queue:
+            self.wait_queue[resource] = []
+        self.wait_queue[resource].append(owner)
+        return False
+
+    def release(self, resource, owner):
+        if resource not in self.locks:
+            return False
+        lock = self.locks[resource]
+        if lock['owner'] != owner:
+            return False
+        lock['reentrant_count'] -= 1
+        if lock['reentrant_count'] <= 0:
+            self.lock_history.append({
+                'action': 'release',
+                'resource': resource,
+                'owner': owner,
+            })
+            waiters = self.wait_queue.get(resource, [])
+            if waiters:
+                next_owner = waiters.pop(0)
+                self.locks[resource] = {
+                    'owner': next_owner,
+                    'acquired': True,
+                    'reentrant_count': 1,
+                }
+                self.lock_history.append({
+                    'action': 'acquire',
+                    'resource': resource,
+                    'owner': next_owner,
+                })
+            else:
+                del self.locks[resource]
+        return True
+
+    def is_locked(self, resource):
+        return resource in self.locks
+
+    def get_owner(self, resource):
+        if resource in self.locks:
+            return self.locks[resource]['owner']
+        return None
+
+    def force_release(self, resource):
+        if resource in self.locks:
+            del self.locks[resource]
+            self.wait_queue.pop(resource, None)
+            return True
+        return False
+
+    def get_stats(self):
+        return {
+            'active_locks': len(self.locks),
+            'total_waiters': sum(len(q)
+                                 for q in self.wait_queue.values()),
+            'history_length': len(self.lock_history),
+        }
+
+
+class ConsensusProtocol:
+    """Simple consensus protocol (Raft-inspired) simulation."""
+
+    def __init__(self, node_count=5):
+        self.nodes = {}
+        for i in range(node_count):
+            self.nodes[f"node_{i}"] = {
+                'state': 'follower',
+                'term': 0,
+                'voted_for': None,
+                'log': [],
+            }
+        self.leader = None
+        self.committed = []
+        self.term = 0
+
+    def start_election(self, candidate_id):
+        if candidate_id not in self.nodes:
+            return False
+        self.term += 1
+        candidate = self.nodes[candidate_id]
+        candidate['state'] = 'candidate'
+        candidate['term'] = self.term
+        candidate['voted_for'] = candidate_id
+        votes = 1
+        for nid, node in self.nodes.items():
+            if nid == candidate_id:
+                continue
+            if node['voted_for'] is None or node['term'] < self.term:
+                node['voted_for'] = candidate_id
+                node['term'] = self.term
+                votes += 1
+        majority = len(self.nodes) // 2 + 1
+        if votes >= majority:
+            candidate['state'] = 'leader'
+            self.leader = candidate_id
+            for nid, node in self.nodes.items():
+                if nid != candidate_id:
+                    node['state'] = 'follower'
+            return True
+        candidate['state'] = 'follower'
+        return False
+
+    def propose(self, value):
+        if self.leader is None:
+            return False
+        entry = {'term': self.term, 'value': value, 'index': 0}
+        leader_node = self.nodes[self.leader]
+        entry['index'] = len(leader_node['log'])
+        leader_node['log'].append(entry)
+        acks = 1
+        for nid, node in self.nodes.items():
+            if nid == self.leader:
+                continue
+            node['log'].append(dict(entry))
+            acks += 1
+        majority = len(self.nodes) // 2 + 1
+        if acks >= majority:
+            self.committed.append(value)
+            return True
+        return False
+
+    def get_leader(self):
+        return self.leader
+
+    def get_committed(self):
+        return list(self.committed)
+
+    def get_node_state(self, node_id):
+        return dict(self.nodes.get(node_id, {}))
+
+    def get_stats(self):
+        return {
+            'nodes': len(self.nodes),
+            'term': self.term,
+            'leader': self.leader,
+            'committed': len(self.committed),
+            'log_sizes': {nid: len(n['log'])
+                          for nid, n in self.nodes.items()},
+        }
+
+
+class ResourceManager:
+    """Resource lifecycle manager with allocation tracking."""
+
+    def __init__(self):
+        self.resources = {}
+        self.allocations = {}
+        self.pools = {}
+
+    def register_resource(self, name, capacity=1, metadata=None):
+        self.resources[name] = {
+            'capacity': capacity,
+            'allocated': 0,
+            'metadata': metadata or {},
+        }
+
+    def allocate(self, resource, requester, amount=1):
+        if resource not in self.resources:
+            return False
+        res = self.resources[resource]
+        if res['allocated'] + amount > res['capacity']:
+            return False
+        res['allocated'] += amount
+        alloc_key = f"{resource}:{requester}"
+        if alloc_key not in self.allocations:
+            self.allocations[alloc_key] = 0
+        self.allocations[alloc_key] += amount
+        return True
+
+    def deallocate(self, resource, requester, amount=1):
+        alloc_key = f"{resource}:{requester}"
+        if alloc_key not in self.allocations:
+            return False
+        current = self.allocations[alloc_key]
+        actual = min(amount, current)
+        self.allocations[alloc_key] -= actual
+        self.resources[resource]['allocated'] -= actual
+        if self.allocations[alloc_key] <= 0:
+            del self.allocations[alloc_key]
+        return True
+
+    def get_available(self, resource):
+        if resource not in self.resources:
+            return 0
+        res = self.resources[resource]
+        return res['capacity'] - res['allocated']
+
+    def get_utilization(self, resource):
+        if resource not in self.resources:
+            return 0.0
+        res = self.resources[resource]
+        return res['allocated'] / max(res['capacity'], 1)
+
+    def get_stats(self):
+        return {
+            'resources': len(self.resources),
+            'active_allocations': len(self.allocations),
+            'total_capacity': sum(r['capacity']
+                                  for r in self.resources.values()),
+            'total_allocated': sum(r['allocated']
+                                   for r in self.resources.values()),
+        }
+
+
+class Semaphore:
+    """Counting semaphore for concurrent access control."""
+
+    def __init__(self, permits=1):
+        self.permits = permits
+        self.max_permits = permits
+        self.waiters = []
+        self.holders = []
+        self.acquire_count = 0
+
+    def acquire(self, holder_id='default'):
+        if self.permits > 0:
+            self.permits -= 1
+            self.holders.append(holder_id)
+            self.acquire_count += 1
+            return True
+        self.waiters.append(holder_id)
+        return False
+
+    def release(self, holder_id='default'):
+        if holder_id in self.holders:
+            self.holders.remove(holder_id)
+            self.permits += 1
+            if self.waiters and self.permits > 0:
+                next_holder = self.waiters.pop(0)
+                self.permits -= 1
+                self.holders.append(next_holder)
+                self.acquire_count += 1
+            return True
+        return False
+
+    def available(self):
+        return self.permits
+
+    def get_stats(self):
+        return {
+            'available': self.permits,
+            'max_permits': self.max_permits,
+            'holders': len(self.holders),
+            'waiters': len(self.waiters),
+            'total_acquires': self.acquire_count,
+        }
+
+
+class Throttle:
+    """Request throttle with sliding window."""
+
+    def __init__(self, max_requests=10, window_size=60):
+        self.max_requests = max_requests
+        self.window_size = window_size
+        self.windows = {}
+        self.total_allowed = 0
+        self.total_denied = 0
+
+    def allow(self, client_id='default', timestamp=None):
+        ts = timestamp or 0
+        if client_id not in self.windows:
+            self.windows[client_id] = []
+        window = self.windows[client_id]
+        cutoff = ts - self.window_size
+        self.windows[client_id] = [t for t in window if t > cutoff]
+        if len(self.windows[client_id]) >= self.max_requests:
+            self.total_denied += 1
+            return False
+        self.windows[client_id].append(ts)
+        self.total_allowed += 1
+        return True
+
+    def get_remaining(self, client_id='default'):
+        count = len(self.windows.get(client_id, []))
+        return max(0, self.max_requests - count)
+
+    def reset(self, client_id=None):
+        if client_id:
+            self.windows.pop(client_id, None)
+        else:
+            self.windows.clear()
+
+    def get_stats(self):
+        return {
+            'clients': len(self.windows),
+            'max_requests': self.max_requests,
+            'window_size': self.window_size,
+            'total_allowed': self.total_allowed,
+            'total_denied': self.total_denied,
+        }
+
+
+def format_distributed_lock(dl):
+    stats = dl.get_stats()
+    lines = ["=== Distributed Lock ==="]
+    lines.append(f"Active locks: {stats['active_locks']}")
+    lines.append(f"Waiters: {stats['total_waiters']}")
+    lines.append(f"History: {stats['history_length']} events")
+    return '\n'.join(lines)
+
+
+def format_consensus(cp):
+    stats = cp.get_stats()
+    lines = ["=== Consensus Protocol ==="]
+    lines.append(f"Nodes: {stats['nodes']}")
+    lines.append(f"Term: {stats['term']}")
+    lines.append(f"Leader: {stats['leader']}")
+    lines.append(f"Committed: {stats['committed']}")
+    return '\n'.join(lines)
+
+
+def format_resource_manager(rm):
+    stats = rm.get_stats()
+    lines = ["=== Resource Manager ==="]
+    lines.append(f"Resources: {stats['resources']}")
+    lines.append(f"Allocations: {stats['active_allocations']}")
+    lines.append(f"Capacity: {stats['total_allocated']}"
+                 f"/{stats['total_capacity']}")
+    return '\n'.join(lines)
+
+
+def milestone_dashboard_50k():
+    lines = ["=" * 60]
+    lines.append("     50,000 LINES MILESTONE DASHBOARD")
+    lines.append("=" * 60)
+    lines.append(f"  Python code:        ~34,000 lines")
+    lines.append(f"  Documentation:      ~16,000 lines")
+    lines.append(f"  Total:              50,000 lines")
+    lines.append(f"  Versions:           75")
+    lines.append(f"  Components:         190+")
+    lines.append(f"  Demo sections:      258+")
+    lines.append(f"  Format functions:   85+")
+    lines.append("")
+    lines.append("  Architecture (10 layers):")
+    lines.append("  L1:  Core (symbols, groups, zones)")
+    lines.append("  L2:  Training (sessions, mastery)")
+    lines.append("  L3:  Analytics (stats, ML, graphs)")
+    lines.append("  L4:  CQRS (events, commands, queries)")
+    lines.append("  L5:  Management (config, migration)")
+    lines.append("  L6:  Security (RBAC, audit, compliance)")
+    lines.append("  L7:  API (gateway, middleware, i18n)")
+    lines.append("  L8:  Monitoring (dashboards, alerts, SLA)")
+    lines.append("  L9:  Infrastructure (DI, plugins, workflows)")
+    lines.append("  L10: Platform (ORM, reactive, consensus)")
+    lines.append("=" * 60)
+    return '\n'.join(lines)
+
+
+def version_history_v75():
+    history = {
+        'v1-v10': 'Core algorithm, symbols, groups, zones',
+        'v11-v20': 'Training, sessions, mastery tracking',
+        'v21-v30': 'Analytics, statistics, predictions',
+        'v31-v40': 'Advanced analytics, clustering, NLP',
+        'v41-v50': 'Architecture, patterns, facades',
+        'v51-v60': 'Dashboard, widgets, 35K milestone',
+        'v61-v65': 'CQRS, caching, templates, API, monitoring',
+        'v66-v70': 'I18n, GraphDB, tests, DI, workflows',
+        'v71': 'L2 cache, CDN, connection pool',
+        'v72': 'ORM, query builder, schema migration',
+        'v73': 'Template compiler, AST parser, evaluator',
+        'v74': 'Reactive streams, observable, event emitter',
+        'v75': 'Distributed lock, consensus, 50K milestone',
+    }
+    lines = ["=== Version History (v1-v75) ==="]
+    for ver, desc in history.items():
+        lines.append(f"  {ver}: {desc}")
+    lines.append(f"\nTotal: 75 versions, 190+ components")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -31552,3 +33068,460 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v70: Workflow engine, task queue, 45K milestone.")
+
+    # ── Demo 244: L2 Cache ──
+    print("\n" + "=" * 60)
+    print("Demo 244: L2 Cache")
+    print("=" * 60)
+    l2c = L2Cache(l1_size=5, l2_size=20)
+    for i in range(10):
+        l2c.put(f"sym_{i}", get_group(i))
+    print(f"After 10 puts — L1: {len(l2c.l1)}, L2: {len(l2c.l2)}")
+    for i in range(10):
+        l2c.get(f"sym_{i}")
+    stats = l2c.get_stats()
+    print(f"L1 hits: {stats['l1_hits']}, L2 hits: {stats['l2_hits']}, "
+          f"Misses: {stats['misses']}")
+    print(f"Promotions: {stats['promotions']}")
+    print(f"Hit rate: {l2c.get_hit_rate():.1%}")
+    l2c.invalidate("sym_0")
+    val = l2c.get("sym_0")
+    print(f"After invalidate sym_0: {val}")
+    print(format_l2_cache(l2c))
+
+    # ── Demo 245: CDN Simulator ──
+    print("\n" + "=" * 60)
+    print("Demo 245: CDN Simulator")
+    print("=" * 60)
+    cdn = CDNSimulator()
+    cdn.add_edge('edge_eu', 'Europe')
+    cdn.add_edge('edge_us', 'North America')
+    cdn.add_edge('edge_asia', 'Asia')
+    for i in range(64):
+        cdn.set_origin(f"symbol_{i}",
+                       {'id': i, 'group': get_group(i)})
+    r1 = cdn.request('edge_eu', 'symbol_10')
+    print(f"First request (origin): group={r1['group']}")
+    r2 = cdn.request('edge_eu', 'symbol_10')
+    print(f"Second request (edge): group={r2['group']}")
+    for i in range(5):
+        cdn.request('edge_us', f'symbol_{i}')
+    for i in range(3):
+        cdn.request('edge_asia', f'symbol_{i * 10}')
+    for eid in ['edge_eu', 'edge_us', 'edge_asia']:
+        es = cdn.get_edge_stats(eid)
+        print(f"  {eid} ({es['region']}): "
+              f"cached={es['cached_items']}, "
+              f"hit_rate={es['hit_rate']:.0%}")
+    cdn.invalidate('symbol_10')
+    print(f"After invalidate: "
+          f"{cdn.get_edge_stats('edge_eu')['cached_items']} cached on EU")
+    print(format_cdn(cdn))
+
+    # ── Demo 246: Connection Pool ──
+    print("\n" + "=" * 60)
+    print("Demo 246: Connection Pool")
+    print("=" * 60)
+    pool = ConnectionPool(max_size=5, min_size=2)
+    print(f"Initial pool: {pool.get_pool_size()} connections")
+    c1 = pool.acquire('client_a')
+    c2 = pool.acquire('client_b')
+    c3 = pool.acquire('client_c')
+    print(f"Acquired: {c1}, {c2}, {c3}")
+    print(f"In use: {pool.get_stats()['in_use']}, "
+          f"Available: {pool.get_stats()['available']}")
+    pool.release(c1)
+    print(f"After release {c1}: "
+          f"available={pool.get_stats()['available']}")
+    c4 = pool.acquire('client_d')
+    c5 = pool.acquire('client_e')
+    c6 = pool.acquire('client_f')
+    c7 = pool.acquire('client_g')
+    print(f"Max capacity attempt: "
+          f"{'got connection' if c7 else 'pool exhausted'}")
+    pool.release(c2)
+    pool.release(c3)
+    print(format_connection_pool(pool))
+
+    print("\n" + "=" * 60)
+    print("v71: L2 cache, CDN simulator, connection pool.")
+
+    # ── Demo 247: ORM System ──
+    print("\n" + "=" * 60)
+    print("Demo 247: ORM System")
+    print("=" * 60)
+    orm = ORMSystem()
+    orm.define_table('students', ['name', 'level', 'group'])
+    orm.define_table('sessions', ['student_id', 'score', 'length'])
+    for i, name in enumerate(['Alice', 'Bob', 'Carol',
+                               'Dave', 'Eve']):
+        orm.insert('students', {
+            'name': name, 'level': (i % 7) + 1,
+            'group': get_group(i * 10),
+        })
+    for i in range(1, 6):
+        for j in range(3):
+            orm.insert('sessions', {
+                'student_id': i,
+                'score': 60 + random.randint(0, 35),
+                'length': 20 + random.randint(0, 20),
+            })
+    print(f"Tables: {orm.get_tables()}")
+    all_students = orm.select('students')
+    print(f"All students: {len(all_students)}")
+    advanced = orm.select('students',
+                          lambda r: r['level'] >= 3)
+    print(f"Advanced (level>=3): {len(advanced)}")
+    orm.update('students', lambda r: r['name'] == 'Alice',
+               {'level': 5})
+    alice = orm.select('students',
+                       lambda r: r['name'] == 'Alice')[0]
+    print(f"Alice updated level: {alice['level']}")
+    orm.create_index('students', 'level')
+    print(format_orm(orm))
+
+    # ── Demo 248: Query Builder ──
+    print("\n" + "=" * 60)
+    print("Demo 248: Query Builder")
+    print("=" * 60)
+    qb = QueryBuilder(orm)
+    result = (qb.table('students')
+              .where('level', '>=', 3)
+              .order_by('level', 'desc')
+              .execute())
+    print(f"Level >= 3, sorted desc: {len(result)} rows")
+    for r in result:
+        print(f"  {r['name']}: level {r['level']}")
+    top_session = (qb.table('sessions')
+                   .where('score', '>', 80)
+                   .order_by('score', 'desc')
+                   .limit(3)
+                   .execute())
+    print(f"Top 3 high scores (>80):")
+    for s in top_session:
+        print(f"  student_id={s['student_id']}, "
+              f"score={s['score']}")
+    count = (qb.table('sessions')
+             .where('score', '>=', 70)
+             .count())
+    print(f"Sessions with score >= 70: {count}")
+    first = (qb.table('students')
+             .where('name', '=', 'Bob')
+             .first())
+    print(f"Bob: {first}")
+
+    # ── Demo 249: Schema Migration ──
+    print("\n" + "=" * 60)
+    print("Demo 249: Schema Migration")
+    print("=" * 60)
+    sm = SchemaMigration(orm)
+    sm.add_migration('add_badges_table',
+        lambda db: db.define_table('badges',
+                                   ['name', 'student_id', 'earned']),
+        lambda db: db.tables.pop('badges', None))
+    sm.add_migration('add_events_table',
+        lambda db: db.define_table('events',
+                                   ['type', 'data', 'timestamp']),
+        lambda db: db.tables.pop('events', None))
+    sm.add_migration('add_settings_table',
+        lambda db: db.define_table('settings',
+                                   ['key', 'value', 'namespace']),
+        lambda db: db.tables.pop('settings', None))
+    print(f"Before: {sm.get_status()}")
+    applied = sm.migrate_up(2)
+    print(f"Applied: {applied}")
+    print(f"Tables now: {orm.get_tables()}")
+    rolled = sm.migrate_down(1)
+    print(f"Rolled back: {rolled}")
+    print(f"Tables after rollback: {orm.get_tables()}")
+    sm.migrate_to(3)
+    print(f"After migrate_to(3): {sm.get_status()['applied']}")
+    print(format_schema_migration(sm))
+
+    print("\n" + "=" * 60)
+    print("v72: ORM system, query builder, schema migration.")
+
+    # ── Demo 250: Template Compiler ──
+    print("\n" + "=" * 60)
+    print("Demo 250: Template Compiler")
+    print("=" * 60)
+    tc = TemplateCompiler()
+    tc.compile('student_card',
+               'Student: {{name}} | Level: {{level}} | '
+               'Group: {{group}}')
+    out = tc.execute('student_card',
+                     {'name': 'Alice', 'level': 5, 'group': 3})
+    print(f"Card: {out}")
+    tc.compile('report',
+               'Report for {{title}}\n'
+               '{{if show_details}}'
+               'Students: {{count}}\n'
+               'Average: {{average}}\n'
+               '{{endif}}'
+               'End of report.')
+    out2 = tc.execute('report', {
+        'title': 'Group 3',
+        'show_details': True,
+        'count': 10,
+        'average': 78.5,
+    })
+    print(f"Report:\n{out2}")
+    tc.compile('list_tpl',
+               'Symbols: {{for s in symbols}}'
+               '[{{s}}] {{endfor}}')
+    out3 = tc.execute('list_tpl',
+                      {'symbols': [10, 20, 30, 40]})
+    print(f"List: {out3}")
+    print(format_template_compiler(tc))
+
+    # ── Demo 251: AST Parser ──
+    print("\n" + "=" * 60)
+    print("Demo 251: AST Parser")
+    print("=" * 60)
+    parser = ASTParser()
+    ast1 = parser.parse("3 + 4 * 2")
+    print(f"AST for '3 + 4 * 2':")
+    print(format_ast_node(ast1))
+    result1 = parser.evaluate(ast1)
+    print(f"Result: {result1}")
+    ast2 = parser.parse("x * 2 + y")
+    result2 = parser.evaluate(ast2, {'x': 10, 'y': 5})
+    print(f"'x * 2 + y' with x=10, y=5: {result2}")
+    ast3 = parser.parse("(a + b) * (c - d)")
+    result3 = parser.evaluate(ast3,
+                              {'a': 3, 'b': 7, 'c': 10, 'd': 4})
+    print(f"'(a+b)*(c-d)' = {result3}")
+    ast4 = parser.parse("max(x, y)")
+    result4 = parser.evaluate(ast4,
+                              {'x': 15, 'y': 20, 'max': max})
+    print(f"'max(15, 20)' = {result4}")
+
+    # ── Demo 252: Expression Evaluator ──
+    print("\n" + "=" * 60)
+    print("Demo 252: Expression Evaluator")
+    print("=" * 60)
+    ee = ExpressionEvaluator()
+    ee.set_variable('score', 85)
+    ee.set_variable('sessions', 10)
+    ee.set_variable('bonus', 5)
+    r1 = ee.evaluate("score + bonus")
+    print(f"score + bonus = {r1}")
+    r2 = ee.evaluate("score * sessions / 100")
+    print(f"score * sessions / 100 = {r2}")
+    r3 = ee.evaluate("max(score, 90)")
+    print(f"max(score, 90) = {r3}")
+    ee.set_function('double', lambda x: x * 2)
+    r4 = ee.evaluate("double(score)")
+    print(f"double(score) = {r4}")
+    batch = ee.batch_evaluate([
+        "score + 10",
+        "sessions * 2",
+        "bonus * bonus",
+    ])
+    print(f"Batch results: {batch}")
+    print(f"History: {len(ee.get_history())} entries")
+    print(format_expression_evaluator(ee))
+
+    print("\n" + "=" * 60)
+    print("v73: Template compiler, AST parser, expression evaluator.")
+
+    # ── Demo 253: Reactive Stream ──
+    print("\n" + "=" * 60)
+    print("Demo 253: Reactive Stream")
+    print("=" * 60)
+    rs_collected = []
+    result = (ReactiveStream()
+              .from_list(range(64))
+              .map(lambda s: get_group(s))
+              .filter(lambda g: g >= 4)
+              .distinct()
+              .to_list())
+    print(f"Groups >= 4 (distinct): {result}")
+    sum_result = (ReactiveStream()
+                  .from_list([10, 20, 30, 40, 50])
+                  .map(lambda x: x * 2)
+                  .filter(lambda x: x > 30)
+                  .reduce(lambda acc, x: acc + x, 0)
+                  .to_list())
+    print(f"Sum of doubled > 30: {sum_result}")
+    rs = ReactiveStream().from_list([1, 2, 3, 4, 5])
+    rs.map(lambda x: x ** 2).take(3)
+    rs.subscribe(lambda x: rs_collected.append(x))
+    rs.execute()
+    print(f"Squared, take 3, collected: {rs_collected}")
+    nested = (ReactiveStream()
+              .from_list([[1, 2], [3, 4], [5]])
+              .flatten()
+              .to_list())
+    print(f"Flattened: {nested}")
+
+    # ── Demo 254: Observable ──
+    print("\n" + "=" * 60)
+    print("Demo 254: Observable")
+    print("=" * 60)
+    obs_log = []
+    score_obs = Observable('score')
+    score_obs.observe(lambda v: obs_log.append(f"score={v}"))
+    doubled = score_obs.computed(lambda v: v * 2)
+    doubled.observe(lambda v: obs_log.append(f"doubled={v}"))
+    score_obs.set(50)
+    score_obs.set(75)
+    score_obs.set(90)
+    print(f"Score: {score_obs.get()}")
+    print(f"Doubled: {doubled.get()}")
+    print(f"Score history: {len(score_obs.get_history())} changes")
+    print(f"Log: {obs_log}")
+    obs_id = score_obs.observe(lambda v: None)
+    score_obs.unobserve(obs_id)
+    print(f"Observers: {score_obs.get_observer_count()}")
+    print(format_observable(score_obs))
+
+    # ── Demo 255: Event Emitter ──
+    print("\n" + "=" * 60)
+    print("Demo 255: Event Emitter")
+    print("=" * 60)
+    emitter = EventEmitter()
+    emit_log = []
+    emitter.on('session_start',
+               lambda sid: emit_log.append(f"start:{sid}"))
+    emitter.on('session_end',
+               lambda sid, score: emit_log.append(
+                   f"end:{sid}:{score}"))
+    emitter.once('first_login',
+                 lambda user: emit_log.append(f"welcome:{user}"))
+    emitter.on_any(
+        lambda evt, *args: emit_log.append(f"any:{evt}"))
+    emitter.emit('session_start', 'S001')
+    emitter.emit('session_end', 'S001', 85)
+    emitter.emit('first_login', 'Alice')
+    emitter.emit('first_login', 'Bob')
+    print(f"Events: {emitter.event_names()}")
+    print(f"session_start listeners: "
+          f"{emitter.listener_count('session_start')}")
+    print(f"Emit log ({len(emit_log)} entries):")
+    for entry in emit_log:
+        print(f"  {entry}")
+    emitter.off('session_start')
+    n = emitter.emit('session_start', 'S002')
+    print(f"After removing session_start: {n} notified")
+    print(format_event_emitter(emitter))
+
+    print("\n" + "=" * 60)
+    print("v74: Reactive stream, observable, event emitter.")
+
+    # ── Demo 256: Distributed Lock ──
+    print("\n" + "=" * 60)
+    print("Demo 256: Distributed Lock")
+    print("=" * 60)
+    dl = DistributedLock()
+    got = dl.acquire('database', 'worker_1')
+    print(f"Worker 1 acquired database: {got}")
+    got2 = dl.acquire('database', 'worker_2')
+    print(f"Worker 2 acquired database: {got2}")
+    print(f"Database locked: {dl.is_locked('database')}")
+    print(f"Owner: {dl.get_owner('database')}")
+    dl.acquire('database', 'worker_1')
+    print(f"Reentrant acquire (same owner): ok")
+    dl.release('database', 'worker_1')
+    print(f"After 1st release, owner: "
+          f"{dl.get_owner('database')}")
+    dl.release('database', 'worker_1')
+    print(f"After 2nd release, owner: "
+          f"{dl.get_owner('database')}")
+    dl.acquire('cache', 'worker_3')
+    print(f"Locks: {dl.get_stats()['active_locks']}")
+    print(format_distributed_lock(dl))
+
+    # ── Demo 257: Consensus Protocol ──
+    print("\n" + "=" * 60)
+    print("Demo 257: Consensus Protocol")
+    print("=" * 60)
+    cp = ConsensusProtocol(node_count=5)
+    elected = cp.start_election('node_0')
+    print(f"Election result: {elected}")
+    print(f"Leader: {cp.get_leader()}")
+    print(f"Term: {cp.term}")
+    cp.propose({'action': 'add_student', 'name': 'Alice'})
+    cp.propose({'action': 'update_score', 'student': 'Alice',
+                'score': 85})
+    cp.propose({'action': 'add_student', 'name': 'Bob'})
+    print(f"Committed entries: {len(cp.get_committed())}")
+    for entry in cp.get_committed():
+        print(f"  {entry}")
+    leader_state = cp.get_node_state('node_0')
+    print(f"Leader log size: {len(leader_state['log'])}")
+    follower = cp.get_node_state('node_2')
+    print(f"Follower state: {follower['state']}, "
+          f"log: {len(follower['log'])}")
+    print(format_consensus(cp))
+
+    # ── Demo 258: Resource Manager ──
+    print("\n" + "=" * 60)
+    print("Demo 258: Resource Manager")
+    print("=" * 60)
+    rm = ResourceManager()
+    rm.register_resource('cpu', capacity=8)
+    rm.register_resource('memory', capacity=1024)
+    rm.register_resource('connections', capacity=100)
+    rm.allocate('cpu', 'process_a', 3)
+    rm.allocate('cpu', 'process_b', 2)
+    rm.allocate('memory', 'process_a', 256)
+    rm.allocate('connections', 'api', 20)
+    print(f"CPU available: {rm.get_available('cpu')}/8")
+    print(f"Memory available: {rm.get_available('memory')}/1024")
+    print(f"CPU utilization: {rm.get_utilization('cpu'):.0%}")
+    over = rm.allocate('cpu', 'process_c', 5)
+    print(f"Allocate 5 more CPU (only 3 left): {over}")
+    rm.deallocate('cpu', 'process_a', 2)
+    print(f"After dealloc 2 CPU: "
+          f"{rm.get_available('cpu')} available")
+    print(format_resource_manager(rm))
+
+    # ── Demo 259: Semaphore ──
+    print("\n" + "=" * 60)
+    print("Demo 259: Semaphore")
+    print("=" * 60)
+    sem = Semaphore(permits=3)
+    sem.acquire('thread_1')
+    sem.acquire('thread_2')
+    sem.acquire('thread_3')
+    blocked = sem.acquire('thread_4')
+    print(f"Thread 4 blocked: {not blocked}")
+    print(f"Available permits: {sem.available()}")
+    print(f"Waiters: {sem.get_stats()['waiters']}")
+    sem.release('thread_1')
+    print(f"After release: available={sem.available()}, "
+          f"holders={sem.get_stats()['holders']}")
+    print(f"Thread 4 now holds: "
+          f"{'thread_4' in sem.holders}")
+    print(f"Total acquires: "
+          f"{sem.get_stats()['total_acquires']}")
+
+    # ── Demo 260: Throttle ──
+    print("\n" + "=" * 60)
+    print("Demo 260: Throttle")
+    print("=" * 60)
+    throttle = Throttle(max_requests=5, window_size=60)
+    for i in range(7):
+        allowed = throttle.allow('client_a', timestamp=i)
+        if not allowed:
+            print(f"Request {i+1}: DENIED")
+    print(f"Remaining for client_a: "
+          f"{throttle.get_remaining('client_a')}")
+    for i in range(3):
+        throttle.allow('client_b', timestamp=i)
+    print(f"Client B remaining: "
+          f"{throttle.get_remaining('client_b')}")
+    stats = throttle.get_stats()
+    print(f"Total allowed: {stats['total_allowed']}, "
+          f"denied: {stats['total_denied']}")
+    throttle.reset('client_a')
+    print(f"After reset: "
+          f"{throttle.get_remaining('client_a')} remaining")
+
+    # 50K Milestone
+    print("\n" + milestone_dashboard_50k())
+    print("\n" + version_history_v75())
+
+    print("\n" + "=" * 60)
+    print("v75: Distributed lock, consensus, 50K milestone.")
