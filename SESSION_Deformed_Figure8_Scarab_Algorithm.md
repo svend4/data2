@@ -2148,6 +2148,157 @@ detect_resonance(kata, mode='dual') → {
   analyze_kata              статистика качества
   export_training_session   текстовый файл сессии
 
-ИТОГО: 38 демо-секций, 24 части документации,
-       ~3700 строк кода, полный мост теория↔практика
+ИТОГО: 42 демо-секции, 26 частей документации,
+       ~4000 строк кода, полный мост теория↔практика
+```
+
+---
+
+## Часть 26: Резонансная генерация, профиль ученика, адаптивный учебный план (v11)
+
+### 26.1 Резонансно-направленная генерация ката
+
+```python
+resonance_kata(length=7, mastery_level=3, target_resonance=0.7,
+               mode='dual', max_attempts=50, base_seed=42)
+```
+
+В отличие от `detect_resonance()` (post-hoc анализ), `resonance_kata()` **генерирует** ката,
+нацеленные на заданный уровень резонанса. Стратегия: итеративная генерация кандидатов
+через `DualMatchStickAutomaton`, оценка через `detect_resonance()`, отбор лучшего.
+
+```
+Пример (target=0.60):
+  Достигнуто: 0.78 за 1 попытку
+  Оценка: B (89%)
+  Паттерны:
+    - Period-2 group repetition (60%)
+    - LCI stable (91%)
+    - Strong phase coherence (86%)
+```
+
+Применение:
+- Генерация «медитативных» ката (высокий резонанс ≥ 0.8 = гармония)
+- Генерация «боевых» ката (низкий резонанс ≤ 0.3 = хаос)
+- Постепенное повышение резонанса от Q1 к Q4
+
+### 26.2 Профиль ученика (`StudentProfile`)
+
+```python
+student = StudentProfile('Alexei', mastery_level=2)
+student.record_session(kata, quarter='Q1', year=1, mode='dual')
+print(student.summary())
+weaknesses = student.weaknesses()
+```
+
+Профиль автоматически отслеживает:
+
+```
+Компоненты профиля:
+┌─────────────────────┬──────────────────────────────┐
+│ Лог сессий          │ оценка, LCI, резонанс        │
+│ Правила 1-5         │ % соблюдения по каждому       │
+│ Тепловая карта групп│ какие из 7 групп недостаточны │
+│ Авто-мастерство     │ повышение при avg ≥ 85%      │
+└─────────────────────┴──────────────────────────────┘
+```
+
+Пример вывода:
+```
+Student: Alexei  (mastery=5)
+Sessions: 12  Tacts: 48
+Avg grade: 83%  Avg resonance: 0.61
+Grades: A:6, C:6
+Group coverage:
+  G1: ####   19%
+  G2: ##########  75%
+  G3: ##########  81%
+  G4: #       0%   ← слабое место
+  G5: #       0%   ← слабое место
+  G6: #       0%   ← слабое место
+  G7: #       0%   ← слабое место
+Weaknesses:
+  Rule 2 (anti-symmetry): 48.6%
+  Rule 3 (lead alternation): 0.0%
+  Rule 4 (smoothness): 20.8%
+  Group 4 (Parallel): 0 hits (need ~7)
+```
+
+Механизм определения слабых мест:
+1. **Правила**: средний % < 70 → слабое правило
+2. **Группы**: попадания < 30% от ожидаемого → недопредставленная группа
+3. **Резонанс**: среднее < 0.4 за последние 3 сессии → нужна работа над паттернами
+
+### 26.3 Адаптивный учебный план
+
+```python
+curriculum = adaptive_curriculum(student, n_sessions=4, seed=42)
+print(format_curriculum(curriculum, student_name='Alexei'))
+```
+
+Планировщик анализирует `student.weaknesses()` и генерирует целевые сессии:
+
+```
+Adaptive Curriculum for Alexei
+Sessions planned: 4
+----------------------------------------
+  #1: L5 len=5 grade=C(60%) res=0.83 focus=[groups [4, 5, 6], rules [2, 3]]
+  #2: L5 len=5 grade=C(65%) res=0.77 focus=[groups [4, 5, 6], rules [2, 3]]
+  #3: L5 len=5 grade=C(60%) res=0.83 focus=[groups [4, 5, 6], rules [2, 3]]
+  #4: L5 len=5 grade=D(55%) res=0.77 focus=[groups [4, 5, 6], rules [2, 3]]
+```
+
+Алгоритм адаптации:
+1. **Длина ката**: avg ≥ 80% → 7 тактов, 60-80% → 5, < 60% → 3
+2. **Фокус группы**: `optimize_kata(groups=[4,5,6])` для недостающих групп
+3. **Фокус резонанс**: чередование `resonance_kata()` сессий при низком резонансе
+4. **Авто-запись**: каждая сессия может быть записана обратно в профиль
+
+Цикл обратной связи:
+```
+StudentProfile → weaknesses() → adaptive_curriculum()
+     ↑                                    ↓
+     └──── record_session() ←── kata из плана
+```
+
+### 26.4 Полная система (v11) — итоги
+
+```
+Компоненты SCARAB v11:
+
+УРОВЕНЬ ТЕОРИИ:
+  ScarabQuaternion     A = a + bi + cj + dk
+  verify_conservation  |A| = π при мастерстве
+  compute_lci          LCI = √(Σ сфер²)
+  detect_resonance     5 типов резонанса
+
+УРОВЕНЬ ГЕНЕРАЦИИ:
+  MatchStickAutomaton       1 рука, 76 символов
+  DualMatchStickAutomaton   2 руки, 5 правил
+  trajectory_kata(k)        8-ка → символы
+  generate_battle_kata      4 боевых формата
+  optimize_kata             генетический поиск Grade A
+  resonance_kata            ← NEW: генерация по целевому резонансу
+
+УРОВЕНЬ ТРЕНИРОВКИ:
+  generate_seasonal_kata    4 квартала × ритм × темп
+  generate_training_session сессия (45 мин)
+  simulate_progression      5-летний цикл
+  generate_exam / evaluate  экзамен + оценка
+  StudentProfile            ← NEW: профиль ученика с историей
+  adaptive_curriculum       ← NEW: адаптивный план по слабостям
+
+УРОВЕНЬ ПРЕДСТАВЛЕНИЯ:
+  symbol_to_ascii           ASCII-арт символов
+  stick_figure_frame        палочная фигура
+  dual_stick_figure         двуручная визуализация
+  animate_dual_kata         покадровая анимация
+  plot_trajectory_ascii     ASCII траектория 8-ки
+  kata_to_notation          компактная нотация (v10: обе ChVS)
+  analyze_kata              статистика качества
+  export_training_session   текстовый файл сессии
+  format_curriculum         ← NEW: вывод адаптивного плана
+
+ИТОГО: 42 демо-секции, 26 частей документации,
+       ~4000 строк кода, замкнутый цикл обратной связи
 ```

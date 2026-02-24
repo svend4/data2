@@ -3276,8 +3276,367 @@ def detect_resonance(kata, mode='dual'):
 
 
 # ═══════════════════════════════════════════════════════════
-# DEMO / MAIN
+# RESONANCE-GUIDED KATA GENERATION (v11)
 # ═══════════════════════════════════════════════════════════
+
+def resonance_kata(length=7, mastery_level=3, target_resonance=0.7,
+                   mode='dual', max_attempts=50, base_seed=None):
+    """
+    Generate a kata that achieves a target resonance score.
+
+    Strategy: generate candidates, score each with detect_resonance(),
+    and keep the best one that meets the target.
+
+    Args:
+        length: tacts per kata
+        mastery_level: 1-5
+        target_resonance: desired resonance score (0-1)
+        mode: 'single' or 'dual'
+        max_attempts: max generation attempts
+        base_seed: reproducibility seed
+
+    Returns:
+        dict with 'kata', 'resonance', 'attempts', 'score'
+    """
+    rng = random.Random(base_seed)
+    best = None
+    best_res = -1
+
+    for attempt in range(max_attempts):
+        seed = rng.randint(0, 2**31)
+        if mode == 'dual':
+            dma = DualMatchStickAutomaton(
+                mastery_level=mastery_level,
+                use_mudras=(mastery_level >= 4),
+                seed=seed)
+            kata = dma.generate_dual_kata(length=length)
+        else:
+            msa = MatchStickAutomaton(mastery_level=mastery_level, seed=seed)
+            kata = msa.generate_kata(length=length)
+
+        res = detect_resonance(kata, mode=mode)
+        sc = score_dual_kata(kata) if mode == 'dual' else None
+
+        if res['resonance_score'] > best_res:
+            best_res = res['resonance_score']
+            best = {
+                'kata': kata,
+                'resonance': res,
+                'score': sc,
+                'attempts': attempt + 1,
+                'seed': seed,
+            }
+
+        if res['resonance_score'] >= target_resonance:
+            break
+
+    return best
+
+
+# ═══════════════════════════════════════════════════════════
+# STUDENT PROFILE — persistent state across sessions (v11)
+# ═══════════════════════════════════════════════════════════
+
+class StudentProfile:
+    """
+    Track a student's training history and identify weaknesses.
+
+    Maintains:
+    - Session log with scores, LCI, resonance per session
+    - Per-rule compliance history (Rules 1-5)
+    - Group coverage heatmap (which Kryukov groups are weak)
+    - Current effective mastery level (auto-estimated)
+
+    Usage:
+        student = StudentProfile('Alexei', mastery_level=2)
+        student.record_session(kata, quarter='Q1', year=1)
+        student.record_session(kata2, quarter='Q1', year=1)
+        print(student.summary())
+        weaknesses = student.weaknesses()
+    """
+
+    def __init__(self, name, mastery_level=1):
+        self.name = name
+        self.mastery_level = mastery_level
+        self.sessions = []         # list of session dicts
+        self.rule_history = {r: [] for r in range(1, 6)}
+        self.group_hits = {g: 0 for g in range(1, 8)}
+        self.total_tacts = 0
+
+    def record_session(self, kata, quarter='Q1', year=1, mode='dual'):
+        """Record a completed training session."""
+        if mode == 'dual':
+            sc = score_dual_kata(kata)
+            res = detect_resonance(kata, mode='dual')
+            lci = compute_lci(kata, mode='dual')
+
+            # Track per-rule compliance
+            for r in range(1, 6):
+                rule_str = sc['rules'][r]
+                num, den = rule_str.split('/')
+                pct = int(num) / max(int(den), 1) * 100
+                self.rule_history[r].append(pct)
+
+            # Track group coverage
+            for entry in kata:
+                self.group_hits[get_group(entry[0])] += 1
+                self.group_hits[get_group(entry[1])] += 1
+                self.total_tacts += 1
+        else:
+            sc = {'grade': 'A', 'pct': 100.0, 'rules': {}}
+            res = detect_resonance(kata, mode='single')
+            lci = compute_lci(kata, mode='single')
+            for sym in kata:
+                self.group_hits[get_group(sym)] += 1
+                self.total_tacts += 1
+
+        session = {
+            'quarter': quarter,
+            'year': year,
+            'mode': mode,
+            'n_tacts': len(kata),
+            'grade': sc['grade'],
+            'pct': sc['pct'],
+            'lci_avg': lci['avg'],
+            'resonance': res['resonance_score'],
+            'patterns': res['patterns'],
+        }
+        self.sessions.append(session)
+
+        # Auto-adjust mastery estimate
+        if len(self.sessions) >= 4:
+            recent = self.sessions[-4:]
+            avg_pct = sum(s['pct'] for s in recent) / len(recent)
+            if avg_pct >= 85 and self.mastery_level < 5:
+                self.mastery_level = min(5, self.mastery_level + 1)
+
+        return session
+
+    def weaknesses(self):
+        """Identify weak areas based on training history."""
+        weak = []
+
+        # Per-rule weaknesses (avg < 70%)
+        for r in range(1, 6):
+            if self.rule_history[r]:
+                avg = sum(self.rule_history[r]) / len(self.rule_history[r])
+                if avg < 70:
+                    names = {1: 'zone exclusion', 2: 'anti-symmetry',
+                             3: 'lead alternation', 4: 'smoothness',
+                             5: 'complexity conservation'}
+                    weak.append({
+                        'type': 'rule',
+                        'rule': r,
+                        'name': names[r],
+                        'avg_pct': round(avg, 1),
+                    })
+
+        # Under-represented groups (< 10% of proportional share)
+        if self.total_tacts > 0:
+            expected = self.total_tacts / 7
+            for g in range(1, 8):
+                if self.group_hits[g] < expected * 0.3:
+                    group_names = {1: 'Empty', 2: 'Single', 3: 'Angle',
+                                   4: 'Parallel', 5: 'Triple',
+                                   6: 'Master', 7: 'Peak'}
+                    weak.append({
+                        'type': 'group',
+                        'group': g,
+                        'name': group_names[g],
+                        'hits': self.group_hits[g],
+                        'expected': round(expected, 0),
+                    })
+
+        # Low resonance trend
+        if len(self.sessions) >= 3:
+            recent_res = [s['resonance'] for s in self.sessions[-3:]]
+            avg_res = sum(recent_res) / len(recent_res)
+            if avg_res < 0.4:
+                weak.append({
+                    'type': 'resonance',
+                    'avg_score': round(avg_res, 2),
+                    'detail': 'Low resonance — work on pattern consistency',
+                })
+
+        return weak
+
+    def summary(self):
+        """Format student profile as readable text."""
+        lines = [f"Student: {self.name}  (mastery={self.mastery_level})"]
+        lines.append(f"Sessions: {len(self.sessions)}  Tacts: {self.total_tacts}")
+
+        if self.sessions:
+            grades = [s['grade'] for s in self.sessions]
+            avg_pct = sum(s['pct'] for s in self.sessions) / len(self.sessions)
+            avg_res = sum(s['resonance'] for s in self.sessions) / len(self.sessions)
+            lines.append(f"Avg grade: {avg_pct:.0f}%  Avg resonance: {avg_res:.2f}")
+
+            # Grade distribution
+            dist = {}
+            for g in grades:
+                dist[g] = dist.get(g, 0) + 1
+            dist_str = ', '.join(f"{g}:{n}" for g, n in sorted(dist.items()))
+            lines.append(f"Grades: {dist_str}")
+
+        # Group heatmap (compact)
+        if self.total_tacts > 0:
+            heatmap = []
+            for g in range(1, 8):
+                pct = self.group_hits[g] / self.total_tacts * 100
+                bar = '#' * max(1, round(pct / 5))
+                heatmap.append(f"  G{g}: {bar} {pct:.0f}%")
+            lines.append("Group coverage:")
+            lines.extend(heatmap)
+
+        # Weaknesses
+        weak = self.weaknesses()
+        if weak:
+            lines.append("Weaknesses:")
+            for w in weak:
+                if w['type'] == 'rule':
+                    lines.append(f"  Rule {w['rule']} ({w['name']}): {w['avg_pct']}%")
+                elif w['type'] == 'group':
+                    lines.append(f"  Group {w['group']} ({w['name']}): "
+                                 f"{w['hits']} hits (need ~{w['expected']:.0f})")
+                elif w['type'] == 'resonance':
+                    lines.append(f"  Resonance: {w['avg_score']} — {w['detail']}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# ADAPTIVE CURRICULUM — auto-schedule based on weaknesses (v11)
+# ═══════════════════════════════════════════════════════════
+
+def adaptive_curriculum(student, n_sessions=4, seed=None):
+    """
+    Generate an adaptive training plan based on student weaknesses.
+
+    The scheduler:
+    1. Identifies weak rules and under-represented groups
+    2. Generates kata that target those weaknesses
+    3. Adjusts difficulty (length, mastery) to challenge level
+
+    Args:
+        student: StudentProfile instance
+        n_sessions: number of sessions to plan
+        seed: reproducibility seed
+
+    Returns:
+        list of dicts with 'kata', 'focus', 'difficulty', 'target'
+    """
+    rng = random.Random(seed)
+    weak = student.weaknesses()
+
+    # Determine focus groups (under-represented)
+    focus_groups = None
+    weak_groups = [w for w in weak if w['type'] == 'group']
+    if weak_groups:
+        focus_groups = [w['group'] for w in weak_groups[:3]]
+
+    # Determine if we need resonance training
+    needs_resonance = any(w['type'] == 'resonance' for w in weak)
+
+    # Determine mastery level for training
+    mastery = student.mastery_level
+
+    plan = []
+    for i in range(n_sessions):
+        session_seed = rng.randint(0, 2**31)
+        focus_desc = []
+
+        # Adaptive length: start short if struggling, grow if improving
+        if student.sessions:
+            recent_pct = sum(s['pct'] for s in student.sessions[-3:]) / min(3, len(student.sessions))
+            if recent_pct >= 80:
+                length = 7  # confident — standard length
+            elif recent_pct >= 60:
+                length = 5  # moderate — shorter kata
+            else:
+                length = 3  # struggling — minimal kata
+        else:
+            length = 5  # new student — medium
+
+        if needs_resonance and (i % 2 == 0):
+            # Resonance-focused session
+            result = resonance_kata(
+                length=length,
+                mastery_level=mastery,
+                target_resonance=0.6,
+                mode='dual',
+                max_attempts=20,
+                base_seed=session_seed)
+            focus_desc.append('resonance')
+        elif focus_groups:
+            # Group-targeted session via optimize_kata
+            opt = optimize_kata(
+                length=length,
+                mastery_level=mastery,
+                target_grade='C',
+                max_attempts=15,
+                groups=focus_groups,
+                base_seed=session_seed)
+            res = detect_resonance(opt['kata'], mode='dual')
+            result = {
+                'kata': opt['kata'],
+                'score': opt['score'],
+                'resonance': res,
+            }
+            focus_desc.append(f"groups {focus_groups}")
+        else:
+            # Standard generation
+            use_mudras = (mastery >= 4)
+            dma = DualMatchStickAutomaton(
+                mastery_level=mastery,
+                use_mudras=use_mudras,
+                seed=session_seed)
+            kata = dma.generate_dual_kata(length=length)
+            score = score_dual_kata(kata)
+            res = detect_resonance(kata, mode='dual')
+            result = {
+                'kata': kata,
+                'score': score,
+                'resonance': res,
+            }
+
+        # Add weak rule descriptions
+        weak_rules = [w for w in weak if w['type'] == 'rule']
+        if weak_rules:
+            focus_desc.append(f"rules {[w['rule'] for w in weak_rules[:2]]}")
+
+        plan.append({
+            'session': i + 1,
+            'kata': result['kata'],
+            'score': result.get('score'),
+            'resonance': result.get('resonance', result.get('resonance')),
+            'length': length,
+            'mastery': mastery,
+            'focus': ', '.join(focus_desc) if focus_desc else 'general',
+            'seed': session_seed,
+        })
+
+    return plan
+
+
+def format_curriculum(plan, student_name='Student'):
+    """Format an adaptive curriculum as readable text."""
+    lines = [f"Adaptive Curriculum for {student_name}"]
+    lines.append(f"Sessions planned: {len(plan)}")
+    lines.append("-" * 40)
+    for p in plan:
+        grade = p['score']['grade'] if p['score'] else '?'
+        pct = p['score']['pct'] if p['score'] else 0
+        res_score = 0
+        if p['resonance']:
+            if isinstance(p['resonance'], dict):
+                res_score = p['resonance'].get('resonance_score', 0)
+        lines.append(
+            f"  #{p['session']}: L{p['mastery']} "
+            f"len={p['length']} "
+            f"grade={grade}({pct:.0f}%) "
+            f"res={res_score:.2f} "
+            f"focus=[{p['focus']}]")
+    return '\n'.join(lines)
 
 if __name__ == '__main__':
     print("=" * 60)
@@ -3725,7 +4084,43 @@ if __name__ == '__main__':
     print(f"\n  Year 1→5: LCI {avg_lci_1:.3f}→{avg_lci_5:.3f}, "
           f"groups {max_groups_1}→{max_groups_5}/7")
 
-    # 38. Graph statistics (summary)
+    # 39. Resonance-guided kata generation
+    print("\n--- Resonance-Guided Kata Generation ---")
+    rk = resonance_kata(length=7, mastery_level=3, target_resonance=0.6,
+                        mode='dual', max_attempts=30, base_seed=42)
+    print(f"  Target resonance: 0.60")
+    print(f"  Achieved: {rk['resonance']['resonance_score']:.2f} "
+          f"in {rk['attempts']} attempts")
+    print(f"  Grade: {rk['score']['grade']} ({rk['score']['pct']:.0f}%)")
+    if rk['resonance']['patterns']:
+        print(f"  Patterns: {', '.join(rk['resonance']['patterns'][:3])}")
+
+    # 40. Student profile
+    print("\n--- Student Profile ---")
+    student = StudentProfile('Alexei', mastery_level=2)
+    # Simulate several training sessions
+    for qi, q in enumerate(['Q1', 'Q2', 'Q3', 'Q4']):
+        use_dual = (qi >= 2)
+        m = 'dual' if use_dual else 'single'
+        for _ in range(3):
+            sk = generate_seasonal_kata(
+                q, mastery_level=2, year=1,
+                use_dual=use_dual, use_mudras=False,
+                seed=random.Random(42 + qi).randint(0, 2**31))
+            student.record_session(sk['kata'], quarter=q, year=1, mode=m)
+    print(student.summary())
+
+    # 41. Adaptive curriculum
+    print("\n--- Adaptive Curriculum ---")
+    curriculum = adaptive_curriculum(student, n_sessions=4, seed=42)
+    print(format_curriculum(curriculum, student_name=student.name))
+    # Record the first curriculum session into the profile
+    student.record_session(curriculum[0]['kata'], quarter='Q1', year=2, mode='dual')
+    print(f"\n  After curriculum session #1: "
+          f"mastery={student.mastery_level}, "
+          f"sessions={len(student.sessions)}")
+
+    # 42. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     # 64 base (6-bit) + 12 half-line = 76 total symbols
     all_76 = list(range(64)) + list(HALF_SYMBOLS.keys())
@@ -3733,9 +4128,9 @@ if __name__ == '__main__':
     for sym in range(64):
         total_edges_64 += len(get_neighbors(sym, max_changes=2))
     total_edges_64 //= 2
-    from collections import deque as _deque
+    from collections import deque as _deque2
     visited = {0: 0}
-    queue = _deque([0])
+    queue = _deque2([0])
     while queue:
         node = queue.popleft()
         for nb in get_neighbors(node, max_changes=2):
@@ -3751,5 +4146,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v10: Progression simulator, exam system,")
-    print("     resonance detection, complete training pipeline.")
+    print("v11: Resonance-guided generation, student profile,")
+    print("     adaptive curriculum, weakness-driven training.")
