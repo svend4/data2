@@ -20272,6 +20272,380 @@ def format_progress_timeline(timeline):
     return '\n'.join(lines)
 
 
+# ── v56: Session Replay Engine, Session Diff Analyzer, Annotation Manager ──
+
+
+class SessionReplayEngine:
+    """Advanced session replay with step-by-step analysis.
+
+    Replays a session tact-by-tact with scoring, zone tracking,
+    group transitions, and violation detection at each step.
+    """
+
+    def __init__(self, session):
+        self.session = session
+        self.steps = []
+
+    def replay(self):
+        """Generate a full step-by-step replay."""
+        self.steps = []
+        seq = self.session.get('sequence', [])
+        pct = self.session.get('pct', 0)
+        violations = self.session.get('violations', [])
+
+        prev_sym = None
+        prev_group = None
+        running_score = 0
+        group_visits = {g: 0 for g in range(1, 8)}
+
+        for i, sym in enumerate(seq):
+            g = get_group(sym)
+            zones = get_zones(sym)
+            group_visits[g] += 1
+
+            step = {
+                'tact': i + 1,
+                'symbol': sym,
+                'group': g,
+                'zones': zones,
+                'transition': None,
+                'group_change': False,
+                'running_diversity': len(
+                    [v for v in group_visits.values() if v > 0]),
+                'violation_at_step': False
+            }
+
+            if prev_sym is not None:
+                step['transition'] = (prev_sym, sym)
+                step['group_change'] = (prev_group != g)
+
+            # Check if any violation involves this position
+            for v in violations:
+                if isinstance(v, dict) and v.get('position') == i:
+                    step['violation_at_step'] = True
+                    break
+
+            # Simple running score estimate
+            running_score += (pct / max(len(seq), 1))
+            step['running_score'] = round(running_score, 1)
+
+            self.steps.append(step)
+            prev_sym = sym
+            prev_group = g
+
+        return {
+            'total_tacts': len(seq),
+            'final_score': pct,
+            'steps': self.steps,
+            'groups_visited': len(
+                [v for v in group_visits.values() if v > 0]),
+            'group_changes': sum(
+                1 for s in self.steps if s['group_change']),
+            'violations_detected': sum(
+                1 for s in self.steps if s['violation_at_step'])
+        }
+
+    def get_step(self, tact_number):
+        """Get a specific step from the replay."""
+        if 1 <= tact_number <= len(self.steps):
+            return self.steps[tact_number - 1]
+        return None
+
+    def highlight_transitions(self):
+        """Get all group transitions in the replay."""
+        transitions = []
+        for s in self.steps:
+            if s['group_change'] and s['transition']:
+                f, t = s['transition']
+                transitions.append({
+                    'tact': s['tact'],
+                    'from_sym': f,
+                    'to_sym': t,
+                    'from_group': get_group(f),
+                    'to_group': s['group']
+                })
+        return transitions
+
+
+def format_session_replay(replay_data):
+    """Format session replay for display."""
+    lines = ["=== Session Replay ==="]
+    lines.append(f"Tacts: {replay_data['total_tacts']}, "
+                 f"Score: {replay_data['final_score']}%")
+    lines.append(f"Groups visited: {replay_data['groups_visited']}/7, "
+                 f"Group changes: {replay_data['group_changes']}")
+
+    for step in replay_data['steps'][:12]:  # Show first 12 tacts
+        sym = step['symbol']
+        g = step['group']
+        gc = '→' if step['group_change'] else ' '
+        viol = '!' if step['violation_at_step'] else ' '
+        lines.append(
+            f"  T{step['tact']:02d}: S{sym:02d} G{g} "
+            f"{gc}{viol} score={step['running_score']:5.1f} "
+            f"diversity={step['running_diversity']}")
+
+    if replay_data['total_tacts'] > 12:
+        lines.append(f"  ... ({replay_data['total_tacts'] - 12} more)")
+    return '\n'.join(lines)
+
+
+class SessionDiffAnalyzer:
+    """Compares two sessions and identifies differences.
+
+    Analyzes changes in score, sequence patterns, group usage,
+    violations, and overall trajectory.
+    """
+
+    def __init__(self, session_a, session_b):
+        self.a = session_a
+        self.b = session_b
+
+    def diff(self):
+        """Compute comprehensive diff between two sessions."""
+        pct_a = self.a.get('pct', 0)
+        pct_b = self.b.get('pct', 0)
+        seq_a = self.a.get('sequence', [])
+        seq_b = self.b.get('sequence', [])
+        viol_a = self.a.get('violations', [])
+        viol_b = self.b.get('violations', [])
+
+        # Score diff
+        score_diff = {
+            'a': round(pct_a, 2),
+            'b': round(pct_b, 2),
+            'delta': round(pct_b - pct_a, 2),
+            'improved': pct_b > pct_a
+        }
+
+        # Length diff
+        length_diff = {
+            'a': len(seq_a),
+            'b': len(seq_b),
+            'delta': len(seq_b) - len(seq_a)
+        }
+
+        # Group usage diff
+        groups_a = self._group_usage(seq_a)
+        groups_b = self._group_usage(seq_b)
+        group_diff = {}
+        for g in range(1, 8):
+            ga = groups_a.get(g, 0)
+            gb = groups_b.get(g, 0)
+            group_diff[g] = {
+                'a': ga, 'b': gb,
+                'delta': gb - ga
+            }
+
+        # Violation diff
+        viol_diff = {
+            'a': len(viol_a),
+            'b': len(viol_b),
+            'delta': len(viol_b) - len(viol_a),
+            'improved': len(viol_b) < len(viol_a)
+        }
+
+        # Sequence overlap (common symbols in same position)
+        overlap = 0
+        min_len = min(len(seq_a), len(seq_b))
+        for i in range(min_len):
+            if seq_a[i] == seq_b[i]:
+                overlap += 1
+        overlap_pct = round(
+            overlap / max(min_len, 1) * 100, 1)
+
+        return {
+            'score': score_diff,
+            'length': length_diff,
+            'groups': group_diff,
+            'violations': viol_diff,
+            'sequence_overlap': overlap_pct,
+            'overall_assessment': self._assess(score_diff, viol_diff)
+        }
+
+    def _group_usage(self, seq):
+        """Count group usage in a sequence."""
+        usage = {}
+        for sym in seq:
+            g = get_group(sym)
+            usage[g] = usage.get(g, 0) + 1
+        return usage
+
+    def _assess(self, score_diff, viol_diff):
+        """Generate overall assessment."""
+        if score_diff['improved'] and viol_diff['improved']:
+            return 'significant_improvement'
+        elif score_diff['improved']:
+            return 'score_improved'
+        elif viol_diff['improved']:
+            return 'violations_reduced'
+        elif score_diff['delta'] == 0:
+            return 'no_change'
+        else:
+            return 'regression'
+
+
+def format_session_diff(diff_data):
+    """Format session diff for display."""
+    lines = ["=== Session Diff ==="]
+
+    sd = diff_data['score']
+    arrow = '↑' if sd['improved'] else '↓' if sd['delta'] < 0 else '='
+    lines.append(f"Score: {sd['a']}% → {sd['b']}% "
+                 f"({arrow}{abs(sd['delta'])}%)")
+
+    vd = diff_data['violations']
+    v_arrow = '↓' if vd['improved'] else '↑' if vd['delta'] > 0 else '='
+    lines.append(f"Violations: {vd['a']} → {vd['b']} ({v_arrow})")
+
+    lines.append(f"Sequence overlap: {diff_data['sequence_overlap']}%")
+
+    # Group changes
+    lines.append("Group usage changes:")
+    for g in range(1, 8):
+        gd = diff_data['groups'][g]
+        if gd['delta'] != 0:
+            arrow = '+' if gd['delta'] > 0 else ''
+            lines.append(f"  G{g}: {gd['a']} → {gd['b']} "
+                         f"({arrow}{gd['delta']})")
+
+    lines.append(f"Assessment: {diff_data['overall_assessment']}")
+    return '\n'.join(lines)
+
+
+class AnnotationManager:
+    """Manages annotations on sessions, students, and sequences.
+
+    Allows adding notes, tags, flags, and comments to any
+    data entity in the system.
+    """
+
+    ANNOTATION_TYPES = [
+        'note', 'tag', 'flag', 'comment', 'highlight', 'bookmark'
+    ]
+
+    def __init__(self):
+        self.annotations = {}  # entity_key → list of annotations
+        self._counter = 0
+
+    def annotate(self, entity_key, ann_type, content, author='system'):
+        """Add an annotation to an entity."""
+        if ann_type not in self.ANNOTATION_TYPES:
+            ann_type = 'note'
+
+        self._counter += 1
+        annotation = {
+            'id': self._counter,
+            'entity': entity_key,
+            'type': ann_type,
+            'content': content,
+            'author': author
+        }
+
+        if entity_key not in self.annotations:
+            self.annotations[entity_key] = []
+        self.annotations[entity_key].append(annotation)
+        return annotation
+
+    def get_annotations(self, entity_key, ann_type=None):
+        """Get annotations for an entity, optionally filtered by type."""
+        anns = self.annotations.get(entity_key, [])
+        if ann_type:
+            return [a for a in anns if a['type'] == ann_type]
+        return anns
+
+    def remove_annotation(self, annotation_id):
+        """Remove an annotation by ID."""
+        for key, anns in self.annotations.items():
+            for i, a in enumerate(anns):
+                if a['id'] == annotation_id:
+                    anns.pop(i)
+                    return True
+        return False
+
+    def search(self, query):
+        """Search annotations by content."""
+        results = []
+        query_lower = query.lower()
+        for anns in self.annotations.values():
+            for a in anns:
+                if query_lower in a['content'].lower():
+                    results.append(a)
+        return results
+
+    def get_all_tags(self):
+        """Get all unique tags across all entities."""
+        tags = set()
+        for anns in self.annotations.values():
+            for a in anns:
+                if a['type'] == 'tag':
+                    tags.add(a['content'])
+        return sorted(tags)
+
+    def get_flagged_entities(self):
+        """Get all entities that have been flagged."""
+        flagged = []
+        for key, anns in self.annotations.items():
+            flags = [a for a in anns if a['type'] == 'flag']
+            if flags:
+                flagged.append({
+                    'entity': key,
+                    'flags': len(flags),
+                    'reasons': [f['content'] for f in flags]
+                })
+        return flagged
+
+    def statistics(self):
+        """Get annotation statistics."""
+        total = sum(len(anns) for anns in self.annotations.values())
+        by_type = {}
+        for anns in self.annotations.values():
+            for a in anns:
+                t = a['type']
+                by_type[t] = by_type.get(t, 0) + 1
+        return {
+            'total_annotations': total,
+            'entities_annotated': len(self.annotations),
+            'by_type': by_type,
+            'unique_tags': len(self.get_all_tags())
+        }
+
+
+def format_annotations(am, entity_key=None):
+    """Format annotations for display."""
+    lines = ["=== Annotations ==="]
+    stats = am.statistics()
+    lines.append(f"Total: {stats['total_annotations']} on "
+                 f"{stats['entities_annotated']} entities")
+    lines.append(f"By type: {stats['by_type']}")
+
+    if entity_key:
+        anns = am.get_annotations(entity_key)
+        lines.append(f"\nAnnotations for '{entity_key}':")
+        for a in anns:
+            lines.append(f"  [{a['type']}] {a['content']} "
+                         f"(by {a['author']}, #{a['id']})")
+    else:
+        # Show all entities
+        for key in list(am.annotations.keys())[:5]:
+            anns = am.annotations[key]
+            lines.append(f"\n  {key}: {len(anns)} annotations")
+            for a in anns[:3]:
+                lines.append(f"    [{a['type']}] {a['content']}")
+
+    tags = am.get_all_tags()
+    if tags:
+        lines.append(f"\nTags: {', '.join(tags)}")
+
+    flagged = am.get_flagged_entities()
+    if flagged:
+        lines.append(f"\nFlagged: {len(flagged)} entities")
+        for f in flagged[:3]:
+            lines.append(f"  {f['entity']}: {f['reasons']}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -22481,3 +22855,60 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v55: Plugin system, extension API, 30K system summary.")
+
+    # ── v56 demos ────────────────────────────────────────
+
+    # 187. Session Replay Engine
+    print("\n--- Session Replay Engine ---")
+    # Build a synthetic session with sequence
+    _rnd56 = __import__('random').Random(56)
+    synth_sess56 = {
+        'pct': 82.5,
+        'sequence': [_rnd56.randint(0, 63) for _ in range(16)],
+        'violations': [],
+        'length': 16
+    }
+    sre = SessionReplayEngine(synth_sess56)
+    replay_data = sre.replay()
+    print(format_session_replay(replay_data))
+
+    transitions = sre.highlight_transitions()
+    print(f"Group transitions: {len(transitions)}")
+    for tr in transitions[:5]:
+        print(f"  T{tr['tact']}: S{tr['from_sym']:02d}(G{tr['from_group']}) "
+              f"→ S{tr['to_sym']:02d}(G{tr['to_group']})")
+
+    # 188. Session Diff Analyzer
+    print("\n--- Session Diff Analyzer ---")
+    synth_sess56b = {
+        'pct': 88.0,
+        'sequence': [_rnd56.randint(0, 63) for _ in range(16)],
+        'violations': [],
+        'length': 16
+    }
+    sda = SessionDiffAnalyzer(synth_sess56, synth_sess56b)
+    diff_data = sda.diff()
+    print(format_session_diff(diff_data))
+
+    # 189. Annotation Manager
+    print("\n--- Annotation Manager ---")
+    am = AnnotationManager()
+    am.annotate('student:Anna', 'note', 'Strong improvement in G3')
+    am.annotate('student:Anna', 'tag', 'high-potential')
+    am.annotate('student:Anna', 'flag', 'Needs group 5 focus')
+    am.annotate('student:Ivan', 'note', 'Consistent performer')
+    am.annotate('student:Ivan', 'tag', 'steady')
+    am.annotate('session:Anna:5', 'highlight', 'Personal best!')
+    am.annotate('session:Anna:5', 'comment', 'Breakthrough session')
+    am.annotate('session:Lena:3', 'flag', 'Unusual score drop')
+    am.annotate('group:G7', 'tag', 'difficult')
+    am.annotate('group:G7', 'note', 'Most students struggle here')
+    print(format_annotations(am))
+    print(format_annotations(am, entity_key='student:Anna'))
+
+    # Search
+    search_results = am.search('group')
+    print(f"\nSearch 'group': {len(search_results)} results")
+
+    print("\n" + "=" * 60)
+    print("v56: Session replay engine, diff analyzer, annotations.")
