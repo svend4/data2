@@ -9833,6 +9833,398 @@ def format_annotated_replay(annotations, max_tacts=None):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# DATA EXPORT / IMPORT — JSON & CSV (v29)
+# ═══════════════════════════════════════════════════════════
+
+def export_student_json(student):
+    """
+    Export student data to a JSON-serializable dict.
+
+    Includes: profile, sessions, mastery, badges, stats.
+    """
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+    recent = scores[-5:] if scores else []
+
+    return {
+        'format': 'scarab_student_v1',
+        'name': student.name,
+        'mastery_level': student.mastery_level,
+        'elo': getattr(student, 'elo', 1200),
+        'n_sessions': len(sessions),
+        'avg_score': round(sum(scores) / len(scores), 2) if scores else 0,
+        'recent_avg': round(sum(recent) / len(recent), 2) if recent else 0,
+        'best_score': round(max(scores), 2) if scores else 0,
+        'badges': check_badges(student),
+        'sessions': [
+            {
+                'idx': i,
+                'length': s.get('length', 0),
+                'total': s.get('total', 0),
+                'pct': round(s.get('pct', 0), 2),
+                'violations': len(s.get('violations', [])),
+            }
+            for i, s in enumerate(sessions)
+        ],
+    }
+
+
+def import_student_json(data, school=None):
+    """
+    Import student from JSON dict.
+
+    If school is given, register the student.
+    Returns the student object.
+    """
+    if data.get('format') != 'scarab_student_v1':
+        raise ValueError("Unknown format: " + str(data.get('format')))
+
+    name = data['name']
+    ml = data.get('mastery_level', 1)
+
+    if school:
+        school.add_student(name, mastery_level=ml)
+        student = school.students[name]
+    else:
+        student = StudentTracker(name, mastery_level=ml)
+
+    student.elo = data.get('elo', 1200)
+
+    # Rebuild sessions from exported data
+    for sd in data.get('sessions', []):
+        student.sessions.append({
+            'length': sd.get('length', 0),
+            'total': sd.get('total', 0),
+            'pct': sd.get('pct', 0),
+            'violations': [{}] * sd.get('violations', 0),
+        })
+
+    return student
+
+
+def export_school_v2(school):
+    """Export entire school to JSON-serializable dict (v29 format)."""
+    return {
+        'format': 'scarab_school_v1',
+        'school_name': school.name,
+        'n_students': len(school.students),
+        'students': {
+            name: export_student_json(s)
+            for name, s in school.students.items()
+        },
+    }
+
+
+def export_sessions_csv(student):
+    """
+    Export student sessions as CSV string.
+
+    Columns: session_idx, length, total, pct, violations
+    """
+    lines = ['session_idx,length,total,pct,violations']
+    for i, s in enumerate(student.sessions):
+        length = s.get('length', 0)
+        total = s.get('total', 0)
+        pct = round(s.get('pct', 0), 2)
+        viols = len(s.get('violations', []))
+        lines.append(f'{i},{length},{total},{pct},{viols}')
+    return '\n'.join(lines)
+
+
+def export_rankings_csv(school, metric='recent_avg'):
+    """Export school rankings as CSV string."""
+    rankings = batch_rank(school, metric=metric)
+    lines = ['rank,name,mastery,sessions,avg,recent_avg,best,elo,improvement']
+    for r in rankings:
+        lines.append(
+            f"{r['rank']},{r['name']},{r['mastery']},{r['sessions']},"
+            f"{r['avg']},{r['recent_avg']},{r['best']},"
+            f"{r['elo']},{r['improvement']}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# NOTIFICATION SYSTEM — event-based alerts (v29)
+# ═══════════════════════════════════════════════════════════
+
+class NotificationManager:
+    """
+    Event-based notification system.
+
+    Watches for events and generates notifications:
+    - milestone: badge earned, level up, session count
+    - alert: score drop, streak broken, inactivity
+    - info: session complete, ranking change
+    """
+
+    def __init__(self):
+        self.notifications = []
+        self._handlers = {}
+
+    def register_handler(self, event_type, handler_fn):
+        """Register a callback for an event type."""
+        self._handlers.setdefault(event_type, []).append(handler_fn)
+
+    def notify(self, event_type, message, severity='info', data=None):
+        """Create a notification."""
+        notif = {
+            'type': event_type,
+            'severity': severity,
+            'message': message,
+            'data': data or {},
+            'read': False,
+        }
+        self.notifications.append(notif)
+
+        # Trigger handlers
+        for fn in self._handlers.get(event_type, []):
+            fn(notif)
+
+        return notif
+
+    def check_student_events(self, student):
+        """
+        Check student state and generate relevant notifications.
+        """
+        generated = []
+        sessions = student.sessions
+        scores = [s['pct'] for s in sessions]
+        n = len(sessions)
+
+        # Session milestones
+        for milestone in [1, 5, 10, 25, 50, 100]:
+            if n == milestone:
+                generated.append(self.notify(
+                    'milestone',
+                    f"{student.name} completed {milestone} sessions!",
+                    severity='success',
+                    data={'milestone': milestone}))
+
+        # Level up detection (compare mastery to what sessions suggest)
+        ml = student.mastery_level
+        if ml >= 3 and n >= 2:
+            # Check if recent level is higher than earlier implied level
+            generated.append(self.notify(
+                'info',
+                f"{student.name} is at mastery level {ml}",
+                data={'mastery': ml}))
+
+        # Score drop alert
+        if n >= 6:
+            prev3 = sum(scores[-6:-3]) / 3
+            last3 = sum(scores[-3:]) / 3
+            if last3 < prev3 - 15:
+                generated.append(self.notify(
+                    'alert',
+                    f"{student.name}: score dropped by "
+                    f"{round(prev3 - last3, 1)} points",
+                    severity='warning',
+                    data={'drop': round(prev3 - last3, 1)}))
+
+        # High score celebration
+        if scores and max(scores) == scores[-1] and n > 1:
+            generated.append(self.notify(
+                'milestone',
+                f"{student.name} set a new personal best: "
+                f"{round(scores[-1], 1)}%!",
+                severity='success',
+                data={'score': round(scores[-1], 1)}))
+
+        # Badge check
+        badges = check_badges(student)
+        if len(badges) >= 5:
+            generated.append(self.notify(
+                'info',
+                f"{student.name} has earned {len(badges)} badges",
+                data={'badge_count': len(badges)}))
+
+        return generated
+
+    def unread(self):
+        """Get unread notifications."""
+        return [n for n in self.notifications if not n['read']]
+
+    def mark_all_read(self):
+        """Mark all as read."""
+        for n in self.notifications:
+            n['read'] = True
+
+    def format_notifications(self, only_unread=False):
+        """Format notifications for display."""
+        items = self.unread() if only_unread else self.notifications
+        if not items:
+            return "No notifications."
+
+        icons = {
+            'success': '✅', 'warning': '⚠️',
+            'info': 'ℹ️', 'error': '❌',
+        }
+        type_icons = {
+            'milestone': '🏅', 'alert': '🔔', 'info': '📋',
+        }
+
+        lines = [f"Notifications ({len(items)})"]
+        lines.append("─" * 45)
+        for n in items:
+            sev_icon = icons.get(n['severity'], '•')
+            typ_icon = type_icons.get(n['type'], '•')
+            read_mark = ' ' if n['read'] else '●'
+            lines.append(f"  {read_mark} {typ_icon}{sev_icon} {n['message']}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# REPORT GENERATOR — structured reports (v29)
+# ═══════════════════════════════════════════════════════════
+
+def generate_full_report(student, school=None):
+    """
+    Generate a comprehensive report for a student.
+
+    Sections:
+    1. Profile summary
+    2. Session history
+    3. Skill tree
+    4. Badges
+    5. Diagnostic
+    6. Ranking (if school provided)
+
+    Returns structured dict suitable for rendering to text/HTML/PDF.
+    """
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+    recent = scores[-5:] if scores else []
+
+    # 1. Profile
+    profile = {
+        'name': student.name,
+        'mastery_level': student.mastery_level,
+        'elo': getattr(student, 'elo', 1200),
+        'total_sessions': len(sessions),
+        'avg_score': round(sum(scores) / len(scores), 1) if scores else 0,
+        'recent_avg': round(sum(recent) / len(recent), 1) if recent else 0,
+        'best_score': round(max(scores), 1) if scores else 0,
+        'worst_score': round(min(scores), 1) if scores else 0,
+    }
+
+    # 2. Session history (last 10)
+    history = []
+    for i, s in enumerate(sessions[-10:]):
+        idx = len(sessions) - 10 + i if len(sessions) >= 10 else i
+        history.append({
+            'session': idx + 1,
+            'pct': round(s['pct'], 1),
+            'violations': len(s.get('violations', [])),
+        })
+
+    # 3. Skill tree
+    skill_tree = build_skill_tree(student)
+
+    # 4. Badges
+    badges = check_badges(student)
+    badge_details = []
+    for bid in badges:
+        bd = BADGE_DEFS.get(bid, {})
+        badge_details.append({
+            'id': bid,
+            'name': bd.get('name', bid),
+            'icon': bd.get('icon', '?'),
+        })
+
+    # 5. Diagnostic
+    diagnostic = generate_diagnostic(student)
+
+    # 6. Ranking
+    ranking_info = None
+    if school:
+        rankings = batch_rank(school, metric='recent_avg')
+        for r in rankings:
+            if r['name'] == student.name:
+                ranking_info = r
+                break
+
+    return {
+        'title': f'Student Report: {student.name}',
+        'profile': profile,
+        'history': history,
+        'skill_tree': skill_tree,
+        'badges': badge_details,
+        'badges_total': len(BADGE_DEFS),
+        'diagnostic': diagnostic,
+        'ranking': ranking_info,
+    }
+
+
+def format_full_report(report):
+    """Format full report as text."""
+    lines = []
+    lines.append("╔" + "═" * 56 + "╗")
+    lines.append("║" + f"  {report['title']:^52s}" + "  ║")
+    lines.append("╚" + "═" * 56 + "╝")
+
+    # Profile
+    p = report['profile']
+    lines.append("")
+    lines.append("  PROFILE")
+    lines.append("  " + "─" * 40)
+    lines.append(f"  Name:     {p['name']}")
+    lines.append(f"  Mastery:  L{p['mastery_level']}  |  ELO: {p['elo']}")
+    lines.append(f"  Sessions: {p['total_sessions']}")
+    lines.append(f"  Avg:      {p['avg_score']}%  |  Recent: {p['recent_avg']}%")
+    lines.append(f"  Best:     {p['best_score']}%  |  Worst:  {p['worst_score']}%")
+
+    # History
+    lines.append("")
+    lines.append("  SESSION HISTORY (last 10)")
+    lines.append("  " + "─" * 40)
+    for h in report['history']:
+        bar_len = int(h['pct'] / 5)
+        bar = '█' * bar_len + '░' * (20 - bar_len)
+        viol_str = '✓' if h['violations'] == 0 else str(h['violations']) + 'v'
+        lines.append(f"  S{h['session']:02d} [{bar}] {h['pct']:5.1f}% "
+                     f"({viol_str})")
+
+    # Badges
+    lines.append("")
+    bd = report['badges']
+    lines.append(f"  BADGES ({len(bd)}/{report['badges_total']})")
+    lines.append("  " + "─" * 40)
+    badge_line = "  "
+    for b in bd:
+        badge_line += f"{b['icon']} "
+    lines.append(badge_line if bd else "  (none yet)")
+
+    # Skill tree summary
+    lines.append("")
+    lines.append("  SKILL TREE")
+    lines.append("  " + "─" * 40)
+    st = report['skill_tree']
+    for node in st['tree']:
+        if node['status'] == 'completed':
+            lines.append(f"  ◉ L{node['level']} {node['name']}")
+        elif node['status'] == 'current':
+            lines.append(f"  ◎ L{node['level']} {node['name']} "
+                         f"[{node['progress']}%]")
+        else:
+            lines.append(f"  ○ L{node['level']} {node['name']}")
+
+    # Ranking
+    if report['ranking']:
+        r = report['ranking']
+        lines.append("")
+        lines.append("  RANKING")
+        lines.append("  " + "─" * 40)
+        lines.append(f"  Position: #{r['rank']}  |  "
+                     f"Recent: {r['recent_avg']}%  |  "
+                     f"ELO: {r['elo']}")
+
+    lines.append("")
+    lines.append("  " + "═" * 40)
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -10938,3 +11330,36 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v28: Kata diff, achievement badges, annotated replay.")
+
+    # 96. Data Export
+    print("\n--- Data Export ---")
+    anna_json = export_student_json(sim_school.students['Anna'])
+    print(f"  JSON export: {anna_json['name']}, "
+          f"{anna_json['n_sessions']} sessions, "
+          f"avg={anna_json['avg_score']}%, "
+          f"badges={len(anna_json['badges'])}")
+    csv_str = export_sessions_csv(sim_school.students['Anna'])
+    csv_lines = csv_str.split('\n')
+    print(f"  CSV: {len(csv_lines)} lines (header + {len(csv_lines) - 1} rows)")
+    print(f"  CSV header: {csv_lines[0]}")
+    rank_csv = export_rankings_csv(sim_school)
+    print(f"  Rankings CSV: {len(rank_csv.split(chr(10)))} lines")
+
+    # 97. Notification System
+    print("\n--- Notifications ---")
+    nm = NotificationManager()
+    for name, st97 in sim_school.students.items():
+        nm.check_student_events(st97)
+    print(nm.format_notifications())
+    print(f"  Unread: {len(nm.unread())}")
+    nm.mark_all_read()
+    print(f"  After mark_all_read: {len(nm.unread())} unread")
+
+    # 98. Full Report
+    print("\n--- Full Report ---")
+    rpt = generate_full_report(sim_school.students['Anna'],
+                               school=sim_school)
+    print(format_full_report(rpt))
+
+    print("\n" + "=" * 60)
+    print("v29: Data export/import, notifications, report generator.")

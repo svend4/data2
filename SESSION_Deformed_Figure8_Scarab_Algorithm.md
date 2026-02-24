@@ -4163,3 +4163,82 @@ T02 ✗ L=S17(G3) R=S06(G2) cplx=3
        ⚠ R1_Zone: zone mismatch
        ↔ L group shift: G2→G3
 ```
+
+---
+
+## Часть 44: Экспорт/импорт, уведомления, генератор отчётов (v29)
+
+### 44.1 Экспорт / Импорт данных
+
+JSON-экспорт студента:
+```python
+data = export_student_json(student)
+# → {format, name, mastery_level, elo, n_sessions, avg_score,
+#    recent_avg, best_score, badges, sessions[]}
+
+student = import_student_json(data, school=my_school)
+```
+
+CSV-экспорт:
+```python
+csv = export_sessions_csv(student)
+# → session_idx,length,total,pct,violations
+
+csv = export_rankings_csv(school, metric='recent_avg')
+# → rank,name,mastery,sessions,avg,recent_avg,best,elo,improvement
+```
+
+Экспорт школы v2:
+```python
+school_data = export_school_v2(school)
+# → {format, school_name, n_students, students: {name: student_json}}
+```
+
+### 44.2 Система уведомлений
+
+```python
+nm = NotificationManager()
+nm.register_handler('milestone', my_callback)
+
+events = nm.check_student_events(student)
+print(nm.format_notifications())
+nm.mark_all_read()
+```
+
+Типы событий:
+```
+milestone — session milestones (1/5/10/25/50/100), personal best
+alert     — score drop (>15 points за 3 сессии)
+info      — mastery level, badge count
+```
+
+Severity: `success`, `warning`, `info`, `error`
+
+Пример вывода:
+```
+● 🏅✅ Anna set a new personal best: 92.9%!
+● 📋ℹ️ Anna has earned 7 badges
+● 📋ℹ️ Ivan is at mastery level 4
+```
+
+### 44.3 Генератор отчётов
+
+```python
+rpt = generate_full_report(student, school=my_school)
+print(format_full_report(rpt))
+```
+
+Секции отчёта:
+```
+╔══════════════════════════════════════╗
+║      Student Report: Anna           ║
+╚══════════════════════════════════════╝
+
+PROFILE   — name, ML, ELO, sessions, avg, best/worst
+HISTORY   — last 10 sessions с progress bars
+BADGES    — earned icons + count/total
+SKILL TREE — L1-L7 completion status
+RANKING   — position, recent%, ELO (if school)
+```
+
+Структура возврата: `{title, profile, history, skill_tree, badges, diagnostic, ranking}`
