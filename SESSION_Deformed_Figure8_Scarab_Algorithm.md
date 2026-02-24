@@ -3840,3 +3840,88 @@ print(format_diagnostic(diag))
 - Слабые стороны: правила <50%, группы <5%
 - Аномалии: кол-во z-отклонений
 - Рекомендации: автоматические на основе анализа
+
+---
+
+## Часть 40: Мутации, калибровка, компаратор (v25)
+
+### 40.1 Мутационный движок ката v2
+
+Расширенный набор мутаций с параметром `intensity` (0.0–1.0):
+
+```python
+result = mutate_kata_v2(kata, mutation_type='invert', intensity=0.6, seed=2)
+```
+
+7 типов мутаций:
+```
+mirror    — swap L↔R рук (tact[0]↔tact[1])
+invert    — XOR complement (sym ^ 0b111111)
+shift     — сдвиг символов на offset % 64
+scramble  — перестановка порядка тактов
+stretch   — дублирование тактов (длина растёт)
+blend     — слияние соседних тактов (avg символов)
+bitflip   — случайный flip битов
+```
+
+Цепочка мутаций:
+```python
+result, history = mutation_chain(
+    kata,
+    [('mirror', 0.5), ('bitflip', 0.3), ('scramble', 0.4)],
+    seed=99)
+```
+```
+[0] Original (5 tacts)
+[1] mirror  (int=0.5) → 5 tacts
+[2] bitflip (int=0.3) → 5 tacts
+[3] scramble(int=0.4) → 5 tacts
+```
+
+### 40.2 Калибровка сложности
+
+Поиск ML × length для целевого %:
+
+```python
+cal = calibrate_difficulty(student, target_pct=75.0)
+```
+
+```
+Current: L5 avg=88.6%
+Recommended: L5 len=8 (expected 76.6%)
+
+Top 5 options:
+  L5 len=8  diff=90  exp=76.6%  gap=1.6
+  L6 len=6  diff=90  exp=76.6%  gap=1.6
+  L7 len=4  diff=90  exp=76.6%  gap=1.6
+```
+
+Difficulty curve — визуализация score vs difficulty:
+```
+D 45: ████████████████████ 100%
+D 65: ███████████████████  97%
+D 90: ███████████████      76%
+```
+
+### 40.3 Компаратор сессий
+
+Сравнение двух сессий side-by-side:
+
+```python
+comp = compare_sessions(student, idx_a=0, idx_b=-1)
+print(format_comparison(comp))
+```
+
+```
+Session Comparison: #0 vs #11
+  Score: 50.0% → 92.9% (↑ +42.9%)
+
+  Rule      #0     #11    Delta   Status
+  R1-Zone  100.0% 100.0%  +0.0%  → stable
+  R2-Anti    0.0%  85.7% +85.7%  ↑ improved
+  R4-Smooth  0.0% 100.0% +100.0% ↑ improved
+
+  Improved: R2, R4, R5
+```
+
+Анализ по каждому правилу: delta, improved/declined/stable.

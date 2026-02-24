@@ -8329,6 +8329,347 @@ def format_diagnostic(diag):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# KATA MUTATION ENGINE — systematic transforms (v25)
+# ═══════════════════════════════════════════════════════════
+
+def mutate_kata_v2(kata, mutation_type='mirror', intensity=1.0, seed=None):
+    """
+    Apply systematic mutations to a kata sequence (v25 extended engine).
+
+    Mutation types:
+    - mirror:    swap L/R hands (tact[0] ↔ tact[1])
+    - invert:    XOR complement all symbols
+    - shift:     rotate group assignments up/down
+    - scramble:  permute tact order
+    - stretch:   duplicate/remove tacts
+    - blend:     mix two tacts into one
+    - bitflip:   flip random bits (controlled by intensity)
+
+    intensity: 0.0 (minimal) to 1.0 (maximal) mutation strength.
+    seed: for reproducibility.
+    """
+    import random as _rnd
+    rng = _rnd.Random(seed)
+
+    result = [list(t) for t in kata]  # mutable copy
+    n = len(result)
+    if n == 0:
+        return []
+
+    n_affected = max(1, int(n * intensity))
+
+    if mutation_type == 'mirror':
+        # Swap L/R hands
+        indices = rng.sample(range(n), min(n_affected, n))
+        for i in indices:
+            result[i][0], result[i][1] = result[i][1], result[i][0]
+
+    elif mutation_type == 'invert':
+        # XOR complement
+        indices = rng.sample(range(n), min(n_affected, n))
+        for i in indices:
+            result[i][0] = result[i][0] ^ 0b111111
+            result[i][1] = result[i][1] ^ 0b111111
+
+    elif mutation_type == 'shift':
+        # Shift symbols by group offset
+        shift_amt = max(1, int(intensity * 8))
+        indices = rng.sample(range(n), min(n_affected, n))
+        for i in indices:
+            result[i][0] = (result[i][0] + shift_amt) % 64
+            result[i][1] = (result[i][1] + shift_amt) % 64
+
+    elif mutation_type == 'scramble':
+        # Permute tact order
+        indices = list(range(n))
+        for _ in range(n_affected):
+            a, b = rng.sample(range(n), 2)
+            indices[a], indices[b] = indices[b], indices[a]
+        result = [result[i] for i in indices]
+
+    elif mutation_type == 'stretch':
+        # Duplicate random tacts
+        new_result = []
+        for i, t in enumerate(result):
+            new_result.append(t)
+            if rng.random() < intensity * 0.5 and len(new_result) < n * 2:
+                new_result.append(list(t))  # duplicate
+        result = new_result
+
+    elif mutation_type == 'blend':
+        # Blend adjacent tacts (average symbols)
+        indices = rng.sample(range(max(1, n - 1)), min(n_affected, n - 1))
+        for i in sorted(indices, reverse=True):
+            blended_l = (result[i][0] + result[i + 1][0]) // 2
+            blended_r = (result[i][1] + result[i + 1][1]) // 2
+            result[i] = [blended_l, blended_r, 0, 0]
+            result.pop(i + 1)
+
+    elif mutation_type == 'bitflip':
+        # Flip random bits
+        n_flips = max(1, int(intensity * n * 2))
+        for _ in range(n_flips):
+            ti = rng.randrange(n)
+            hand = rng.randint(0, 1)
+            bit = rng.randint(0, 5)
+            result[ti][hand] ^= (1 << bit)
+
+    # Convert back to tuples
+    return [tuple(t[:4] if len(t) >= 4 else t + [0] * (4 - len(t)))
+            for t in result]
+
+
+def mutation_chain(kata, mutations, seed=None):
+    """
+    Apply a chain of mutations sequentially.
+
+    mutations: list of (type, intensity) tuples.
+    Example: [('mirror', 0.5), ('bitflip', 0.3), ('scramble', 0.2)]
+    """
+    current = kata
+    history = [{'step': 0, 'type': 'original', 'length': len(kata)}]
+
+    for i, (mtype, mint) in enumerate(mutations):
+        s = (seed + i * 37) if seed else None
+        current = mutate_kata_v2(current, mtype, mint, s)
+        history.append({
+            'step': i + 1,
+            'type': mtype,
+            'intensity': mint,
+            'length': len(current),
+        })
+
+    return current, history
+
+
+def format_mutation_history(history):
+    """Format mutation chain history."""
+    lines = ["Mutation Chain"]
+    lines.append("─" * 45)
+    for h in history:
+        if h['type'] == 'original':
+            lines.append(f"  [0] Original ({h['length']} tacts)")
+        else:
+            lines.append(f"  [{h['step']}] {h['type']} "
+                         f"(int={h.get('intensity', 0):.1f}) "
+                         f"→ {h['length']} tacts")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# DIFFICULTY CALIBRATION — adaptive targeting (v25)
+# ═══════════════════════════════════════════════════════════
+
+def calibrate_difficulty(student, target_pct=75.0):
+    """
+    Calibrate difficulty parameters to achieve a target score percentage.
+
+    Uses binary search over mastery_level and kata length to find
+    the combination that produces scores closest to target_pct.
+
+    Returns optimal parameters and calibration curve.
+    """
+    sessions = student.sessions
+    if len(sessions) < 3:
+        return {'calibrated': False, 'reason': 'need 3+ sessions'}
+
+    # Current performance baseline
+    recent = sessions[-5:]
+    current_avg = sum(s['pct'] for s in recent) / len(recent)
+    current_ml = student.mastery_level
+
+    # Calibration: test different ML + length combos
+    calibration = []
+    for ml in range(max(1, current_ml - 2), min(8, current_ml + 3)):
+        for length in range(3, 10):
+            # Estimate difficulty (higher ML and length = harder)
+            estimated_difficulty = ml * 10 + length * 5
+            # Expected score based on student's trend
+            # Simple model: current_avg adjusted by difficulty delta
+            diff_delta = estimated_difficulty - (current_ml * 10 +
+                                                  len(recent) * 5)
+            expected = current_avg - diff_delta * 0.8
+            expected = max(10, min(100, expected))
+
+            calibration.append({
+                'mastery_level': ml,
+                'length': length,
+                'difficulty': estimated_difficulty,
+                'expected_pct': round(expected, 1),
+                'gap': round(abs(expected - target_pct), 1),
+            })
+
+    # Sort by gap to target
+    calibration.sort(key=lambda c: c['gap'])
+    best = calibration[0]
+
+    # Difficulty curve: score vs difficulty
+    curve = []
+    for c in sorted(calibration, key=lambda x: x['difficulty']):
+        curve.append((c['difficulty'], c['expected_pct']))
+
+    return {
+        'calibrated': True,
+        'target_pct': target_pct,
+        'current_avg': round(current_avg, 1),
+        'current_ml': current_ml,
+        'recommended': {
+            'mastery_level': best['mastery_level'],
+            'length': best['length'],
+            'expected_pct': best['expected_pct'],
+        },
+        'top_options': calibration[:5],
+        'curve': curve[:15],
+    }
+
+
+def format_calibration(cal):
+    """Format calibration results."""
+    if not cal.get('calibrated'):
+        return f"Calibration: {cal.get('reason', 'failed')}"
+
+    rec = cal['recommended']
+    lines = [f"Difficulty Calibration (target: {cal['target_pct']}%)"]
+    lines.append("─" * 50)
+    lines.append(f"  Current: L{cal['current_ml']} avg={cal['current_avg']}%")
+    lines.append(f"  Recommended: L{rec['mastery_level']} "
+                 f"len={rec['length']} "
+                 f"(expected {rec['expected_pct']}%)")
+    lines.append("")
+    lines.append("  Top 5 options:")
+    for c in cal['top_options']:
+        lines.append(f"    L{c['mastery_level']} len={c['length']}  "
+                     f"diff={c['difficulty']:3d}  "
+                     f"exp={c['expected_pct']:5.1f}%  "
+                     f"gap={c['gap']:4.1f}")
+
+    # Mini-curve
+    lines.append("")
+    lines.append("  Difficulty curve:")
+    for d, p in cal['curve'][:8]:
+        bar_len = int(p / 5)
+        lines.append(f"    D{d:3d}: {'█' * bar_len} {p:.0f}%")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION COMPARATOR — diff two sessions (v25)
+# ═══════════════════════════════════════════════════════════
+
+def compare_sessions(student, idx_a, idx_b):
+    """
+    Compare two sessions of the same student side-by-side.
+
+    Analyzes:
+    - Score difference
+    - Rule-by-rule comparison
+    - Group distribution changes
+    - Complexity evolution
+    - Improvement areas
+    """
+    sessions = student.sessions
+    n = len(sessions)
+    if n < 2:
+        return {'comparable': False, 'reason': 'need 2+ sessions'}
+
+    # Normalize indices
+    if idx_a < 0:
+        idx_a = n + idx_a
+    if idx_b < 0:
+        idx_b = n + idx_b
+
+    if not (0 <= idx_a < n and 0 <= idx_b < n):
+        return {'comparable': False, 'reason': 'index out of range'}
+
+    sa, sb = sessions[idx_a], sessions[idx_b]
+
+    # Score comparison
+    delta_pct = sb['pct'] - sa['pct']
+
+    # Rule-by-rule
+    rule_deltas = {}
+    for r in range(1, 6):
+        rh = student.rule_history.get(r, [])
+        va = rh[idx_a] if idx_a < len(rh) else 50
+        vb = rh[idx_b] if idx_b < len(rh) else 50
+        rule_deltas[r] = {
+            'a': round(va, 1),
+            'b': round(vb, 1),
+            'delta': round(vb - va, 1),
+            'improved': vb > va + 2,
+            'declined': vb < va - 2,
+        }
+
+    # Mastery level change
+    ml_a = sa.get('mastery_level', student.mastery_level)
+    ml_b = sb.get('mastery_level', student.mastery_level)
+
+    # Improvements and declines
+    improved = [f"R{r}" for r, d in rule_deltas.items() if d['improved']]
+    declined = [f"R{r}" for r, d in rule_deltas.items() if d['declined']]
+
+    return {
+        'comparable': True,
+        'session_a': idx_a,
+        'session_b': idx_b,
+        'score_a': round(sa['pct'], 1),
+        'score_b': round(sb['pct'], 1),
+        'delta_pct': round(delta_pct, 1),
+        'mastery_a': ml_a,
+        'mastery_b': ml_b,
+        'rule_deltas': rule_deltas,
+        'improved_rules': improved,
+        'declined_rules': declined,
+    }
+
+
+def format_comparison(comp):
+    """Format session comparison."""
+    if not comp.get('comparable'):
+        return f"Compare: {comp.get('reason', 'error')}"
+
+    a, b = comp['session_a'], comp['session_b']
+    lines = [f"Session Comparison: #{a} vs #{b}"]
+    lines.append("─" * 50)
+
+    # Score
+    arrow = '↑' if comp['delta_pct'] > 0 else '↓' if comp['delta_pct'] < 0 else '→'
+    lines.append(f"  Score: {comp['score_a']}% → {comp['score_b']}% "
+                 f"({arrow} {comp['delta_pct']:+.1f}%)")
+    lines.append(f"  Mastery: L{comp['mastery_a']} → L{comp['mastery_b']}")
+
+    # Rule table
+    lines.append("")
+    lines.append(f"  {'Rule':<8s} {'#' + str(a):>6s} {'#' + str(b):>6s} "
+                 f"{'Delta':>7s}  Status")
+    lines.append("  " + "─" * 40)
+
+    rule_names = {1: 'Zone', 2: 'Anti', 3: 'Alter', 4: 'Smooth', 5: 'Cons'}
+    for r in range(1, 6):
+        d = comp['rule_deltas'][r]
+        if d['improved']:
+            status = '↑ improved'
+        elif d['declined']:
+            status = '↓ declined'
+        else:
+            status = '→ stable'
+        lines.append(f"  R{r}-{rule_names[r]:<5s} {d['a']:5.1f}% "
+                     f"{d['b']:5.1f}% {d['delta']:+6.1f}%  {status}")
+
+    # Summary
+    lines.append("")
+    if comp['improved_rules']:
+        lines.append(f"  Improved: {', '.join(comp['improved_rules'])}")
+    if comp['declined_rules']:
+        lines.append(f"  Declined: {', '.join(comp['declined_rules'])}")
+    if not comp['improved_rules'] and not comp['declined_rules']:
+        lines.append("  All rules stable.")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -9337,4 +9678,33 @@ if __name__ == '__main__':
     print(format_diagnostic(diag))
 
     print("\n" + "=" * 60)
-    print("v24: Symbol taxonomy, fingerprinting, diagnostic reports.")
+    # 84. Kata Mutation Engine
+    print("\n--- Kata Mutation Engine ---")
+    mut_dma = DualMatchStickAutomaton(mastery_level=3, seed=42)
+    mut_kata = mut_dma.generate_dual_kata(length=5)
+    print(f"  Original: {[(t[0], t[1]) for t in mut_kata]}")
+
+    mirrored = mutate_kata_v2(mut_kata, 'mirror', 1.0, seed=1)
+    print(f"  Mirror:   {[(t[0], t[1]) for t in mirrored]}")
+
+    inverted = mutate_kata_v2(mut_kata, 'invert', 0.6, seed=2)
+    print(f"  Invert:   {[(t[0], t[1]) for t in inverted]}")
+
+    chain_result, chain_hist = mutation_chain(
+        mut_kata,
+        [('mirror', 0.5), ('bitflip', 0.3), ('scramble', 0.4)],
+        seed=99)
+    print(format_mutation_history(chain_hist))
+
+    # 85. Difficulty Calibration
+    print("\n--- Difficulty Calibration ---")
+    cal = calibrate_difficulty(sim_school.students['Anna'], target_pct=75.0)
+    print(format_calibration(cal))
+
+    # 86. Session Comparator
+    print("\n--- Session Comparator ---")
+    comp = compare_sessions(sim_school.students['Anna'], 0, -1)
+    print(format_comparison(comp))
+
+    print("\n" + "=" * 60)
+    print("v25: Mutation engine, difficulty calibration, comparator.")
