@@ -10225,6 +10225,439 @@ def format_full_report(report):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# TRAINING SCHEDULER / CALENDAR (v30)
+# ═══════════════════════════════════════════════════════════
+
+class TrainingScheduler:
+    """
+    Plans and tracks training sessions over a weekly calendar.
+
+    Features:
+    - Weekly schedule with configurable slots
+    - Adaptive difficulty based on recent performance
+    - Rest-day detection to prevent burnout
+    - Focus area recommendations
+    """
+
+    WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+    def __init__(self, student, sessions_per_week=4):
+        self.student = student
+        self.sessions_per_week = min(max(sessions_per_week, 1), 7)
+        self.schedule = {}   # day_index → slot info
+        self.history = []    # completed schedule entries
+        self._build_default_schedule()
+
+    def _build_default_schedule(self):
+        """Spread sessions across the week evenly."""
+        n = self.sessions_per_week
+        if n >= 7:
+            days = list(range(7))
+        else:
+            step = 7 / n
+            days = [int(i * step) for i in range(n)]
+        for d in days:
+            self.schedule[d] = {
+                'day': self.WEEKDAYS[d],
+                'type': 'training',
+                'focus': None,
+                'difficulty': None,
+            }
+
+    def recommend_focus(self):
+        """
+        Recommend focus areas based on student weaknesses.
+
+        Analyzes recent violations and diagnostic to find weak spots.
+        """
+        sessions = self.student.sessions
+        if not sessions:
+            return 'general'
+
+        # Count violation types from recent sessions
+        violation_counts = {}
+        for s in sessions[-5:]:
+            for v in s.get('violations', []):
+                rule = v.get('rule', 'unknown')
+                violation_counts[rule] = violation_counts.get(rule, 0) + 1
+
+        if violation_counts:
+            worst = max(violation_counts, key=violation_counts.get)
+            focus_map = {
+                'R1_Zone': 'zone_accuracy',
+                'R2_Group': 'group_transitions',
+                'R3_Length': 'sequence_length',
+                'R4_Repeat': 'variation',
+                'R5_Edge': 'edge_cases',
+            }
+            return focus_map.get(worst, 'general')
+
+        return 'consolidation'
+
+    def recommend_difficulty(self):
+        """Recommend difficulty based on recent scores."""
+        scores = [s['pct'] for s in self.student.sessions]
+        if not scores:
+            return 'easy'
+        recent = scores[-3:] if len(scores) >= 3 else scores
+        avg = sum(recent) / len(recent)
+        if avg >= 85:
+            return 'hard'
+        elif avg >= 65:
+            return 'medium'
+        return 'easy'
+
+    def generate_week(self, week_number=1):
+        """Generate a full week plan with auto-filled focus and difficulty."""
+        focus = self.recommend_focus()
+        diff = self.recommend_difficulty()
+
+        week = []
+        for d in range(7):
+            if d in self.schedule:
+                slot = dict(self.schedule[d])
+                slot['week'] = week_number
+                slot['focus'] = slot['focus'] or focus
+                slot['difficulty'] = slot['difficulty'] or diff
+                slot['status'] = 'planned'
+                week.append(slot)
+            else:
+                week.append({
+                    'day': self.WEEKDAYS[d],
+                    'week': week_number,
+                    'type': 'rest',
+                    'status': 'rest',
+                })
+        return week
+
+    def complete_day(self, week_plan, day_index, score=None):
+        """Mark a day as completed."""
+        if 0 <= day_index < len(week_plan):
+            entry = week_plan[day_index]
+            if entry['type'] == 'training':
+                entry['status'] = 'completed'
+                entry['score'] = score
+                self.history.append(entry)
+        return week_plan
+
+    def format_week(self, week_plan):
+        """Format week plan as text."""
+        lines = ["Training Schedule"]
+        lines.append("─" * 50)
+
+        icons = {
+            'planned': '○', 'completed': '●',
+            'rest': '·', 'skipped': '✕',
+        }
+        for entry in week_plan:
+            icon = icons.get(entry['status'], '?')
+            day = entry['day']
+            if entry['type'] == 'rest':
+                lines.append(f"  {icon} {day:3s}  — rest day")
+            else:
+                focus = entry.get('focus', '?')
+                diff = entry.get('difficulty', '?')
+                score_str = ''
+                if entry['status'] == 'completed' and entry.get('score') is not None:
+                    score_str = f"  → {entry['score']}%"
+                lines.append(f"  {icon} {day:3s}  [{diff:6s}] {focus}{score_str}")
+
+        completed = sum(1 for e in week_plan if e['status'] == 'completed')
+        total = sum(1 for e in week_plan if e['type'] == 'training')
+        lines.append("─" * 50)
+        lines.append(f"  Progress: {completed}/{total} sessions")
+        return '\n'.join(lines)
+
+    def adherence_rate(self):
+        """Calculate schedule adherence %."""
+        if not self.history:
+            return 0.0
+        completed = len(self.history)
+        # Expected based on weeks tracked
+        weeks = max(1, completed // max(self.sessions_per_week, 1))
+        expected = weeks * self.sessions_per_week
+        return round(min(completed / max(expected, 1), 1.0) * 100, 1)
+
+
+# ═══════════════════════════════════════════════════════════
+# ANALYTICS DASHBOARD (v30)
+# ═══════════════════════════════════════════════════════════
+
+def compute_analytics(student, window=10):
+    """
+    Compute comprehensive analytics for a student.
+
+    Returns dict with:
+    - trend: direction and slope of recent scores
+    - consistency: stddev and coefficient of variation
+    - streaks: current and best winning/losing streaks
+    - pace: sessions per unit time approximation
+    - zone_breakdown: distribution across score zones
+    """
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+    n = len(scores)
+
+    if n == 0:
+        return {
+            'trend': {'direction': 'none', 'slope': 0},
+            'consistency': {'stddev': 0, 'cv': 0},
+            'streaks': {'current': 0, 'best': 0, 'type': 'none'},
+            'pace': 0,
+            'zone_breakdown': {},
+        }
+
+    # Trend via linear regression (simple OLS on last window)
+    w = min(window, n)
+    recent = scores[-w:]
+    x_mean = (w - 1) / 2
+    y_mean = sum(recent) / w
+    num = sum((i - x_mean) * (recent[i] - y_mean) for i in range(w))
+    den = sum((i - x_mean) ** 2 for i in range(w))
+    slope = round(num / den, 3) if den > 0 else 0
+    direction = 'improving' if slope > 0.5 else ('declining' if slope < -0.5 else 'stable')
+
+    # Consistency
+    mean = sum(scores) / n
+    variance = sum((s - mean) ** 2 for s in scores) / n
+    stddev = round(variance ** 0.5, 2)
+    cv = round(stddev / mean * 100, 1) if mean > 0 else 0
+
+    # Streaks (>70% = win)
+    threshold = 70
+    current_streak = 0
+    best_streak = 0
+    streak_type = 'none'
+    for s in reversed(scores):
+        if current_streak == 0:
+            streak_type = 'win' if s >= threshold else 'loss'
+            current_streak = 1
+        elif (s >= threshold and streak_type == 'win') or \
+             (s < threshold and streak_type == 'loss'):
+            current_streak += 1
+        else:
+            break
+    # Best winning streak
+    run = 0
+    for s in scores:
+        if s >= threshold:
+            run += 1
+            best_streak = max(best_streak, run)
+        else:
+            run = 0
+
+    # Zone breakdown
+    zones = {'A (90+)': 0, 'B (70-89)': 0, 'C (50-69)': 0, 'D (<50)': 0}
+    for s in scores:
+        if s >= 90:
+            zones['A (90+)'] += 1
+        elif s >= 70:
+            zones['B (70-89)'] += 1
+        elif s >= 50:
+            zones['C (50-69)'] += 1
+        else:
+            zones['D (<50)'] += 1
+    zone_pct = {k: round(v / n * 100, 1) for k, v in zones.items()}
+
+    return {
+        'trend': {'direction': direction, 'slope': slope},
+        'consistency': {'stddev': stddev, 'cv': cv},
+        'streaks': {'current': current_streak, 'best': best_streak,
+                    'type': streak_type},
+        'pace': n,
+        'zone_breakdown': zone_pct,
+    }
+
+
+def format_analytics_dashboard(student, analytics=None):
+    """Format analytics as a dashboard."""
+    if analytics is None:
+        analytics = compute_analytics(student)
+
+    lines = []
+    lines.append("╔" + "═" * 50 + "╗")
+    lines.append("║" + f"  Analytics: {student.name:^36s}" + "  ║")
+    lines.append("╚" + "═" * 50 + "╝")
+
+    # Trend
+    t = analytics['trend']
+    arrow = {'improving': '↗', 'declining': '↘', 'stable': '→'}.get(t['direction'], '?')
+    lines.append(f"\n  TREND: {arrow} {t['direction']} (slope: {t['slope']:+.2f})")
+
+    # Consistency
+    c = analytics['consistency']
+    lines.append(f"  CONSISTENCY: σ={c['stddev']}  CV={c['cv']}%")
+
+    # Streaks
+    s = analytics['streaks']
+    lines.append(f"  STREAKS: current={s['current']} ({s['type']}), "
+                 f"best win={s['best']}")
+
+    # Zone breakdown
+    lines.append("\n  ZONE DISTRIBUTION:")
+    for zone, pct in analytics['zone_breakdown'].items():
+        bar_len = int(pct / 5)
+        bar = '█' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"    {zone:12s} [{bar}] {pct:5.1f}%")
+
+    # Total sessions
+    lines.append(f"\n  Total sessions: {analytics['pace']}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# CUSTOM RULE BUILDER (v30)
+# ═══════════════════════════════════════════════════════════
+
+class CustomRule:
+    """
+    User-defined validation rule.
+
+    Allows teachers to create custom constraints:
+    - condition: a callable (tact_data) → bool
+    - name, code, severity, message
+    """
+
+    def __init__(self, code, name, condition_fn, message='',
+                 severity='warning'):
+        self.code = code
+        self.name = name
+        self.condition_fn = condition_fn
+        self.message = message or f"Custom rule {code} violated"
+        self.severity = severity
+        self.active = True
+
+    def check(self, tact_data):
+        """Check if the rule is violated. Returns violation dict or None."""
+        if not self.active:
+            return None
+        try:
+            violated = self.condition_fn(tact_data)
+        except Exception:
+            return None
+        if violated:
+            return {
+                'rule': self.code,
+                'name': self.name,
+                'severity': self.severity,
+                'message': self.message,
+            }
+        return None
+
+
+class RuleBuilder:
+    """
+    Builder for constructing custom rules declaratively.
+
+    Usage:
+        rule = (RuleBuilder('CX1', 'No group 7')
+                .when_group(7)
+                .severity('error')
+                .message('Group 7 symbols are forbidden')
+                .build())
+    """
+
+    def __init__(self, code, name):
+        self._code = code
+        self._name = name
+        self._severity = 'warning'
+        self._message = ''
+        self._conditions = []
+
+    def when_group(self, group):
+        """Trigger when symbol is in given group."""
+        self._conditions.append(
+            lambda td, g=group: get_group(td.get('sym', 0)) == g)
+        return self
+
+    def when_score_below(self, threshold):
+        """Trigger when tact score is below threshold."""
+        self._conditions.append(
+            lambda td, t=threshold: td.get('score', 100) < t)
+        return self
+
+    def when_repeat(self, max_consecutive=2):
+        """Trigger when symbol repeats too many times."""
+        self._conditions.append(
+            lambda td, m=max_consecutive: td.get('consecutive', 0) > m)
+        return self
+
+    def when_custom(self, fn):
+        """Add a custom condition function."""
+        self._conditions.append(fn)
+        return self
+
+    def severity(self, sev):
+        """Set severity: info, warning, error."""
+        self._severity = sev
+        return self
+
+    def message(self, msg):
+        """Set violation message."""
+        self._message = msg
+        return self
+
+    def build(self):
+        """Build the CustomRule."""
+        conditions = self._conditions[:]
+
+        def combined(td):
+            return all(c(td) for c in conditions)
+
+        return CustomRule(
+            self._code, self._name, combined,
+            message=self._message, severity=self._severity)
+
+
+class CustomRuleEngine:
+    """
+    Manages a set of custom rules and validates tacts against them.
+    """
+
+    def __init__(self):
+        self.rules = []
+
+    def add_rule(self, rule):
+        """Add a custom rule."""
+        self.rules.append(rule)
+
+    def remove_rule(self, code):
+        """Remove rule by code."""
+        self.rules = [r for r in self.rules if r.code != code]
+
+    def validate(self, tact_data):
+        """Check all rules, return list of violations."""
+        violations = []
+        for rule in self.rules:
+            v = rule.check(tact_data)
+            if v:
+                violations.append(v)
+        return violations
+
+    def validate_sequence(self, tacts):
+        """Validate a sequence of tact data dicts."""
+        all_violations = []
+        for i, td in enumerate(tacts):
+            td['tact_index'] = i
+            viols = self.validate(td)
+            for v in viols:
+                v['tact'] = i
+            all_violations.extend(viols)
+        return all_violations
+
+    def summary(self):
+        """Summary of registered rules."""
+        lines = [f"Custom Rules ({len(self.rules)})"]
+        lines.append("─" * 45)
+        for r in self.rules:
+            status = '●' if r.active else '○'
+            lines.append(f"  {status} [{r.code}] {r.name} "
+                         f"({r.severity})")
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -11363,3 +11796,67 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v29: Data export/import, notifications, report generator.")
+
+    # 99. Training Scheduler
+    print("\n--- Training Scheduler ---")
+    sched = TrainingScheduler(sim_school.students['Anna'],
+                              sessions_per_week=4)
+    print(f"  Focus recommendation: {sched.recommend_focus()}")
+    print(f"  Difficulty recommendation: {sched.recommend_difficulty()}")
+    week1 = sched.generate_week(week_number=1)
+    # Simulate completing some days
+    for d_idx, entry in enumerate(week1):
+        if entry['type'] == 'training':
+            sched.complete_day(week1, d_idx, score=85)
+    print(sched.format_week(week1))
+    print(f"  Adherence: {sched.adherence_rate()}%")
+
+    # 100. Analytics Dashboard (demo #100!)
+    print("\n--- Analytics Dashboard (demo #100) ---")
+    for sname in ['Anna', 'Ivan']:
+        analytics = compute_analytics(sim_school.students[sname])
+        print(format_analytics_dashboard(
+            sim_school.students[sname], analytics))
+
+    # 101. Custom Rule Builder
+    print("\n--- Custom Rule Builder ---")
+    engine = CustomRuleEngine()
+
+    rule1 = (RuleBuilder('CX1', 'No Peak Defense')
+             .when_group(7)
+             .severity('error')
+             .message('Group 7 (peak defense) symbols forbidden in drill')
+             .build())
+    engine.add_rule(rule1)
+
+    rule2 = (RuleBuilder('CX2', 'Min Score')
+             .when_score_below(40)
+             .severity('warning')
+             .message('Tact score too low')
+             .build())
+    engine.add_rule(rule2)
+
+    rule3 = (RuleBuilder('CX3', 'No Excessive Repeats')
+             .when_repeat(3)
+             .severity('warning')
+             .message('Too many consecutive repeats')
+             .build())
+    engine.add_rule(rule3)
+
+    print(engine.summary())
+
+    # Validate some test tacts
+    test_tacts = [
+        {'sym': 5, 'score': 80, 'consecutive': 1},
+        {'sym': 63, 'score': 70, 'consecutive': 1},   # group 7
+        {'sym': 10, 'score': 30, 'consecutive': 4},    # low score + repeats
+        {'sym': 20, 'score': 90, 'consecutive': 1},
+    ]
+    viols = engine.validate_sequence(test_tacts)
+    print(f"  Violations found: {len(viols)}")
+    for v in viols:
+        print(f"    Tact {v['tact']}: [{v['rule']}] {v['message']} "
+              f"({v['severity']})")
+
+    print("\n" + "=" * 60)
+    print("v30: Training scheduler, analytics dashboard, custom rules.")

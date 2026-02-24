@@ -4242,3 +4242,76 @@ RANKING   — position, recent%, ELO (if school)
 ```
 
 Структура возврата: `{title, profile, history, skill_tree, badges, diagnostic, ranking}`
+
+---
+
+## Часть 45: Планировщик, аналитика, конструктор правил (v30)
+
+### 45.1 Планировщик тренировок (TrainingScheduler)
+
+```python
+sched = TrainingScheduler(student, sessions_per_week=4)
+focus = sched.recommend_focus()       # → 'zone_accuracy' / 'consolidation'
+diff  = sched.recommend_difficulty()  # → 'easy' / 'medium' / 'hard'
+
+week = sched.generate_week(week_number=1)
+sched.complete_day(week, day_index=0, score=85)
+print(sched.format_week(week))
+print(sched.adherence_rate())  # → 100.0%
+```
+
+Рекомендации фокуса на основе violation counts:
+```
+R1_Zone  → zone_accuracy       R4_Repeat → variation
+R2_Group → group_transitions   R5_Edge   → edge_cases
+R3_Length → sequence_length     (none)    → consolidation
+```
+
+Неделя:
+```
+● Mon [hard] consolidation → 85%
+· Wed — rest day
+○ Thu [hard] zone_accuracy
+```
+
+### 45.2 Аналитическая панель
+
+```python
+analytics = compute_analytics(student, window=10)
+print(format_analytics_dashboard(student, analytics))
+```
+
+Метрики:
+| Блок | Содержание |
+|------|-----------|
+| **trend** | direction (improving/stable/declining), slope (OLS) |
+| **consistency** | stddev, coefficient of variation (CV%) |
+| **streaks** | current streak, best win streak, type |
+| **zone_breakdown** | A(90+)/B(70-89)/C(50-69)/D(<50) % |
+
+### 45.3 Конструктор правил (RuleBuilder)
+
+Fluent builder API:
+```python
+rule = (RuleBuilder('CX1', 'No Peak Defense')
+        .when_group(7)
+        .severity('error')
+        .message('Group 7 symbols forbidden')
+        .build())
+
+engine = CustomRuleEngine()
+engine.add_rule(rule)
+viols = engine.validate_sequence(tacts)
+```
+
+Встроенные условия:
+```
+.when_group(n)           — символ из группы n
+.when_score_below(n)     — оценка такта < n
+.when_repeat(n)          — >n последовательных повторов
+.when_custom(fn)         — произвольная функция
+```
+
+`CustomRuleEngine.validate_sequence(tacts)` проверяет все такты против всех правил.
+
+Структура возврата: `{title, profile, history, skill_tree, badges, diagnostic, ranking}`
