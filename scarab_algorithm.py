@@ -12791,6 +12791,358 @@ class Leaderboard:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# PATTERN RECOGNITION ENGINE (v37)
+# ═══════════════════════════════════════════════════════════
+
+def detect_patterns(student, window=5):
+    """
+    Detect recurring performance patterns in student data.
+
+    Pattern types:
+    - warmup_effect: first 2-3 sessions always low
+    - fatigue: score drops in later part of session
+    - group_weakness: consistently low on specific groups
+    - inconsistency: high variance between sessions
+    - steady_climb: consistent improvement
+    """
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+    n = len(scores)
+    if n < 4:
+        return []
+
+    patterns = []
+
+    # Warmup effect: first sessions in each window tend lower
+    if n >= 6:
+        first_thirds = [scores[i] for i in range(0, n, 3) if i < n]
+        other = [scores[i] for i in range(n) if i % 3 != 0]
+        avg_first = sum(first_thirds) / len(first_thirds)
+        avg_other = sum(other) / len(other) if other else avg_first
+        if avg_other - avg_first > 5:
+            patterns.append({
+                'type': 'warmup_effect',
+                'delta': round(avg_other - avg_first, 1),
+                'description': f'First tacts avg {avg_first:.0f}% vs '
+                               f'rest {avg_other:.0f}% '
+                               f'(gap: {avg_other - avg_first:.1f})',
+            })
+
+    # Inconsistency: high variance
+    mean = sum(scores) / n
+    variance = sum((s - mean) ** 2 for s in scores) / n
+    if variance > 200:
+        patterns.append({
+            'type': 'inconsistency',
+            'variance': round(variance, 1),
+            'description': f'High variance σ²={variance:.0f} '
+                           f'(σ={variance**0.5:.1f})',
+        })
+
+    # Steady climb: positive slope
+    x_mean = (n - 1) / 2
+    num = sum((i - x_mean) * (scores[i] - mean) for i in range(n))
+    den = sum((i - x_mean) ** 2 for i in range(n))
+    slope = num / den if den > 0 else 0
+    if slope > 2:
+        patterns.append({
+            'type': 'steady_climb',
+            'slope': round(slope, 2),
+            'description': f'Consistent improvement '
+                           f'(slope: +{slope:.2f}/session)',
+        })
+    elif slope < -2:
+        patterns.append({
+            'type': 'decline',
+            'slope': round(slope, 2),
+            'description': f'Performance declining '
+                           f'(slope: {slope:.2f}/session)',
+        })
+
+    # Plateau detection
+    recent = scores[-window:]
+    r_mean = sum(recent) / len(recent)
+    r_var = sum((s - r_mean) ** 2 for s in recent) / len(recent)
+    if r_var < 8 and abs(slope) < 1:
+        patterns.append({
+            'type': 'plateau',
+            'level': round(r_mean, 1),
+            'description': f'Plateau at {r_mean:.0f}% '
+                           f'(σ²={r_var:.1f})',
+        })
+
+    return patterns
+
+
+def format_detected_patterns(patterns, student_name=''):
+    """Format detected performance patterns."""
+    name = f" ({student_name})" if student_name else ''
+    lines = [f"Pattern Analysis{name}"]
+    lines.append("─" * 45)
+
+    if not patterns:
+        lines.append("  No significant patterns detected.")
+    else:
+        for p in patterns:
+            lines.append(f"  [{p['type']}]")
+            lines.append(f"    {p['description']}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# MENTOR SYSTEM (v37)
+# ═══════════════════════════════════════════════════════════
+
+class Mentor:
+    """
+    Virtual mentor that provides guidance based on student state.
+
+    Combines analysis from multiple systems to give actionable advice.
+    """
+
+    def __init__(self, student):
+        self.student = student
+
+    def assess(self):
+        """Full assessment of student's current state."""
+        st = self.student
+        sessions = st.sessions
+        scores = [s['pct'] for s in sessions]
+        n = len(scores)
+
+        assessment = {
+            'name': st.name,
+            'sessions': n,
+            'mastery': st.mastery_level,
+            'overall': 'unknown',
+            'strengths': [],
+            'weaknesses': [],
+            'recommendations': [],
+        }
+
+        if n == 0:
+            assessment['overall'] = 'new'
+            assessment['recommendations'].append(
+                'Start with the warmup template to learn basics.')
+            return assessment
+
+        avg = sum(scores) / n
+        recent = scores[-5:] if n >= 5 else scores
+        recent_avg = sum(recent) / len(recent)
+
+        # Strengths
+        if recent_avg >= 85:
+            assessment['strengths'].append(
+                f'Strong recent performance ({recent_avg:.0f}%)')
+        if n >= 10:
+            assessment['strengths'].append(
+                f'Good experience ({n} sessions)')
+        if st.mastery_level >= 4:
+            assessment['strengths'].append(
+                f'High mastery (L{st.mastery_level})')
+
+        badges = check_badges(st)
+        if len(badges) >= 5:
+            assessment['strengths'].append(
+                f'Diverse achievements ({len(badges)} badges)')
+
+        # Weaknesses
+        if recent_avg < 65:
+            assessment['weaknesses'].append(
+                f'Low recent scores ({recent_avg:.0f}%)')
+        if n < 5:
+            assessment['weaknesses'].append('Limited experience')
+
+        patterns = detect_patterns(st)
+        for p in patterns:
+            if p['type'] in ('inconsistency', 'decline'):
+                assessment['weaknesses'].append(p['description'])
+
+        # Overall assessment
+        if recent_avg >= 90:
+            assessment['overall'] = 'excellent'
+        elif recent_avg >= 75:
+            assessment['overall'] = 'good'
+        elif recent_avg >= 60:
+            assessment['overall'] = 'developing'
+        else:
+            assessment['overall'] = 'struggling'
+
+        # Recommendations
+        if assessment['overall'] == 'excellent':
+            assessment['recommendations'].append(
+                'Ready for peak_challenge template or tournaments.')
+            if st.mastery_level < 7:
+                assessment['recommendations'].append(
+                    f'Push for mastery L{st.mastery_level + 1}.')
+
+        elif assessment['overall'] == 'good':
+            assessment['recommendations'].append(
+                'Focus on consistency. Try endurance sessions.')
+            assessment['recommendations'].append(
+                'Review weak groups with drill_zone template.')
+
+        elif assessment['overall'] == 'developing':
+            assessment['recommendations'].append(
+                'Practice fundamentals. Use group_flow template.')
+            assessment['recommendations'].append(
+                'Aim for 70%+ average before advancing.')
+
+        else:
+            assessment['recommendations'].append(
+                'Start with warmup sessions to build confidence.')
+            assessment['recommendations'].append(
+                'Focus on one group at a time.')
+
+        return assessment
+
+    def format_assessment(self, assessment=None):
+        """Format mentor assessment."""
+        a = assessment or self.assess()
+        lines = [f"Mentor Assessment: {a['name']}"]
+        lines.append("═" * 50)
+        lines.append(f"  Status: {a['overall'].upper()}  |  "
+                     f"Sessions: {a['sessions']}  |  "
+                     f"Mastery: L{a['mastery']}")
+
+        if a['strengths']:
+            lines.append("\n  Strengths:")
+            for s in a['strengths']:
+                lines.append(f"    + {s}")
+
+        if a['weaknesses']:
+            lines.append("\n  Weaknesses:")
+            for w in a['weaknesses']:
+                lines.append(f"    - {w}")
+
+        if a['recommendations']:
+            lines.append("\n  Recommendations:")
+            for r in a['recommendations']:
+                lines.append(f"    → {r}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# DAILY CHALLENGE SYSTEM (v37)
+# ═══════════════════════════════════════════════════════════
+
+class DailyChallengeGenerator:
+    """
+    Generates daily training challenges based on student level.
+
+    Challenge types: time_attack, accuracy, endurance,
+    group_focus, streak.
+    """
+
+    CHALLENGE_TYPES = [
+        'time_attack', 'accuracy', 'endurance',
+        'group_focus', 'streak',
+    ]
+
+    def __init__(self, seed=None):
+        import random as _rnd_dc
+        self._rnd = _rnd_dc
+        if seed is not None:
+            self._rnd.seed(seed)
+
+    def generate(self, student, day_number=1):
+        """Generate a daily challenge for the student."""
+        ml = student.mastery_level
+        scores = [s['pct'] for s in student.sessions]
+        avg = sum(scores) / len(scores) if scores else 50
+
+        # Pick challenge type based on day rotation
+        ch_type = self.CHALLENGE_TYPES[day_number % len(self.CHALLENGE_TYPES)]
+
+        challenge = {
+            'day': day_number,
+            'type': ch_type,
+            'title': '',
+            'description': '',
+            'target': 0,
+            'reward': '',
+            'difficulty': 'medium',
+        }
+
+        if ch_type == 'time_attack':
+            n_tacts = 8 + ml
+            target_score = max(60, int(avg - 5))
+            challenge['title'] = f'Speed Challenge #{day_number}'
+            challenge['description'] = (
+                f'Complete {n_tacts} tacts with ≥{target_score}% average')
+            challenge['target'] = target_score
+            challenge['reward'] = '+10 ELO bonus'
+
+        elif ch_type == 'accuracy':
+            target = min(95, int(avg + 10))
+            challenge['title'] = f'Precision Day #{day_number}'
+            challenge['description'] = (
+                f'Score ≥{target}% on any single session')
+            challenge['target'] = target
+            challenge['reward'] = 'Accuracy badge progress'
+
+        elif ch_type == 'endurance':
+            n_tacts = 16 + ml * 2
+            challenge['title'] = f'Endurance Test #{day_number}'
+            challenge['description'] = (
+                f'Complete a {n_tacts}-tact session without dropping '
+                f'below 60%')
+            challenge['target'] = n_tacts
+            challenge['reward'] = 'Endurance mastery XP'
+
+        elif ch_type == 'group_focus':
+            focus_group = (day_number % 7) + 1
+            challenge['title'] = f'Group {focus_group} Focus #{day_number}'
+            challenge['description'] = (
+                f'Practice Group {focus_group} symbols exclusively')
+            challenge['target'] = focus_group
+            challenge['reward'] = f'G{focus_group} proficiency'
+
+        elif ch_type == 'streak':
+            streak_target = 3 + ml // 2
+            challenge['title'] = f'Streak Challenge #{day_number}'
+            challenge['description'] = (
+                f'Win {streak_target} sessions in a row (≥70%)')
+            challenge['target'] = streak_target
+            challenge['reward'] = 'Streak badge progress'
+
+        # Adjust difficulty
+        if ml <= 2:
+            challenge['difficulty'] = 'easy'
+        elif ml >= 5:
+            challenge['difficulty'] = 'hard'
+
+        return challenge
+
+    def generate_week(self, student, start_day=1):
+        """Generate a week of challenges."""
+        return [self.generate(student, start_day + i) for i in range(7)]
+
+    def format_challenge(self, challenge):
+        """Format a single challenge."""
+        c = challenge
+        lines = [f"Daily Challenge: {c['title']}"]
+        lines.append("─" * 45)
+        lines.append(f"  Type: {c['type']}  |  "
+                     f"Difficulty: {c['difficulty']}")
+        lines.append(f"  {c['description']}")
+        lines.append(f"  Target: {c['target']}  |  "
+                     f"Reward: {c['reward']}")
+        return '\n'.join(lines)
+
+    def format_week(self, challenges):
+        """Format a week of challenges."""
+        lines = ["Weekly Challenge Plan"]
+        lines.append("═" * 50)
+        for c in challenges:
+            lines.append(f"  Day {c['day']}: [{c['type']:12s}] "
+                         f"{c['title']} ({c['difficulty']})")
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -14195,3 +14547,29 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v36: Skill tree, session simulator, leaderboard.")
+
+    # 120. Pattern Recognition
+    print("\n--- Pattern Recognition ---")
+    for sname in ['Anna', 'Ivan', 'Lena']:
+        pats = detect_patterns(sim_school.students[sname])
+        print(format_detected_patterns(pats, student_name=sname))
+
+    # 121. Mentor System
+    print("\n--- Mentor Assessment ---")
+    mentor = Mentor(sim_school.students['Anna'])
+    print(mentor.format_assessment())
+
+    mentor2 = Mentor(sim_school.students['Ivan'])
+    print(mentor2.format_assessment())
+
+    # 122. Daily Challenges
+    print("\n--- Daily Challenges ---")
+    dcg = DailyChallengeGenerator(seed=99)
+    ch = dcg.generate(sim_school.students['Anna'], day_number=1)
+    print(dcg.format_challenge(ch))
+
+    week = dcg.generate_week(sim_school.students['Anna'], start_day=1)
+    print(dcg.format_week(week))
+
+    print("\n" + "=" * 60)
+    print("v37: Pattern recognition, mentor system, daily challenges.")

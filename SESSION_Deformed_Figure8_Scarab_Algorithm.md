@@ -4646,3 +4646,38 @@ print(lb.format_composite())
 ```
 
 Метрики: score, mastery, elo, badges, sessions. Composite = avg rank.
+
+---
+
+## Часть 52: Паттерны, ментор, ежедневные вызовы (v37)
+
+### 52.1 Распознавание паттернов
+
+```python
+patterns = detect_patterns(student, window=5)
+print(format_detected_patterns(patterns, student_name='Anna'))
+```
+
+Типы: `warmup_effect`, `inconsistency`, `steady_climb`, `decline`, `plateau`.
+
+### 52.2 Система ментора
+
+```python
+mentor = Mentor(student)
+assessment = mentor.assess()
+print(mentor.format_assessment())
+```
+
+Статусы: new → struggling → developing → good → excellent.
+Выдаёт strengths, weaknesses, recommendations.
+
+### 52.3 Ежедневные челленджи
+
+```python
+dcg = DailyChallengeGenerator(seed=99)
+ch = dcg.generate(student, day_number=1)
+week = dcg.generate_week(student, start_day=1)
+print(dcg.format_week(week))
+```
+
+5 типов: time_attack, accuracy, endurance, group_focus, streak.
