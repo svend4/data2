@@ -5887,3 +5887,86 @@ print(format_report(summ))
 
 Секции отчёта: Overview, Trend Analysis, Recent Performance,
 Rankings, School Overview, Mastery Distribution.
+
+---
+
+## Часть 67: Symbol Graph, Transition Matrix, Flow Analyzer (v52)
+
+### 67.1 SymbolGraph
+
+Граф символов: узлы = символы 0-63, рёбра = наблюдаемые переходы.
+
+```python
+sg = SymbolGraph()
+sg.build_from_sessions(sessions)
+
+# Соседи символа (по весу)
+neighbors = sg.neighbors(sym=10)
+
+# Степень (in/out)
+degree = sg.degree(sym=10)
+
+# Самые связанные символы
+top = sg.most_connected(n=5)
+
+# Самые сильные рёбра
+strongest = sg.strongest_edges(n=10)
+
+# Путь существует? (BFS)
+exists = sg.path_exists(from_sym=0, to_sym=63, max_depth=5)
+
+# Кластерный коэффициент
+cc = sg.cluster_coefficient(sym=10)
+
+# Связность между группами
+gc = sg.group_connectivity()
+```
+
+### 67.2 TransitionMatrix
+
+Матрица переходов 64×64 с нормализацией по строкам.
+
+```python
+tm = TransitionMatrix()
+tm.build_from_sessions(sessions)
+
+# Вероятность перехода P(to|from)
+p = tm.probability(from_sym=5, to_sym=10)
+
+# Наиболее вероятный следующий символ
+nxt = tm.most_likely_next(sym=5, n=3)
+
+# Энтропия Шеннона
+h = tm.entropy(sym=5)   # бит
+
+# Стационарное распределение (power iteration)
+stationary = tm.stationary_distribution(iterations=100)
+
+# Групповая матрица 7×7
+gm = tm.group_transition_matrix()
+```
+
+### 67.3 FlowAnalyzer
+
+Анализ потока тренировочных последовательностей.
+
+```python
+fa = FlowAnalyzer(graph=sg, matrix=tm)
+
+# Узкие места (высокий in/out ratio)
+bottlenecks = fa.detect_bottlenecks(threshold=0.5)
+
+# Частые 3-символьные пути
+paths = fa.find_common_paths(sessions, path_length=3)
+
+# Плотность потока
+density = fa.flow_density(sessions)
+
+# Поток между группами (intra vs inter)
+gf = fa.group_flow(sessions)
+
+# Оценка предсказуемости (0=случайный, 1=детерминированный)
+pred = fa.predictability_score(sessions)
+
+print(format_flow_analysis(bottlenecks, density, gf, pred))
+```

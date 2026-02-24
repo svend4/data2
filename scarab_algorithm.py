@@ -17711,6 +17711,414 @@ def format_report(report):
     return '\n'.join(lines)
 
 
+# ── v52: Symbol Graph, Transition Matrix, Flow Analyzer ──
+
+
+class SymbolGraph:
+    """Graph representation of symbol relationships.
+
+    Nodes are symbols (0-63), edges represent transitions
+    observed in training sequences. Weighted by frequency.
+    """
+
+    def __init__(self):
+        self.nodes = set(range(64))
+        self.edges = {}  # (from, to) → weight
+        self.adj = {s: {} for s in range(64)}  # adjacency list
+
+    def add_transition(self, from_sym, to_sym, weight=1):
+        """Record a transition between symbols."""
+        key = (from_sym, to_sym)
+        self.edges[key] = self.edges.get(key, 0) + weight
+        self.adj[from_sym][to_sym] = self.edges[key]
+
+    def build_from_sessions(self, sessions):
+        """Build graph from a list of session dicts."""
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            for i in range(len(seq) - 1):
+                self.add_transition(seq[i], seq[i + 1])
+
+    def neighbors(self, sym):
+        """Get neighbors of a symbol sorted by edge weight."""
+        return sorted(self.adj[sym].items(),
+                      key=lambda x: x[1], reverse=True)
+
+    def degree(self, sym):
+        """Get in-degree and out-degree of a symbol."""
+        out_deg = len(self.adj[sym])
+        in_deg = sum(1 for s in range(64) if sym in self.adj[s])
+        return {'in': in_deg, 'out': out_deg}
+
+    def most_connected(self, n=5):
+        """Find the n most connected symbols."""
+        degrees = []
+        for s in range(64):
+            d = self.degree(s)
+            total = d['in'] + d['out']
+            degrees.append((s, total, d))
+        degrees.sort(key=lambda x: x[1], reverse=True)
+        return degrees[:n]
+
+    def path_exists(self, from_sym, to_sym, max_depth=5):
+        """Check if a path exists between two symbols (BFS)."""
+        visited = set()
+        queue = [from_sym]
+        for _ in range(max_depth):
+            next_queue = []
+            for node in queue:
+                if node == to_sym:
+                    return True
+                if node in visited:
+                    continue
+                visited.add(node)
+                for neighbor in self.adj[node]:
+                    if neighbor not in visited:
+                        next_queue.append(neighbor)
+            queue = next_queue
+        return False
+
+    def strongest_edges(self, n=10):
+        """Find the n strongest edges by weight."""
+        sorted_edges = sorted(self.edges.items(),
+                              key=lambda x: x[1], reverse=True)
+        return sorted_edges[:n]
+
+    def cluster_coefficient(self, sym):
+        """Compute clustering coefficient for a symbol."""
+        neighbors = list(self.adj[sym].keys())
+        if len(neighbors) < 2:
+            return 0.0
+        links = 0
+        possible = len(neighbors) * (len(neighbors) - 1)
+        for n1 in neighbors:
+            for n2 in neighbors:
+                if n1 != n2 and n2 in self.adj.get(n1, {}):
+                    links += 1
+        return round(links / max(possible, 1), 4)
+
+    def group_connectivity(self):
+        """Analyze connectivity between Kryukov groups."""
+        group_edges = {}
+        for (f, t), w in self.edges.items():
+            gf = get_group(f)
+            gt = get_group(t)
+            key = (gf, gt)
+            group_edges[key] = group_edges.get(key, 0) + w
+        return group_edges
+
+
+def format_symbol_graph(graph):
+    """Format symbol graph statistics for display."""
+    lines = ["=== Symbol Graph ==="]
+    total_edges = len(graph.edges)
+    total_weight = sum(graph.edges.values())
+    lines.append(f"Nodes: 64, Edges: {total_edges}, "
+                 f"Total weight: {total_weight}")
+
+    # Most connected
+    lines.append("\nMost connected symbols:")
+    for sym, total, d in graph.most_connected(5):
+        g = get_group(sym)
+        lines.append(f"  S{sym:02d} (G{g}): "
+                     f"in={d['in']}, out={d['out']}, total={total}")
+
+    # Strongest edges
+    lines.append("\nStrongest transitions:")
+    for (f, t), w in graph.strongest_edges(5):
+        lines.append(f"  S{f:02d} → S{t:02d}: weight={w}")
+
+    # Group connectivity
+    gc = graph.group_connectivity()
+    if gc:
+        lines.append("\nGroup connectivity (top 5):")
+        top_gc = sorted(gc.items(), key=lambda x: x[1], reverse=True)[:5]
+        for (gf, gt), w in top_gc:
+            lines.append(f"  G{gf} → G{gt}: {w}")
+
+    return '\n'.join(lines)
+
+
+class TransitionMatrix:
+    """NxN transition probability matrix for symbols.
+
+    Rows are source symbols, columns are target symbols.
+    Values are transition probabilities (row-normalized).
+    """
+
+    def __init__(self, n=64):
+        self.n = n
+        self.counts = [[0] * n for _ in range(n)]
+        self.row_totals = [0] * n
+
+    def record(self, from_sym, to_sym):
+        """Record a transition."""
+        self.counts[from_sym][to_sym] += 1
+        self.row_totals[from_sym] += 1
+
+    def build_from_sessions(self, sessions):
+        """Build matrix from session data."""
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            for i in range(len(seq) - 1):
+                self.record(seq[i], seq[i + 1])
+
+    def probability(self, from_sym, to_sym):
+        """Get transition probability P(to|from)."""
+        total = self.row_totals[from_sym]
+        if total == 0:
+            return 0.0
+        return round(self.counts[from_sym][to_sym] / total, 4)
+
+    def most_likely_next(self, sym, n=3):
+        """Get the n most likely next symbols."""
+        probs = []
+        for t in range(self.n):
+            p = self.probability(sym, t)
+            if p > 0:
+                probs.append((t, p))
+        probs.sort(key=lambda x: x[1], reverse=True)
+        return probs[:n]
+
+    def entropy(self, sym):
+        """Shannon entropy of transitions from a symbol."""
+        import math
+        total = self.row_totals[sym]
+        if total == 0:
+            return 0.0
+        h = 0.0
+        for t in range(self.n):
+            p = self.counts[sym][t] / total
+            if p > 0:
+                h -= p * math.log2(p)
+        return round(h, 4)
+
+    def stationary_distribution(self, iterations=100):
+        """Estimate stationary distribution via power iteration."""
+        # Initialize uniform
+        dist = [1.0 / self.n] * self.n
+
+        for _ in range(iterations):
+            new_dist = [0.0] * self.n
+            for j in range(self.n):
+                for i in range(self.n):
+                    p = self.probability(i, j)
+                    new_dist[j] += dist[i] * p
+            # Normalize
+            total = sum(new_dist)
+            if total > 0:
+                dist = [d / total for d in new_dist]
+            else:
+                break
+
+        return [(i, round(d, 6)) for i, d in enumerate(dist) if d > 0.001]
+
+    def group_transition_matrix(self):
+        """Aggregate into 7x7 group transition matrix."""
+        g_counts = [[0] * 7 for _ in range(7)]
+        for i in range(self.n):
+            gi = get_group(i) - 1
+            for j in range(self.n):
+                gj = get_group(j) - 1
+                g_counts[gi][gj] += self.counts[i][j]
+
+        # Normalize rows
+        g_probs = [[0.0] * 7 for _ in range(7)]
+        for i in range(7):
+            row_total = sum(g_counts[i])
+            if row_total > 0:
+                for j in range(7):
+                    g_probs[i][j] = round(
+                        g_counts[i][j] / row_total, 3)
+        return g_probs
+
+
+def format_transition_matrix(tm):
+    """Format transition matrix summary."""
+    lines = ["=== Transition Matrix ==="]
+    total_transitions = sum(tm.row_totals)
+    active_rows = sum(1 for r in tm.row_totals if r > 0)
+    lines.append(f"Total transitions: {total_transitions}")
+    lines.append(f"Active symbols: {active_rows}/64")
+
+    # Top entropy symbols
+    entropies = [(s, tm.entropy(s)) for s in range(64)
+                 if tm.row_totals[s] > 0]
+    entropies.sort(key=lambda x: x[1], reverse=True)
+    lines.append("\nHighest entropy (most unpredictable):")
+    for sym, h in entropies[:5]:
+        g = get_group(sym)
+        lines.append(f"  S{sym:02d} (G{g}): H={h} bits")
+
+    # Group matrix
+    gm = tm.group_transition_matrix()
+    lines.append("\nGroup Transition Probabilities:")
+    header = "     " + " ".join(f"G{g+1:1d}   " for g in range(7))
+    lines.append(header)
+    for i in range(7):
+        row = f"G{i+1}: " + " ".join(f"{gm[i][j]:.2f} " for j in range(7))
+        lines.append(row)
+
+    return '\n'.join(lines)
+
+
+class FlowAnalyzer:
+    """Analyzes the flow of training sequences.
+
+    Detects bottlenecks, common paths, and transition patterns
+    in symbol sequences across multiple sessions.
+    """
+
+    def __init__(self, graph=None, matrix=None):
+        self.graph = graph
+        self.matrix = matrix
+
+    def detect_bottlenecks(self, threshold=0.5):
+        """Find symbols that act as bottlenecks in flow.
+
+        A bottleneck has high in-degree but low out-degree,
+        meaning flow converges but doesn't disperse.
+        """
+        bottlenecks = []
+        if not self.graph:
+            return bottlenecks
+        for s in range(64):
+            d = self.graph.degree(s)
+            if d['in'] > 0 and d['out'] > 0:
+                ratio = d['in'] / max(d['out'], 1)
+                if ratio > threshold:
+                    bottlenecks.append({
+                        'symbol': s,
+                        'group': get_group(s),
+                        'in_degree': d['in'],
+                        'out_degree': d['out'],
+                        'ratio': round(ratio, 2)
+                    })
+        bottlenecks.sort(key=lambda x: x['ratio'], reverse=True)
+        return bottlenecks[:10]
+
+    def find_common_paths(self, sessions, path_length=3):
+        """Find the most common sub-paths of given length."""
+        path_counts = {}
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            for i in range(len(seq) - path_length + 1):
+                path = tuple(seq[i:i + path_length])
+                path_counts[path] = path_counts.get(path, 0) + 1
+
+        sorted_paths = sorted(path_counts.items(),
+                              key=lambda x: x[1], reverse=True)
+        return sorted_paths[:10]
+
+    def flow_density(self, sessions):
+        """Compute flow density metrics."""
+        if not sessions:
+            return {'density': 0}
+
+        unique_transitions = set()
+        total_transitions = 0
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            for i in range(len(seq) - 1):
+                unique_transitions.add((seq[i], seq[i + 1]))
+                total_transitions += 1
+
+        max_possible = 64 * 63  # all possible transitions
+        density = len(unique_transitions) / max_possible
+
+        return {
+            'unique_transitions': len(unique_transitions),
+            'total_transitions': total_transitions,
+            'max_possible': max_possible,
+            'density': round(density, 4),
+            'repetition_rate': round(
+                1 - len(unique_transitions) / max(total_transitions, 1),
+                4)
+        }
+
+    def group_flow(self, sessions):
+        """Analyze flow patterns between Kryukov groups."""
+        group_trans = {}
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            for i in range(len(seq) - 1):
+                g1 = get_group(seq[i])
+                g2 = get_group(seq[i + 1])
+                key = (g1, g2)
+                group_trans[key] = group_trans.get(key, 0) + 1
+
+        # Classify: intra-group vs inter-group
+        intra = sum(v for (g1, g2), v in group_trans.items() if g1 == g2)
+        inter = sum(v for (g1, g2), v in group_trans.items() if g1 != g2)
+        total = intra + inter
+
+        return {
+            'intra_group': intra,
+            'inter_group': inter,
+            'intra_ratio': round(intra / max(total, 1), 4),
+            'inter_ratio': round(inter / max(total, 1), 4),
+            'top_inter_group': sorted(
+                [(k, v) for k, v in group_trans.items() if k[0] != k[1]],
+                key=lambda x: x[1], reverse=True
+            )[:5]
+        }
+
+    def predictability_score(self, sessions):
+        """Score how predictable the flow is (0=random, 1=deterministic)."""
+        if not self.matrix:
+            return 0.0
+        import math
+        max_entropy = math.log2(64)
+        entropies = []
+        for s in range(64):
+            if self.matrix.row_totals[s] > 0:
+                entropies.append(self.matrix.entropy(s))
+        if not entropies:
+            return 0.0
+        avg_entropy = sum(entropies) / len(entropies)
+        return round(1 - avg_entropy / max_entropy, 4)
+
+
+def format_flow_analysis(bottlenecks, density, group_flow, pred_score):
+    """Format flow analysis results."""
+    lines = ["=== Flow Analysis ==="]
+
+    # Bottlenecks
+    lines.append(f"\nBottlenecks ({len(bottlenecks)} found):")
+    for b in bottlenecks[:5]:
+        lines.append(f"  S{b['symbol']:02d} (G{b['group']}): "
+                     f"in={b['in_degree']}, out={b['out_degree']}, "
+                     f"ratio={b['ratio']}")
+
+    # Density
+    lines.append(f"\nFlow Density:")
+    lines.append(f"  Unique transitions: {density['unique_transitions']}")
+    lines.append(f"  Density: {density['density']}")
+    lines.append(f"  Repetition rate: {density['repetition_rate']}")
+
+    # Group flow
+    lines.append(f"\nGroup Flow:")
+    lines.append(f"  Intra-group: {group_flow['intra_group']} "
+                 f"({group_flow['intra_ratio']})")
+    lines.append(f"  Inter-group: {group_flow['inter_group']} "
+                 f"({group_flow['inter_ratio']})")
+    if group_flow['top_inter_group']:
+        lines.append("  Top inter-group transitions:")
+        for (g1, g2), cnt in group_flow['top_inter_group']:
+            lines.append(f"    G{g1} → G{g2}: {cnt}")
+
+    # Predictability
+    lines.append(f"\nPredictability Score: {pred_score}")
+    if pred_score > 0.7:
+        lines.append("  → Highly predictable (may need more variety)")
+    elif pred_score > 0.4:
+        lines.append("  → Moderately predictable (good balance)")
+    else:
+        lines.append("  → Low predictability (varied flow)")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -19655,3 +20063,52 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v51: Export manager, data serializer, report generator.")
+
+    # ── v52 demos ────────────────────────────────────────
+
+    # Generate synthetic sequences for graph analysis
+    import random as _rnd52
+    _rnd52.seed(52)
+    synth_sessions = []
+    for _ in range(20):
+        seq = [_rnd52.randint(0, 63) for _ in range(16)]
+        synth_sessions.append({'sequence': seq, 'pct': 80})
+
+    # 167. Symbol Graph
+    print("\n--- Symbol Graph ---")
+    sg = SymbolGraph()
+    sg.build_from_sessions(synth_sessions)
+    print(format_symbol_graph(sg))
+
+    # 168. Transition Matrix
+    print("\n--- Transition Matrix ---")
+    tm = TransitionMatrix()
+    tm.build_from_sessions(synth_sessions)
+    print(format_transition_matrix(tm))
+
+    # Most likely next after some symbols
+    for sym in [0, 10, 30]:
+        nxt = tm.most_likely_next(sym, 3)
+        if nxt:
+            top = [(f"S{s:02d}:{p:.2f}") for s, p in nxt]
+            print(f"  After S{sym:02d}: {', '.join(top)}")
+
+    # 169. Flow Analyzer
+    print("\n--- Flow Analyzer ---")
+    fa = FlowAnalyzer(graph=sg, matrix=tm)
+    bottlenecks = fa.detect_bottlenecks()
+    density = fa.flow_density(synth_sessions)
+    gf = fa.group_flow(synth_sessions)
+    pred = fa.predictability_score(synth_sessions)
+    print(format_flow_analysis(bottlenecks, density, gf, pred))
+
+    # Common paths
+    paths = fa.find_common_paths(synth_sessions, path_length=3)
+    if paths:
+        print("\nCommon 3-symbol paths:")
+        for path, cnt in paths[:5]:
+            syms = ' → '.join(f"S{s:02d}" for s in path)
+            print(f"  {syms}: {cnt}x")
+
+    print("\n" + "=" * 60)
+    print("v52: Symbol graph, transition matrix, flow analyzer.")
