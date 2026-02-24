@@ -4610,3 +4610,39 @@ print(architecture_summary())
 Компоненты:   46
 Категории:    21
 ```
+
+---
+
+## Часть 51: Skill tree, simulator, leaderboard (v36)
+
+### 51.1 Skill Tree
+
+14 узлов в 4 категориях: Fundamentals (F1-F4), Technique (T1-T4), Mastery (M1-M3), Special (S1-S3).
+
+```python
+stree = SkillTree()
+stree.evaluate(student)
+print(stree.format_tree(student_name='Anna'))
+```
+
+Каждый узел: prerequisites + unlock_condition (min_mastery, min_sessions, min_score).
+
+### 51.2 Monte Carlo симулятор
+
+```python
+sim = SessionSimulator(student, n_simulations=200)
+result = sim.simulate(seed=42)
+print(sim.format_simulation(result))
+```
+
+Выход: mean, median, std, percentiles (P10/P25/P75/P90), pass rate, гистограмма.
+
+### 51.3 Leaderboard
+
+```python
+lb = Leaderboard(school)
+print(lb.format_leaderboard('score'))
+print(lb.format_composite())
+```
+
+Метрики: score, mastery, elo, badges, sessions. Composite = avg rank.

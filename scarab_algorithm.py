@@ -12460,6 +12460,337 @@ def architecture_summary():
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# SKILL TREE SYSTEM (v36)
+# ═══════════════════════════════════════════════════════════
+
+class SkillNode:
+    """A single node in the skill tree."""
+
+    def __init__(self, node_id, name, description, category,
+                 prerequisites=None, unlock_condition=None):
+        self.node_id = node_id
+        self.name = name
+        self.description = description
+        self.category = category
+        self.prerequisites = prerequisites or []
+        self.unlock_condition = unlock_condition or {}
+        self.unlocked = False
+        self.level = 0  # 0=locked, 1-3=proficiency
+
+    def check_unlock(self, student, unlocked_nodes):
+        """Check if this node can be unlocked."""
+        # Check prerequisites
+        for pre in self.prerequisites:
+            if pre not in unlocked_nodes:
+                return False
+
+        cond = self.unlock_condition
+        if 'min_mastery' in cond:
+            if student.mastery_level < cond['min_mastery']:
+                return False
+        if 'min_sessions' in cond:
+            if len(student.sessions) < cond['min_sessions']:
+                return False
+        if 'min_score' in cond:
+            scores = [s['pct'] for s in student.sessions]
+            recent = scores[-5:] if len(scores) >= 5 else scores
+            avg = sum(recent) / len(recent) if recent else 0
+            if avg < cond['min_score']:
+                return False
+
+        return True
+
+
+class SkillTree:
+    """
+    RPG-style skill tree for tracking student capabilities.
+
+    Categories: Fundamentals, Technique, Mastery, Special.
+    """
+
+    def __init__(self):
+        self.nodes = {}
+        self._build_default()
+
+    def _build_default(self):
+        """Build the default skill tree."""
+        tree_def = [
+            # Fundamentals
+            ('F1', 'Symbol Recognition', 'Identify all 64 symbols',
+             'Fundamentals', [], {'min_sessions': 1}),
+            ('F2', 'Zone Basics', 'Understand R1 zone rules',
+             'Fundamentals', ['F1'], {'min_sessions': 3}),
+            ('F3', 'Group Awareness', 'Know all 7 Kryukov groups',
+             'Fundamentals', ['F1'], {'min_sessions': 3}),
+            ('F4', 'Dual Path', 'Master dual-path tact structure',
+             'Fundamentals', ['F2', 'F3'], {'min_sessions': 5}),
+
+            # Technique
+            ('T1', 'Consistency', 'Score 65%+ for 5 sessions',
+             'Technique', ['F4'], {'min_sessions': 5, 'min_score': 65}),
+            ('T2', 'Flow State', 'Smooth group transitions',
+             'Technique', ['T1'], {'min_sessions': 8, 'min_score': 70}),
+            ('T3', 'Speed', 'Handle speed-run templates',
+             'Technique', ['T1'], {'min_mastery': 3}),
+            ('T4', 'Endurance', 'Complete 24-tact sessions',
+             'Technique', ['T2'], {'min_mastery': 3, 'min_score': 75}),
+
+            # Mastery
+            ('M1', 'Advanced Groups', 'Work with G5-G6',
+             'Mastery', ['T2'], {'min_mastery': 4, 'min_score': 80}),
+            ('M2', 'Peak Defense', 'Handle G7 peak defense',
+             'Mastery', ['M1'], {'min_mastery': 5, 'min_score': 85}),
+            ('M3', 'Grand Mastery', 'Reach mastery level 7',
+             'Mastery', ['M2'], {'min_mastery': 7, 'min_score': 90}),
+
+            # Special
+            ('S1', 'Analyst', 'Understand correlation data',
+             'Special', ['T1'], {'min_sessions': 10}),
+            ('S2', 'Competitor', 'Participate in tournaments',
+             'Special', ['T1'], {'min_mastery': 3}),
+            ('S3', 'Mentor', 'Help other students',
+             'Special', ['M1'], {'min_mastery': 5, 'min_sessions': 20}),
+        ]
+
+        for nid, name, desc, cat, prereqs, cond in tree_def:
+            self.nodes[nid] = SkillNode(nid, name, desc, cat, prereqs, cond)
+
+    def evaluate(self, student):
+        """Evaluate which nodes are unlocked for student."""
+        unlocked = set()
+        changed = True
+
+        while changed:
+            changed = False
+            for nid, node in self.nodes.items():
+                if nid not in unlocked:
+                    if node.check_unlock(student, unlocked):
+                        node.unlocked = True
+                        node.level = 1
+                        unlocked.add(nid)
+                        changed = True
+
+        return unlocked
+
+    def format_tree(self, student_name=''):
+        """Format skill tree display."""
+        lines = [f"Skill Tree{' — ' + student_name if student_name else ''}"]
+        lines.append("═" * 50)
+
+        categories = {}
+        for nid, node in self.nodes.items():
+            categories.setdefault(node.category, []).append(node)
+
+        for cat in ['Fundamentals', 'Technique', 'Mastery', 'Special']:
+            nodes = categories.get(cat, [])
+            lines.append(f"\n  [{cat}]")
+            for n in nodes:
+                icon = '●' if n.unlocked else '○'
+                prereqs = f" (needs: {','.join(n.prerequisites)})" \
+                    if n.prerequisites and not n.unlocked else ''
+                lines.append(f"    {icon} {n.node_id} {n.name}{prereqs}")
+
+        unlocked = sum(1 for n in self.nodes.values() if n.unlocked)
+        total = len(self.nodes)
+        lines.append(f"\n  Unlocked: {unlocked}/{total}")
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION SIMULATOR (v36)
+# ═══════════════════════════════════════════════════════════
+
+class SessionSimulator:
+    """
+    Monte Carlo session simulator.
+
+    Simulates possible outcomes based on student's current stats
+    to predict score distributions and risk.
+    """
+
+    def __init__(self, student, n_simulations=100):
+        self.student = student
+        self.n_simulations = n_simulations
+
+    def simulate(self, n_tacts=14, seed=None):
+        """Run Monte Carlo simulation."""
+        import random as _rnd_sim
+        if seed is not None:
+            _rnd_sim.seed(seed)
+
+        scores = [s['pct'] for s in self.student.sessions]
+        if not scores:
+            mean, std = 50, 15
+        else:
+            mean = sum(scores) / len(scores)
+            variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+            std = max(variance ** 0.5, 3)
+
+        results = []
+        for _ in range(self.n_simulations):
+            sim_score = _rnd_sim.gauss(mean, std)
+            sim_score = max(0, min(100, sim_score))
+            results.append(round(sim_score, 1))
+
+        results.sort()
+        n = len(results)
+
+        return {
+            'n': n,
+            'mean': round(sum(results) / n, 1),
+            'median': results[n // 2],
+            'std': round(std, 1),
+            'p10': results[n // 10],
+            'p25': results[n // 4],
+            'p75': results[3 * n // 4],
+            'p90': results[9 * n // 10],
+            'min': results[0],
+            'max': results[-1],
+            'pass_rate': round(
+                sum(1 for r in results if r >= 70) / n * 100, 1),
+            'distribution': results,
+        }
+
+    def format_simulation(self, sim_result):
+        """Format simulation results."""
+        r = sim_result
+        lines = [f"Session Simulation ({r['n']} runs)"]
+        lines.append("─" * 45)
+        lines.append(f"  Mean: {r['mean']}%  |  Median: {r['median']}%  "
+                     f"|  Std: {r['std']}%")
+        lines.append(f"  Range: [{r['min']}% — {r['max']}%]")
+        lines.append(f"  P10: {r['p10']}%  P25: {r['p25']}%  "
+                     f"P75: {r['p75']}%  P90: {r['p90']}%")
+        lines.append(f"  Pass rate (≥70%): {r['pass_rate']}%")
+
+        # Mini histogram
+        buckets = [0] * 10
+        for v in r['distribution']:
+            idx = min(int(v / 10), 9)
+            buckets[idx] += 1
+
+        lines.append("\n  Distribution:")
+        max_b = max(buckets) if buckets else 1
+        for i in range(9, -1, -1):
+            lo, hi = i * 10, (i + 1) * 10
+            bar_len = int(buckets[i] / max_b * 20) if max_b else 0
+            bar = '▓' * bar_len
+            lines.append(f"    {lo:3d}-{hi:3d}% │{bar} {buckets[i]}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# LEADERBOARD SYSTEM (v36)
+# ═══════════════════════════════════════════════════════════
+
+class Leaderboard:
+    """
+    Multi-metric leaderboard with ranking history.
+
+    Supports different ranking modes: score, mastery, ELO,
+    badges, sessions, curriculum progress.
+    """
+
+    METRICS = ['score', 'mastery', 'elo', 'badges', 'sessions']
+
+    def __init__(self, school):
+        self.school = school
+        self.history = []  # snapshots
+
+    def _get_value(self, student, metric):
+        """Get a student's value for a given metric."""
+        if metric == 'score':
+            scores = [s['pct'] for s in student.sessions]
+            return round(sum(scores) / len(scores), 1) if scores else 0
+        elif metric == 'mastery':
+            return student.mastery_level
+        elif metric == 'elo':
+            return getattr(student, 'elo', 1200)
+        elif metric == 'badges':
+            return len(check_badges(student))
+        elif metric == 'sessions':
+            return len(student.sessions)
+        return 0
+
+    def rank(self, metric='score'):
+        """Rank all students by a metric."""
+        entries = []
+        for name, st in self.school.students.items():
+            val = self._get_value(st, metric)
+            entries.append({'name': name, 'value': val})
+
+        entries.sort(key=lambda e: e['value'], reverse=True)
+
+        for i, e in enumerate(entries):
+            e['rank'] = i + 1
+
+        return entries
+
+    def snapshot(self):
+        """Take a snapshot of current rankings."""
+        snap = {}
+        for metric in self.METRICS:
+            snap[metric] = self.rank(metric)
+        self.history.append(snap)
+        return snap
+
+    def composite_rank(self):
+        """
+        Composite ranking: average rank across all metrics.
+        Lower average = better overall.
+        """
+        rank_sums = {}
+        for metric in self.METRICS:
+            ranked = self.rank(metric)
+            for e in ranked:
+                rank_sums.setdefault(e['name'], []).append(e['rank'])
+
+        composite = []
+        for name, ranks in rank_sums.items():
+            avg_rank = round(sum(ranks) / len(ranks), 2)
+            composite.append({
+                'name': name,
+                'avg_rank': avg_rank,
+                'ranks': dict(zip(self.METRICS, ranks)),
+            })
+
+        composite.sort(key=lambda e: e['avg_rank'])
+        for i, e in enumerate(composite):
+            e['overall_rank'] = i + 1
+
+        return composite
+
+    def format_leaderboard(self, metric='score'):
+        """Format single-metric leaderboard."""
+        ranked = self.rank(metric)
+        lines = [f"Leaderboard: {metric.upper()}"]
+        lines.append("─" * 40)
+
+        medals = {1: '🥇', 2: '🥈', 3: '🥉'}
+        for e in ranked:
+            medal = medals.get(e['rank'], '  ')
+            lines.append(f"  {medal} #{e['rank']}  {e['name']:12s}  "
+                         f"{e['value']}")
+
+        return '\n'.join(lines)
+
+    def format_composite(self):
+        """Format composite leaderboard."""
+        comp = self.composite_rank()
+        lines = ["Composite Leaderboard"]
+        lines.append("═" * 55)
+
+        for e in comp:
+            r = e['ranks']
+            rank_str = ' '.join(f"{m[0].upper()}{r[m]}" for m in self.METRICS)
+            lines.append(f"  #{e['overall_rank']}  {e['name']:12s}  "
+                         f"avg={e['avg_rank']:.2f}  [{rank_str}]")
+
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -13838,4 +14169,29 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v35: Curriculum, school progress, architecture summary.")
-    print(f"\nFINAL: 116 demos, 50 parts, v1-v35.")
+
+    # 117. Skill Tree
+    print("\n--- Skill Tree ---")
+    stree = SkillTree()
+    stree.evaluate(sim_school.students['Anna'])
+    print(stree.format_tree(student_name='Anna'))
+
+    stree2 = SkillTree()
+    stree2.evaluate(sim_school.students['Ivan'])
+    print(stree2.format_tree(student_name='Ivan'))
+
+    # 118. Session Simulator
+    print("\n--- Session Simulator ---")
+    sim118 = SessionSimulator(sim_school.students['Anna'], n_simulations=200)
+    sim_r = sim118.simulate(seed=42)
+    print(sim118.format_simulation(sim_r))
+
+    # 119. Leaderboard
+    print("\n--- Leaderboard ---")
+    lb = Leaderboard(sim_school)
+    print(lb.format_leaderboard('score'))
+    print(lb.format_leaderboard('mastery'))
+    print(lb.format_composite())
+
+    print("\n" + "=" * 60)
+    print("v36: Skill tree, session simulator, leaderboard.")
