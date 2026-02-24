@@ -11851,6 +11851,303 @@ def group_usage_heatmap(student):
     return rows
 
 
+# ═══════════════════════════════════════════════════════════
+# EVENT LOG SYSTEM (v34)
+# ═══════════════════════════════════════════════════════════
+
+class EventLog:
+    """
+    Structured, queryable event log for the Scarab system.
+
+    Logs events with category, level, source, and payload.
+    Supports filtering, aggregation, and export.
+    """
+
+    LEVELS = ('debug', 'info', 'warning', 'error', 'critical')
+
+    def __init__(self, max_size=1000):
+        self.entries = []
+        self.max_size = max_size
+        self._seq = 0
+
+    def log(self, category, message, level='info', source='', data=None):
+        """Add a log entry."""
+        self._seq += 1
+        entry = {
+            'seq': self._seq,
+            'category': category,
+            'level': level,
+            'source': source,
+            'message': message,
+            'data': data or {},
+        }
+        self.entries.append(entry)
+
+        # Trim if over max
+        if len(self.entries) > self.max_size:
+            self.entries = self.entries[-self.max_size:]
+
+        return entry
+
+    def query(self, category=None, level=None, source=None, last_n=None):
+        """Query log entries with filters."""
+        result = self.entries
+        if category:
+            result = [e for e in result if e['category'] == category]
+        if level:
+            result = [e for e in result if e['level'] == level]
+        if source:
+            result = [e for e in result if e['source'] == source]
+        if last_n:
+            result = result[-last_n:]
+        return result
+
+    def count_by_level(self):
+        """Count entries by level."""
+        counts = {lv: 0 for lv in self.LEVELS}
+        for e in self.entries:
+            counts[e['level']] = counts.get(e['level'], 0) + 1
+        return counts
+
+    def count_by_category(self):
+        """Count entries by category."""
+        counts = {}
+        for e in self.entries:
+            cat = e['category']
+            counts[cat] = counts.get(cat, 0) + 1
+        return counts
+
+    def clear(self):
+        """Clear all entries."""
+        self.entries.clear()
+        self._seq = 0
+
+    def format_log(self, entries=None, max_lines=20):
+        """Format log entries for display."""
+        items = entries if entries is not None else self.entries[-max_lines:]
+        lines = [f"Event Log ({len(self.entries)} total)"]
+        lines.append("─" * 60)
+
+        level_icons = {
+            'debug': '🔍', 'info': 'ℹ️', 'warning': '⚠️',
+            'error': '❌', 'critical': '🔥',
+        }
+
+        for e in items[-max_lines:]:
+            icon = level_icons.get(e['level'], '•')
+            src = f" [{e['source']}]" if e['source'] else ''
+            lines.append(f"  #{e['seq']:04d} {icon} "
+                         f"{e['category']}{src}: {e['message']}")
+
+        return '\n'.join(lines)
+
+
+def log_student_session(event_log, student, session_idx):
+    """Log events from a student session."""
+    sessions = student.sessions
+    if session_idx >= len(sessions):
+        return
+
+    s = sessions[session_idx]
+    pct = s['pct']
+
+    event_log.log('session', f"{student.name} completed session "
+                  f"#{session_idx + 1}: {pct:.1f}%",
+                  source=student.name,
+                  data={'session': session_idx, 'pct': pct})
+
+    if pct >= 90:
+        event_log.log('achievement',
+                      f"{student.name} scored Grade A ({pct:.1f}%)",
+                      level='info', source=student.name)
+
+    viols = s.get('violations', [])
+    if len(viols) > 3:
+        event_log.log('violation',
+                      f"{student.name} had {len(viols)} violations",
+                      level='warning', source=student.name)
+
+
+# ═══════════════════════════════════════════════════════════
+# KATA DIFFICULTY SCORER (v34)
+# ═══════════════════════════════════════════════════════════
+
+def score_kata_difficulty(kata):
+    """
+    Score the difficulty of a kata sequence on a 1-10 scale.
+
+    Factors:
+    - Length (more tacts = harder)
+    - Group diversity (more groups = harder)
+    - High-group usage (G5-G7 = harder)
+    - Transition complexity (more group changes = harder)
+    - Repetition (less repetition = harder)
+
+    Returns dict with total score and breakdown.
+    """
+    if not kata:
+        return {'total': 0, 'breakdown': {}}
+
+    n = len(kata)
+
+    # Length factor (0-2)
+    if n <= 6:
+        f_length = 0.5
+    elif n <= 12:
+        f_length = 1.0
+    elif n <= 20:
+        f_length = 1.5
+    else:
+        f_length = 2.0
+
+    # Group diversity (0-2)
+    groups_used = set()
+    group_seq = []
+    for sym in kata:
+        g = get_group(sym if isinstance(sym, int) else 0)
+        groups_used.add(g)
+        group_seq.append(g)
+    f_diversity = min(len(groups_used) / 3.5, 2.0)
+
+    # High-group usage (0-2)
+    high_count = sum(1 for g in group_seq if g >= 5)
+    f_high = min(high_count / max(n, 1) * 4, 2.0)
+
+    # Transition complexity (0-2)
+    transitions = sum(1 for i in range(1, len(group_seq))
+                      if group_seq[i] != group_seq[i - 1])
+    f_transitions = min(transitions / max(n - 1, 1) * 2.5, 2.0)
+
+    # Repetition penalty (0-2, less repetition = higher)
+    unique = len(set(kata))
+    f_unique = min(unique / max(n, 1) * 2.5, 2.0)
+
+    total = round(f_length + f_diversity + f_high +
+                  f_transitions + f_unique, 1)
+    total = min(total, 10.0)
+
+    return {
+        'total': total,
+        'breakdown': {
+            'length': round(f_length, 2),
+            'diversity': round(f_diversity, 2),
+            'high_groups': round(f_high, 2),
+            'transitions': round(f_transitions, 2),
+            'uniqueness': round(f_unique, 2),
+        },
+        'n_tacts': n,
+        'groups_used': sorted(groups_used),
+        'label': ('Easy' if total < 3.5 else
+                  'Medium' if total < 6 else
+                  'Hard' if total < 8 else 'Expert'),
+    }
+
+
+def format_kata_difficulty(diff):
+    """Format kata difficulty score."""
+    lines = [f"Kata Difficulty: {diff['total']}/10 ({diff['label']})"]
+    lines.append("─" * 40)
+    lines.append(f"  Tacts: {diff['n_tacts']}, "
+                 f"Groups: {diff['groups_used']}")
+
+    bd = diff['breakdown']
+    for factor, val in bd.items():
+        bar_len = int(val / 2 * 20)
+        bar = '▓' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  {factor:14s} [{bar}] {val:.2f}/2.0")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PERFORMANCE PREDICTOR (v34)
+# ═══════════════════════════════════════════════════════════
+
+def predict_next_score(student, method='linear'):
+    """
+    Predict the student's next session score.
+
+    Methods:
+    - linear: linear regression extrapolation
+    - ewma: exponentially weighted moving average
+    - ensemble: average of all methods
+
+    Returns dict with prediction, confidence, method.
+    """
+    scores = [s['pct'] for s in student.sessions]
+    n = len(scores)
+
+    if n == 0:
+        return {'prediction': 50, 'confidence': 0, 'method': method}
+
+    if n == 1:
+        return {'prediction': round(scores[0], 1),
+                'confidence': 20, 'method': method}
+
+    # Linear regression
+    x_mean = (n - 1) / 2
+    y_mean = sum(scores) / n
+    num = sum((i - x_mean) * (scores[i] - y_mean) for i in range(n))
+    den = sum((i - x_mean) ** 2 for i in range(n))
+    slope = num / den if den > 0 else 0
+    intercept = y_mean - slope * x_mean
+    linear_pred = intercept + slope * n
+
+    # EWMA
+    alpha = 0.3
+    ewma = scores[0]
+    for s in scores[1:]:
+        ewma = alpha * s + (1 - alpha) * ewma
+    ewma_pred = ewma
+
+    # Confidence based on variance
+    variance = sum((s - y_mean) ** 2 for s in scores) / n
+    stddev = variance ** 0.5
+    confidence = max(10, min(95, int(100 - stddev)))
+
+    if method == 'linear':
+        pred = linear_pred
+    elif method == 'ewma':
+        pred = ewma_pred
+    else:  # ensemble
+        pred = (linear_pred + ewma_pred) / 2
+
+    # Clamp to reasonable range
+    pred = max(0, min(100, pred))
+
+    return {
+        'prediction': round(pred, 1),
+        'confidence': confidence,
+        'method': method,
+        'details': {
+            'linear': round(linear_pred, 1),
+            'ewma': round(ewma_pred, 1),
+            'slope': round(slope, 3),
+            'n_sessions': n,
+        },
+    }
+
+
+def format_prediction(pred_result, student_name=''):
+    """Format prediction result."""
+    p = pred_result
+    name = f" ({student_name})" if student_name else ''
+    lines = [f"Prediction{name}"]
+    lines.append("─" * 40)
+    lines.append(f"  Next score: {p['prediction']}% "
+                 f"(confidence: {p['confidence']}%)")
+    lines.append(f"  Method: {p['method']}")
+
+    d = p.get('details', {})
+    if d:
+        lines.append(f"  Linear: {d.get('linear', '?')}%  "
+                     f"EWMA: {d.get('ewma', '?')}%")
+        lines.append(f"  Trend slope: {d.get('slope', 0):+.3f}  "
+                     f"Based on: {d.get('n_sessions', 0)} sessions")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -13171,3 +13468,42 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v33: Feedback loop, progression path, heatmap analysis.")
+
+    # 111. Event Log
+    print("\n--- Event Log ---")
+    elog = EventLog()
+    for sname, st111 in sim_school.students.items():
+        for si in range(len(st111.sessions)):
+            log_student_session(elog, st111, si)
+    elog.log('system', 'Simulation complete', source='main')
+    print(elog.format_log(max_lines=10))
+    by_level = elog.count_by_level()
+    by_cat = elog.count_by_category()
+    print(f"  By level: {by_level}")
+    print(f"  By category: {by_cat}")
+    warnings = elog.query(level='warning')
+    print(f"  Warnings: {len(warnings)}")
+
+    # 112. Kata Difficulty Scorer
+    print("\n--- Kata Difficulty ---")
+    # Easy kata (low groups, short)
+    easy_kata = [0, 1, 2, 3, 4, 5]
+    d_easy = score_kata_difficulty(easy_kata)
+    print(format_kata_difficulty(d_easy))
+
+    # Hard kata (high groups, diverse)
+    hard_kata = [5, 20, 35, 50, 57, 63, 10, 40, 55, 62,
+                 3, 30, 45, 58]
+    d_hard = score_kata_difficulty(hard_kata)
+    print(format_kata_difficulty(d_hard))
+
+    # 113. Performance Predictor
+    print("\n--- Performance Predictor ---")
+    for sname in ['Anna', 'Ivan', 'Lena']:
+        st113 = sim_school.students[sname]
+        for method in ['linear', 'ewma', 'ensemble']:
+            pred = predict_next_score(st113, method=method)
+            print(format_prediction(pred, student_name=sname))
+
+    print("\n" + "=" * 60)
+    print("v34: Event log, kata difficulty scorer, performance predictor.")

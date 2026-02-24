@@ -4492,3 +4492,55 @@ Legend: ░ low  ▓ average  █ high
 ```
 
 Метрики: `score`, `violations`, или любое числовое поле сессии.
+
+---
+
+## Часть 49: Event log, difficulty scoring, predictor (v34)
+
+### 49.1 Журнал событий (EventLog)
+
+```python
+elog = EventLog(max_size=1000)
+elog.log('session', 'Anna completed session #5: 85.0%',
+         level='info', source='Anna')
+log_student_session(elog, student, session_idx)
+
+warnings = elog.query(level='warning', last_n=10)
+print(elog.format_log(max_lines=15))
+print(elog.count_by_level())     # → {info: 48, warning: 3, ...}
+print(elog.count_by_category())  # → {session: 48, achievement: 12}
+```
+
+Уровни: `debug`, `info`, `warning`, `error`, `critical`.
+
+### 49.2 Оценка сложности ката
+
+```python
+diff = score_kata_difficulty([5, 20, 35, 50, 57, 63])
+print(format_kata_difficulty(diff))
+```
+
+5 факторов (каждый 0-2, макс 10):
+| Фактор | Логика |
+|--------|--------|
+| length | ≤6=0.5, ≤12=1.0, ≤20=1.5, >20=2.0 |
+| diversity | groups / 3.5 |
+| high_groups | доля G5-G7 × 4 |
+| transitions | доля смен группы × 2.5 |
+| uniqueness | unique / total × 2.5 |
+
+Лейблы: <3.5 Easy, <6 Medium, <8 Hard, ≥8 Expert.
+
+### 49.3 Предиктор результатов
+
+```python
+pred = predict_next_score(student, method='ensemble')
+print(format_prediction(pred, student_name='Anna'))
+```
+
+Методы:
+- **linear**: OLS-экстраполяция
+- **ewma**: экспоненциально-взвешенное среднее (α=0.3)
+- **ensemble**: среднее linear + ewma
+
+Confidence = `100 - σ` (10-95%).
