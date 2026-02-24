@@ -3638,6 +3638,332 @@ def format_curriculum(plan, student_name='Student'):
             f"focus=[{p['focus']}]")
     return '\n'.join(lines)
 
+
+# ═══════════════════════════════════════════════════════════
+# DRILL GENERATOR — micro-exercises for specific weaknesses (v12)
+# ═══════════════════════════════════════════════════════════
+
+def generate_drill(target='rule', rule_num=None, group_num=None,
+                   n_reps=5, mastery_level=3, seed=None):
+    """
+    Generate a focused drill targeting a specific weakness.
+
+    Drill types:
+      target='rule':  practice a single coordination rule
+      target='group': practice symbols from a specific Kryukov group
+      target='transition': practice smooth transitions (Hamming ≤ 2)
+
+    Each drill is a short kata (3 tacts) repeated n_reps times
+    with slight variation to avoid memorisation.
+
+    Returns:
+        dict with 'drills' (list of mini-kata), 'target', 'description'
+    """
+    rng = random.Random(seed)
+    drills = []
+    desc = ''
+
+    if target == 'rule' and rule_num is not None:
+        desc = {1: 'Zone exclusion', 2: 'Anti-symmetry',
+                3: 'Lead alternation', 4: 'Smoothness',
+                5: 'Complexity conservation'}.get(rule_num, f'Rule {rule_num}')
+
+        for rep in range(n_reps):
+            # Generate until the specific rule is satisfied
+            best = None
+            best_score = -1
+            for _ in range(20):
+                dma = DualMatchStickAutomaton(
+                    mastery_level=mastery_level,
+                    seed=rng.randint(0, 2**31))
+                kata = dma.generate_dual_kata(length=3)
+                sc = score_dual_kata(kata)
+                rule_str = sc['rules'][rule_num]
+                num, den = rule_str.split('/')
+                rule_pct = int(num) / max(int(den), 1)
+                if rule_pct > best_score:
+                    best_score = rule_pct
+                    best = kata
+                if rule_pct >= 1.0:
+                    break
+            drills.append(best)
+
+    elif target == 'group' and group_num is not None:
+        group_names = {1: 'Empty', 2: 'Single', 3: 'Angle',
+                       4: 'Parallel', 5: 'Triple',
+                       6: 'Master', 7: 'Peak'}
+        desc = f"Group {group_num} ({group_names.get(group_num, '?')})"
+
+        # Find all symbols in target group
+        group_syms = [s for s in range(64) if get_group(s) == group_num]
+
+        for rep in range(n_reps):
+            # Build a mini-kata from group symbols
+            mini = []
+            for _ in range(3):
+                L = rng.choice(group_syms) if group_syms else 0
+                # R from a different group for anti-symmetry
+                other_syms = [s for s in range(64)
+                              if get_group(s) != group_num and not zones_conflict(L, s)]
+                R = rng.choice(other_syms) if other_syms else (63 - L) % 64
+                chvs_L = rng.randint(0, 3)
+                chvs_R = rng.randint(0, 3)
+                mini.append((L, R, chvs_L, chvs_R))
+            drills.append(mini)
+
+    elif target == 'transition':
+        desc = 'Smooth transitions (Hamming ≤ 2)'
+
+        for rep in range(n_reps):
+            # Start from random symbol, force Hamming ≤ 2 each step
+            L = rng.randint(0, 63)
+            R = rng.randint(0, 63)
+            mini = [(L, R, rng.randint(0, 3), rng.randint(0, 3))]
+            for _ in range(2):
+                nL = rng.choice(get_neighbors(L, max_changes=2))
+                nR = rng.choice(get_neighbors(R, max_changes=2))
+                mini.append((nL, nR, rng.randint(0, 3), rng.randint(0, 3)))
+                L, R = nL, nR
+            drills.append(mini)
+
+    return {
+        'target': target,
+        'description': desc,
+        'n_reps': n_reps,
+        'drills': drills,
+        'scores': [score_dual_kata(d) for d in drills],
+    }
+
+
+def format_drill(drill_result):
+    """Format a drill result as readable text."""
+    lines = [f"Drill: {drill_result['description']}"]
+    lines.append(f"Reps: {drill_result['n_reps']}")
+    for i, (d, sc) in enumerate(zip(drill_result['drills'], drill_result['scores'])):
+        syms = ' → '.join(f"({e[0]:02d},{e[1]:02d})" for e in d)
+        lines.append(f"  Rep {i+1}: {syms}  [{sc['grade']}]")
+    avg_pct = sum(s['pct'] for s in drill_result['scores']) / len(drill_result['scores'])
+    lines.append(f"  Avg: {avg_pct:.0f}%")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SPARRING SYSTEM — two students compete (v12)
+# ═══════════════════════════════════════════════════════════
+
+def sparring(student_a, student_b, quarter='Q3', year=2, seed=None):
+    """
+    Simulate a sparring match between two students.
+
+    Each student generates a kata at their current mastery level.
+    A judge evaluates both kata and determines the winner.
+
+    Scoring criteria:
+    1. Kata grade (40% weight)
+    2. Resonance score (20% weight)
+    3. LCI proximity to π (20% weight)
+    4. Group diversity (20% weight)
+
+    Returns:
+        dict with both kata, scores, detailed comparison, winner
+    """
+    rng = random.Random(seed)
+
+    results = {}
+    for label, student in [('A', student_a), ('B', student_b)]:
+        dma = DualMatchStickAutomaton(
+            mastery_level=student.mastery_level,
+            use_mudras=(student.mastery_level >= 4),
+            seed=rng.randint(0, 2**31))
+        kata = dma.generate_dual_kata(
+            length=TRAINING_PLAN[quarter]['kata_length'])
+
+        sc = score_dual_kata(kata)
+        res = detect_resonance(kata, mode='dual')
+        lci = compute_lci(kata, mode='dual')
+        analysis = analyze_kata(kata, mode='dual')
+
+        # Composite score
+        grade_pts = sc['pct'] / 100.0
+        res_pts = res['resonance_score']
+        # LCI: closer to π = better (max distance ~ 3.14)
+        lci_pts = max(0, 1 - abs(lci['avg'] - math.pi) / math.pi)
+        # Group diversity: n_groups / 7
+        div_pts = analysis['n_groups'] / 7.0
+
+        composite = (grade_pts * 0.4 + res_pts * 0.2 +
+                     lci_pts * 0.2 + div_pts * 0.2)
+
+        results[label] = {
+            'student': student.name,
+            'mastery': student.mastery_level,
+            'kata': kata,
+            'score': sc,
+            'resonance': res,
+            'lci': lci,
+            'analysis': analysis,
+            'composite': round(composite, 3),
+            'breakdown': {
+                'grade': round(grade_pts, 3),
+                'resonance': round(res_pts, 3),
+                'lci': round(lci_pts, 3),
+                'diversity': round(div_pts, 3),
+            },
+        }
+
+    # Determine winner
+    if results['A']['composite'] > results['B']['composite']:
+        winner = 'A'
+    elif results['B']['composite'] > results['A']['composite']:
+        winner = 'B'
+    else:
+        winner = 'draw'
+
+    margin = abs(results['A']['composite'] - results['B']['composite'])
+
+    return {
+        'A': results['A'],
+        'B': results['B'],
+        'winner': winner,
+        'margin': round(margin, 3),
+        'decisive': margin > 0.1,
+    }
+
+
+def format_sparring(result):
+    """Format sparring result as readable text."""
+    lines = ["Sparring Match"]
+    lines.append("=" * 40)
+    for label in ['A', 'B']:
+        r = result[label]
+        bd = r['breakdown']
+        lines.append(
+            f"  {label}: {r['student']} (L{r['mastery']}) "
+            f"composite={r['composite']:.3f}")
+        lines.append(
+            f"     grade={bd['grade']:.2f} res={bd['resonance']:.2f} "
+            f"lci={bd['lci']:.2f} div={bd['diversity']:.2f}")
+    lines.append("-" * 40)
+    if result['winner'] == 'draw':
+        lines.append("  Result: DRAW")
+    else:
+        w = result[result['winner']]
+        dec = 'decisive' if result['decisive'] else 'narrow'
+        lines.append(f"  Winner: {w['student']} ({dec}, +{result['margin']:.3f})")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# KATA DNA — compact fingerprint for classification (v12)
+# ═══════════════════════════════════════════════════════════
+
+def kata_dna(kata, mode='dual'):
+    """
+    Compute a compact fingerprint (DNA) for a kata.
+
+    The DNA encodes structural features as a fixed-length vector:
+    - Group sequence (7 bins)
+    - Complexity profile (mean, std, range)
+    - Transition profile (mean Hamming, smoothness %)
+    - Symmetry metrics (palindrome distance, phase coherence)
+    - Resonance signature (top 3 pattern types)
+
+    Returns:
+        dict with 'vector' (list of floats), 'hex' (hex digest),
+        'profile' (human-readable)
+    """
+    if mode == 'dual':
+        syms_L = [e[0] for e in kata]
+        syms_R = [e[1] for e in kata]
+    else:
+        syms_L = list(kata)
+        syms_R = []
+
+    n = len(syms_L)
+
+    # 1. Group distribution (7 values, normalised)
+    group_dist = [0.0] * 7
+    for s in syms_L + syms_R:
+        g = get_group(s)
+        if 1 <= g <= 7:
+            group_dist[g - 1] += 1
+    total_syms = len(syms_L) + len(syms_R)
+    if total_syms > 0:
+        group_dist = [c / total_syms for c in group_dist]
+
+    # 2. Complexity profile (3 values)
+    complexities = [symbol_complexity(s) for s in syms_L + syms_R]
+    c_mean = sum(complexities) / len(complexities) if complexities else 0
+    c_std = (sum((c - c_mean)**2 for c in complexities) /
+             len(complexities)) ** 0.5 if complexities else 0
+    c_range = (max(complexities) - min(complexities)) if complexities else 0
+
+    # 3. Transition profile (2 values)
+    hammings = []
+    for syms in [syms_L, syms_R]:
+        for i in range(1, len(syms)):
+            hammings.append(hamming_distance(syms[i], syms[i-1]))
+    h_mean = sum(hammings) / len(hammings) if hammings else 0
+    smooth_pct = sum(1 for h in hammings if h <= 2) / len(hammings) if hammings else 0
+
+    # 4. Symmetry (2 values)
+    groups_L = [get_group(s) for s in syms_L]
+    palindrome_dist = sum(1 for i in range(n // 2)
+                          if groups_L[i] != groups_L[n - 1 - i]) / max(n // 2, 1)
+    phase_coh = 0.0
+    if syms_R:
+        diffs = [symbol_complexity(syms_L[i]) - symbol_complexity(syms_R[i])
+                 for i in range(n)]
+        pos = sum(1 for d in diffs if d >= 0)
+        phase_coh = max(pos, n - pos) / n if n > 0 else 0
+
+    # 5. Build vector (14 dimensions)
+    vector = (group_dist +                       # 7
+              [c_mean / 4, c_std / 2, c_range / 4] +  # 3
+              [h_mean / 6, smooth_pct] +         # 2
+              [1 - palindrome_dist, phase_coh])   # 2
+
+    # Hex digest (hash of vector for quick comparison)
+    import hashlib
+    vec_str = ','.join(f"{v:.4f}" for v in vector)
+    hex_digest = hashlib.md5(vec_str.encode()).hexdigest()[:12]
+
+    # Human-readable profile
+    dominant_group = group_dist.index(max(group_dist)) + 1
+    group_names = {1: 'Empty', 2: 'Single', 3: 'Angle',
+                   4: 'Parallel', 5: 'Triple', 6: 'Master', 7: 'Peak'}
+    profile = (f"G{dominant_group}({group_names[dominant_group]}) "
+               f"C={c_mean:.1f}±{c_std:.1f} "
+               f"H={h_mean:.1f}({smooth_pct:.0%}smooth) "
+               f"pal={1-palindrome_dist:.0%}")
+
+    return {
+        'vector': [round(v, 4) for v in vector],
+        'hex': hex_digest,
+        'profile': profile,
+        'dimensions': 14,
+    }
+
+
+def kata_similarity(dna_a, dna_b):
+    """
+    Compute similarity between two kata DNA fingerprints.
+
+    Uses cosine similarity on the 14-dimensional vectors.
+
+    Returns:
+        float 0-1 (1 = identical structure)
+    """
+    va = dna_a['vector']
+    vb = dna_b['vector']
+    dot = sum(a * b for a, b in zip(va, vb))
+    mag_a = sum(a**2 for a in va) ** 0.5
+    mag_b = sum(b**2 for b in vb) ** 0.5
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return round(dot / (mag_a * mag_b), 4)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -4120,7 +4446,64 @@ if __name__ == '__main__':
           f"mastery={student.mastery_level}, "
           f"sessions={len(student.sessions)}")
 
-    # 42. Graph statistics (summary)
+    # 43. Drill generator
+    print("\n--- Drill Generator ---")
+    # Rule 2 drill (anti-symmetry is a common weakness)
+    dr_rule = generate_drill(target='rule', rule_num=2, n_reps=3,
+                             mastery_level=3, seed=42)
+    print(format_drill(dr_rule))
+
+    # Group 5 drill (Triple — often under-represented)
+    dr_group = generate_drill(target='group', group_num=5, n_reps=3,
+                              mastery_level=3, seed=42)
+    print(format_drill(dr_group))
+
+    # Transition drill
+    dr_trans = generate_drill(target='transition', n_reps=3,
+                              mastery_level=3, seed=42)
+    print(format_drill(dr_trans))
+
+    # 44. Sparring system
+    print("\n--- Sparring Match ---")
+    # Create two students with different levels
+    p1 = StudentProfile('Alexei', mastery_level=3)
+    p2 = StudentProfile('Boris', mastery_level=2)
+    # Give them some history
+    for _ in range(4):
+        sk1 = generate_seasonal_kata('Q3', mastery_level=3, year=2,
+                                     use_dual=True, seed=random.Random(42).randint(0, 2**31))
+        p1.record_session(sk1['kata'], quarter='Q3', year=2, mode='dual')
+        sk2 = generate_seasonal_kata('Q2', mastery_level=2, year=1,
+                                     use_dual=True, seed=random.Random(43).randint(0, 2**31))
+        p2.record_session(sk2['kata'], quarter='Q2', year=1, mode='dual')
+    spar = sparring(p1, p2, quarter='Q3', year=2, seed=42)
+    print(format_sparring(spar))
+
+    # 45. Kata DNA fingerprint
+    print("\n--- Kata DNA Fingerprint ---")
+    # Compare DNA of different kata types
+    opt_kata = optimize_kata(length=7, mastery_level=3, target_grade='A',
+                             max_attempts=20, base_seed=42)
+    bk = generate_battle_kata(battle_num=4, mastery_level=4,
+                              use_mudras=True, seed=42)
+
+    dna_opt = kata_dna(opt_kata['kata'], mode='dual')
+    dna_bk = kata_dna(bk['kata'], mode='dual')
+    dna_res = kata_dna(rk['kata'], mode='dual')  # rk from demo 39
+
+    print(f"  Optimized:  [{dna_opt['hex']}] {dna_opt['profile']}")
+    print(f"  Battle №4:  [{dna_bk['hex']}] {dna_bk['profile']}")
+    print(f"  Resonance:  [{dna_res['hex']}] {dna_res['profile']}")
+
+    sim_ob = kata_similarity(dna_opt, dna_bk)
+    sim_or = kata_similarity(dna_opt, dna_res)
+    sim_br = kata_similarity(dna_bk, dna_res)
+    print(f"\n  Similarity matrix:")
+    print(f"    Opt↔Battle:    {sim_ob:.3f}")
+    print(f"    Opt↔Resonance: {sim_or:.3f}")
+    print(f"    Battle↔Res:    {sim_br:.3f}")
+
+    # 46. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     # 64 base (6-bit) + 12 half-line = 76 total symbols
     all_76 = list(range(64)) + list(HALF_SYMBOLS.keys())
@@ -4128,9 +4511,9 @@ if __name__ == '__main__':
     for sym in range(64):
         total_edges_64 += len(get_neighbors(sym, max_changes=2))
     total_edges_64 //= 2
-    from collections import deque as _deque2
+    from collections import deque as _deque3
     visited = {0: 0}
-    queue = _deque2([0])
+    queue = _deque3([0])
     while queue:
         node = queue.popleft()
         for nb in get_neighbors(node, max_changes=2):
@@ -4146,5 +4529,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v11: Resonance-guided generation, student profile,")
-    print("     adaptive curriculum, weakness-driven training.")
+    print("v12: Drill generator, sparring system,")
+    print("     kata DNA fingerprint, similarity matching.")

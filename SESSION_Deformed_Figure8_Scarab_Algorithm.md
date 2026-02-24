@@ -2299,6 +2299,169 @@ StudentProfile → weaknesses() → adaptive_curriculum()
   export_training_session   текстовый файл сессии
   format_curriculum         ← NEW: вывод адаптивного плана
 
-ИТОГО: 42 демо-секции, 26 частей документации,
-       ~4000 строк кода, замкнутый цикл обратной связи
+ИТОГО: 46 демо-секций, 27 частей документации,
+       ~4500 строк кода, замкнутый цикл обратной связи
+```
+
+---
+
+## Часть 27: Дриллы, спарринг, ДНК ката (v12)
+
+### 27.1 Генератор дриллов (микро-упражнения)
+
+```python
+generate_drill(target='rule', rule_num=2, n_reps=5, mastery_level=3, seed=42)
+generate_drill(target='group', group_num=5, n_reps=5, mastery_level=3, seed=42)
+generate_drill(target='transition', n_reps=5, mastery_level=3, seed=42)
+```
+
+Дрилл = 3 такта × N повторений с вариациями. Три типа:
+
+```
+target='rule':       отработка конкретного правила (1-5)
+  → генерирует мини-ката, пока правило не будет соблюдено
+  → Пример: Rule 2 (anti-symmetry) — 3 репа, avg 78%
+
+target='group':      символы из конкретной группы Крюкова
+  → левая рука из целевой группы, правая — антисимметричная
+  → Пример: Group 5 (Triple) — тренирует сложные символы
+
+target='transition': плавные переходы (Hamming ≤ 2)
+  → каждый шаг — сосед в графе переходов
+  → Пример: avg 58% (труднее, так как не контролирует правила)
+```
+
+Применение совместно с `StudentProfile.weaknesses()`:
+```python
+for w in student.weaknesses():
+    if w['type'] == 'rule':
+        drill = generate_drill(target='rule', rule_num=w['rule'])
+    elif w['type'] == 'group':
+        drill = generate_drill(target='group', group_num=w['group'])
+```
+
+### 27.2 Система спарринга
+
+```python
+spar = sparring(student_a, student_b, quarter='Q3', year=2, seed=42)
+print(format_sparring(spar))
+```
+
+Два ученика генерируют ката на своём уровне мастерства. Судья оценивает:
+
+```
+Критерии (4 компоненты):
+┌──────────────────┬────────┬──────────────────────────┐
+│ Компонент        │ Вес    │ Метрика                  │
+├──────────────────┼────────┼──────────────────────────┤
+│ Оценка ката      │  40%   │ score_dual_kata.pct/100  │
+│ Резонанс         │  20%   │ detect_resonance.score   │
+│ LCI → π          │  20%   │ 1 - |avg_lci - π| / π   │
+│ Разнообразие     │  20%   │ n_groups / 7             │
+└──────────────────┴────────┴──────────────────────────┘
+```
+
+Пример:
+```
+Sparring Match
+========================================
+  A: Alexei (L3) composite=0.691
+     grade=0.80 res=0.81 lci=0.47 div=0.57
+  B: Boris (L2)  composite=0.692
+     grade=0.85 res=0.87 lci=0.46 div=0.43
+----------------------------------------
+  Winner: Boris (narrow, +0.001)
+```
+
+- `decisive` = разница > 0.1 (уверенная победа)
+- `narrow` = разница ≤ 0.1 (близкий бой)
+- Низкий уровень мастерства НЕ означает проигрыш — важна структура ката
+
+### 27.3 ДНК ката (отпечаток)
+
+```python
+dna = kata_dna(kata, mode='dual') → {
+    'vector': [0.19, 0.75, ...],  # 14-мерный вектор
+    'hex': '0a9c0d655b77',        # хеш для быстрого сравнения
+    'profile': 'G2(Single) C=1.7±1.0 H=1.8(100%smooth) pal=0%',
+    'dimensions': 14,
+}
+
+sim = kata_similarity(dna_a, dna_b) → 0.942  # косинусная близость
+```
+
+14 измерений ДНК:
+
+```
+Измерения                  Диапазон    Описание
+──────────────────────────────────────────────────
+[0-6]  Group distribution   0-1        7 бинов (доля каждой группы)
+[7]    Complexity mean       0-1        средняя сложность / 4
+[8]    Complexity std        0-1        разброс сложности / 2
+[9]    Complexity range      0-1        диапазон сложности / 4
+[10]   Transition mean       0-1        средний Hamming / 6
+[11]   Smoothness            0-1        % переходов ≤ 2 бита
+[12]   Palindrome proximity  0-1        1 - palindrome_distance
+[13]   Phase coherence       0-1        согласованность рук
+```
+
+Матрица подобия (пример):
+```
+                Optimized   Battle №4   Resonance
+Optimized       1.000       0.942       0.969
+Battle №4       0.942       1.000       0.957
+Resonance       0.969       0.957       1.000
+```
+
+Применение ДНК:
+- **Классификация**: группировка ката по структурному типу
+- **Поиск похожих**: найти ката из библиотеки, близкую к целевой
+- **Прогресс ученика**: как меняется ДНК ката со временем
+- **Де-дупликация**: избежать повторения одинаковых ката в тренировке
+
+### 27.4 Полная система (v12) — итоги
+
+```
+Компоненты SCARAB v12:
+
+УРОВЕНЬ ТЕОРИИ:
+  ScarabQuaternion     A = a + bi + cj + dk
+  verify_conservation  |A| = π при мастерстве
+  compute_lci          LCI = √(Σ сфер²)
+  detect_resonance     5 типов резонанса
+
+УРОВЕНЬ ГЕНЕРАЦИИ:
+  MatchStickAutomaton       1 рука, 76 символов
+  DualMatchStickAutomaton   2 руки, 5 правил
+  trajectory_kata(k)        8-ка → символы
+  generate_battle_kata      4 боевых формата
+  optimize_kata             генетический поиск Grade A
+  resonance_kata            генерация по целевому резонансу
+
+УРОВЕНЬ ТРЕНИРОВКИ:
+  generate_seasonal_kata    4 квартала × ритм × темп
+  generate_training_session сессия (45 мин)
+  simulate_progression      5-летний цикл
+  generate_exam / evaluate  экзамен + оценка
+  StudentProfile            профиль ученика с историей
+  adaptive_curriculum       адаптивный план по слабостям
+  generate_drill            ← NEW: микро-упражнения (3 типа)
+  sparring                  ← NEW: спарринг двух учеников
+  kata_dna / kata_similarity← NEW: отпечаток + сравнение
+
+УРОВЕНЬ ПРЕДСТАВЛЕНИЯ:
+  symbol_to_ascii           ASCII-арт символов
+  stick_figure_frame        палочная фигура
+  dual_stick_figure         двуручная визуализация
+  animate_dual_kata         покадровая анимация
+  plot_trajectory_ascii     ASCII траектория 8-ки
+  kata_to_notation          компактная нотация (v10: обе ChVS)
+  analyze_kata              статистика качества
+  export_training_session   текстовый файл сессии
+  format_curriculum         адаптивный план
+  format_drill              ← NEW: вывод дрилла
+  format_sparring           ← NEW: вывод спарринга
+
+ИТОГО: 46 демо-секций, 27 частей документации,
+       ~4500 строк кода, замкнутый цикл обратной связи
 ```
