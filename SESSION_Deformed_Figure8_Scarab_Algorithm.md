@@ -4993,3 +4993,35 @@ print(format_health_check(health))
 Классы:        40
 Функции:       218+
 ```
+
+---
+
+## Часть 61: Streaks, rating, symbol mastery (v46)
+
+### 61.1 StreakTracker
+
+```python
+st = StreakTracker(student)
+print(st.format_streaks())
+```
+
+Типы: win (≥70%), improvement, consistency (±5%), a_grade (≥90%). Текущий + лучший.
+
+### 61.2 Рейтинг сессии
+
+```python
+rating = rate_session(session_data, student)
+print(format_session_rating(rating))
+```
+
+4 измерения: score, violations, improvement, personal_best. Каждое 1-5 ★.
+
+### 61.3 Symbol Mastery Map
+
+```python
+smm = SymbolMasteryMap()
+smm.record_exposure(sym, success=True)
+print(smm.format_map())
+```
+
+Тиры: unseen (·), seen (░), familiar (▒), practiced (▓), proficient (█), mastered (★).

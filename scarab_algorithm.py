@@ -15265,6 +15265,308 @@ def format_health_check(result):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# STREAK TRACKER (v46)
+# ═══════════════════════════════════════════════════════════
+
+class StreakTracker:
+    """
+    Track various types of streaks for gamification.
+
+    Types: win, loss, improvement, consistency, perfect.
+    """
+
+    def __init__(self, student):
+        self.student = student
+
+    def compute_all(self):
+        """Compute all streak types."""
+        scores = [s['pct'] for s in self.student.sessions]
+        if not scores:
+            return {}
+
+        streaks = {}
+
+        # Win streak (≥70%)
+        win = 0
+        max_win = 0
+        for s in scores:
+            if s >= 70:
+                win += 1
+                max_win = max(max_win, win)
+            else:
+                win = 0
+        # Current win streak
+        cur_win = 0
+        for s in reversed(scores):
+            if s >= 70:
+                cur_win += 1
+            else:
+                break
+        streaks['win'] = {'current': cur_win, 'best': max_win}
+
+        # Improvement streak (each session better than previous)
+        imp = 0
+        max_imp = 0
+        for i in range(1, len(scores)):
+            if scores[i] > scores[i - 1]:
+                imp += 1
+                max_imp = max(max_imp, imp)
+            else:
+                imp = 0
+        cur_imp = 0
+        for i in range(len(scores) - 1, 0, -1):
+            if scores[i] > scores[i - 1]:
+                cur_imp += 1
+            else:
+                break
+        streaks['improvement'] = {'current': cur_imp, 'best': max_imp}
+
+        # Consistency streak (within 5% of average)
+        if len(scores) >= 3:
+            avg = sum(scores) / len(scores)
+            con = 0
+            max_con = 0
+            for s in scores:
+                if abs(s - avg) <= 5:
+                    con += 1
+                    max_con = max(max_con, con)
+                else:
+                    con = 0
+            streaks['consistency'] = {'current': 0, 'best': max_con}
+
+        # A-grade streak (≥90%)
+        a_streak = 0
+        max_a = 0
+        for s in scores:
+            if s >= 90:
+                a_streak += 1
+                max_a = max(max_a, a_streak)
+            else:
+                a_streak = 0
+        cur_a = 0
+        for s in reversed(scores):
+            if s >= 90:
+                cur_a += 1
+            else:
+                break
+        streaks['a_grade'] = {'current': cur_a, 'best': max_a}
+
+        return streaks
+
+    def format_streaks(self):
+        """Format streak display."""
+        streaks = self.compute_all()
+        lines = [f"Streaks: {self.student.name}"]
+        lines.append("═" * 45)
+
+        icons = {'win': '🔥', 'improvement': '📈',
+                 'consistency': '🎯', 'a_grade': '⭐'}
+
+        for stype, data in streaks.items():
+            icon = icons.get(stype, '•')
+            cur = data['current']
+            best = data['best']
+            bar = '▓' * min(cur, 20) + '░' * max(0, 20 - cur)
+            lines.append(f"  {icon} {stype:14s} "
+                         f"cur={cur:2d} best={best:2d} [{bar}]")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION RATING (v46)
+# ═══════════════════════════════════════════════════════════
+
+def rate_session(session_data, student):
+    """
+    Rate a session on multiple dimensions (1-5 stars each).
+
+    Dimensions: score, consistency, violations, improvement, difficulty.
+    Returns overall star rating.
+    """
+    pct = session_data['pct']
+    viols = len(session_data.get('violations', []))
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+
+    ratings = {}
+
+    # Score rating
+    if pct >= 90:
+        ratings['score'] = 5
+    elif pct >= 80:
+        ratings['score'] = 4
+    elif pct >= 70:
+        ratings['score'] = 3
+    elif pct >= 60:
+        ratings['score'] = 2
+    else:
+        ratings['score'] = 1
+
+    # Violation rating
+    if viols == 0:
+        ratings['violations'] = 5
+    elif viols <= 1:
+        ratings['violations'] = 4
+    elif viols <= 3:
+        ratings['violations'] = 3
+    elif viols <= 5:
+        ratings['violations'] = 2
+    else:
+        ratings['violations'] = 1
+
+    # Improvement rating (vs previous)
+    if len(scores) >= 2:
+        prev = scores[-2] if len(scores) > 1 else scores[-1]
+        delta = pct - prev
+        if delta > 10:
+            ratings['improvement'] = 5
+        elif delta > 5:
+            ratings['improvement'] = 4
+        elif delta > 0:
+            ratings['improvement'] = 3
+        elif delta > -5:
+            ratings['improvement'] = 2
+        else:
+            ratings['improvement'] = 1
+    else:
+        ratings['improvement'] = 3
+
+    # Personal best check
+    best = max(scores) if scores else 0
+    ratings['personal_best'] = 5 if pct >= best else 3
+
+    overall = round(sum(ratings.values()) / len(ratings), 1)
+
+    return {
+        'ratings': ratings,
+        'overall': overall,
+        'stars': min(5, round(overall)),
+    }
+
+
+def format_session_rating(rating):
+    """Format session rating."""
+    lines = ["Session Rating"]
+    lines.append("─" * 40)
+
+    for dim, val in rating['ratings'].items():
+        stars = '★' * val + '☆' * (5 - val)
+        lines.append(f"  {dim:16s} {stars}")
+
+    overall_stars = '★' * rating['stars'] + '☆' * (5 - rating['stars'])
+    lines.append(f"\n  Overall: {overall_stars} "
+                 f"({rating['overall']:.1f}/5.0)")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SYMBOL MASTERY MAP (v46)
+# ═══════════════════════════════════════════════════════════
+
+class SymbolMasteryMap:
+    """
+    Track mastery level for each individual symbol (0-63).
+
+    Each symbol has: exposure count, success rate, mastery tier.
+    """
+
+    TIERS = ['unseen', 'seen', 'familiar', 'practiced',
+             'proficient', 'mastered']
+
+    def __init__(self):
+        self.symbols = {}
+        for s in range(64):
+            self.symbols[s] = {
+                'exposures': 0,
+                'successes': 0,
+                'tier_idx': 0,
+            }
+
+    def record_exposure(self, sym, success=True):
+        """Record seeing a symbol with success/failure."""
+        if sym not in self.symbols:
+            return
+        self.symbols[sym]['exposures'] += 1
+        if success:
+            self.symbols[sym]['successes'] += 1
+
+        # Update tier
+        exp = self.symbols[sym]['exposures']
+        rate = (self.symbols[sym]['successes'] / exp) if exp > 0 else 0
+
+        prev_tier = self.symbols[sym]['tier_idx']
+        if exp == 0:
+            tier = 0
+        elif exp < 3:
+            tier = 1
+        elif exp < 6 and rate >= 0.5:
+            tier = 2
+        elif exp < 10 and rate >= 0.6:
+            tier = 3
+        elif exp < 20 and rate >= 0.7:
+            tier = 4
+        elif rate >= 0.8:
+            tier = 5
+        else:
+            tier = min(3, prev_tier)
+
+        self.symbols[sym]['tier_idx'] = tier
+
+    def get_tier(self, sym):
+        """Get mastery tier name for a symbol."""
+        return self.TIERS[self.symbols[sym]['tier_idx']]
+
+    def summary(self):
+        """Summary of mastery distribution."""
+        counts = {t: 0 for t in self.TIERS}
+        for s, data in self.symbols.items():
+            tier = self.TIERS[data['tier_idx']]
+            counts[tier] += 1
+        return counts
+
+    def weakest_symbols(self, n=5):
+        """Find symbols with lowest success rate (with exposure)."""
+        exposed = [(s, d) for s, d in self.symbols.items()
+                   if d['exposures'] > 0]
+        exposed.sort(key=lambda x: (
+            x[1]['successes'] / x[1]['exposures']
+            if x[1]['exposures'] > 0 else 0))
+        return exposed[:n]
+
+    def format_map(self, group_filter=None):
+        """Format mastery map."""
+        lines = ["Symbol Mastery Map"]
+        lines.append("═" * 55)
+
+        tier_chars = {
+            'unseen': '·', 'seen': '░', 'familiar': '▒',
+            'practiced': '▓', 'proficient': '█', 'mastered': '★',
+        }
+
+        # Grid display: 8 per row
+        syms = list(range(64))
+        if group_filter is not None:
+            syms = [s for s in syms if get_group(s) == group_filter]
+
+        for start in range(0, len(syms), 8):
+            chunk = syms[start:start + 8]
+            cells = []
+            for s in chunk:
+                tier = self.get_tier(s)
+                cells.append(tier_chars.get(tier, '?'))
+            row_str = ' '.join(cells)
+            lines.append(f"  S{chunk[0]:02d}-{chunk[-1]:02d}: {row_str}")
+
+        # Summary
+        summary = self.summary()
+        lines.append(f"\n  {summary}")
+
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -16970,3 +17272,34 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v45: API facade, system health check.")
+
+    # 147. Streak Tracker
+    print("\n--- Streak Tracker ---")
+    for sname in ['Anna', 'Ivan']:
+        st147 = StreakTracker(sim_school.students[sname])
+        print(st147.format_streaks())
+
+    # 148. Session Rating
+    print("\n--- Session Rating ---")
+    anna = sim_school.students['Anna']
+    last_session = anna.sessions[-1]
+    rating = rate_session(last_session, anna)
+    print(format_session_rating(rating))
+
+    # 149. Symbol Mastery Map
+    print("\n--- Symbol Mastery Map ---")
+    smm = SymbolMasteryMap()
+    import random as _rnd_smm
+    _rnd_smm.seed(42)
+    for _ in range(100):
+        sym = _rnd_smm.randint(0, 63)
+        success = _rnd_smm.random() > 0.3
+        smm.record_exposure(sym, success=success)
+    print(smm.format_map())
+    weak = smm.weakest_symbols(3)
+    weak_info = [(s, round(d['successes'] / max(d['exposures'], 1), 2))
+                 for s, d in weak]
+    print(f"  Weakest: {weak_info}")
+
+    print("\n" + "=" * 60)
+    print("v46: Streak tracker, session rating, symbol mastery map.")
