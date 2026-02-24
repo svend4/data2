@@ -1006,13 +1006,22 @@ class DualMatchStickAutomaton:
             lead_msa, follow_msa = self.right, self.left
 
         # 1. Lead hand: generate next symbol (free choice from kata rules)
+        #    Rule 1 (HARD): pre-filter to avoid zone conflict with follow hand
+        follow_current = follow_msa.state
         lead_neighbors = lead_msa._adj.get(lead_msa.state, [])
         lead_candidates = [n for n in lead_neighbors
                            if n in lead_msa.available_symbols
-                           and n not in lead_msa.history[-4:]]
+                           and n not in lead_msa.history[-4:]
+                           and not zones_conflict(n, follow_current)]
         if not lead_candidates:
+            # Relax: drop anti-circle but keep zone exclusion
             lead_candidates = [n for n in lead_neighbors
-                               if n in lead_msa.available_symbols]
+                               if n in lead_msa.available_symbols
+                               and not zones_conflict(n, follow_current)]
+        if not lead_candidates:
+            # Last resort: any available that doesn't conflict
+            lead_candidates = [n for n in lead_msa.available_symbols
+                               if not zones_conflict(n, follow_current)]
         if not lead_candidates:
             lead_candidates = lead_msa.available_symbols
 
@@ -1020,6 +1029,7 @@ class DualMatchStickAutomaton:
         lead_msa.transition(lead_next)
 
         # 2. Follow hand: must complement the lead (anti-symmetric, no zone clash)
+        #    Rule 1 (HARD): zone exclusion enforced in _get_complementary_symbol
         #    Rule 4 (Phase offset): follow reacts to lead's position
         #    with a slight delay — use previous lead state as context
         #    for generating the cascade pattern
@@ -1045,6 +1055,14 @@ class DualMatchStickAutomaton:
             follow_next = self.rng.choice(complements)
         else:
             follow_next = follow_msa.state  # Stay put if no valid move
+
+        # Final zone check (belt-and-suspenders safety)
+        if zones_conflict(lead_next, follow_next):
+            # Emergency: find ANY non-conflicting symbol for follow
+            safe = [s for s in follow_msa.available_symbols
+                    if not zones_conflict(lead_next, s)]
+            if safe:
+                follow_next = self.rng.choice(safe)
 
         follow_msa.transition(follow_next)
 
@@ -1235,6 +1253,285 @@ class DualMatchStickAutomaton:
                 f"conflict={'YES!' if conflict else 'no'} | "
                 f"anti-sym={'yes' if anti else 'NO'} | "
                 f"C={total_c}({'OK' if balanced else 'HI'})")
+
+
+# ═══════════════════════════════════════════════════════════
+# KATA SCORING — evaluate adherence to all 5 rules
+# ═══════════════════════════════════════════════════════════
+
+def score_dual_kata(dual_kata):
+    """
+    Score a dual kata for adherence to coordination rules.
+
+    Evaluates each tact against all 5 rules:
+      1. Zone exclusion (hard) — 0 or 1 per tact
+      2. Anti-symmetry (soft) — 0 or 1 per tact
+      3. Lead alternation (hard) — checked across full kata
+      4. Phase offset — measured by transition smoothness
+      5. Complexity conservation — C(L)+C(R) ∈ [2,6]
+
+    Returns:
+        dict with per-tact scores, totals, and overall grade (A-F)
+    """
+    n = len(dual_kata)
+    if n == 0:
+        return {'grade': 'F', 'total': 0, 'max': 0, 'tacts': []}
+
+    tact_scores = []
+    rule_totals = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    rule_max = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+
+    for i, entry in enumerate(dual_kata):
+        L, R = entry[0], entry[1]
+        tact = {'tact': i}
+
+        # Rule 1: Zone exclusion (1 point if no conflict)
+        conflict = zones_conflict(L, R)
+        r1 = 0 if conflict else 1
+        tact['r1_zones'] = r1
+        rule_totals[1] += r1
+        rule_max[1] += 1
+
+        # Rule 2: Anti-symmetry (1 point if complementary)
+        anti = is_anti_symmetric(L, R)
+        r2 = 1 if anti else 0
+        tact['r2_anti_sym'] = r2
+        rule_totals[2] += r2
+        rule_max[2] += 1
+
+        # Rule 4: Transition smoothness (1 point if ≤2 bits changed from prev)
+        if i > 0:
+            prev_L, prev_R = dual_kata[i-1][0], dual_kata[i-1][1]
+            dist_L = hamming_distance(L, prev_L)
+            dist_R = hamming_distance(R, prev_R)
+            r4 = 1 if (dist_L <= 2 and dist_R <= 2) else 0
+            tact['r4_smooth'] = r4
+            rule_totals[4] += r4
+            rule_max[4] += 1
+
+        # Rule 5: Complexity conservation
+        total_c, balanced = complexity_balance(L, R)
+        r5 = 1 if balanced else 0
+        tact['r5_complexity'] = r5
+        tact['complexity_total'] = total_c
+        rule_totals[5] += r5
+        rule_max[5] += 1
+
+        tact_scores.append(tact)
+
+    # Rule 3: Lead alternation — check that lead changes happen at odd intervals
+    # For a kata, we check that no more than 3 consecutive same-side dominances
+    lead_series = []
+    for i in range(1, n):
+        L, R = dual_kata[i][0], dual_kata[i][1]
+        cL = symbol_complexity(L)
+        cR = symbol_complexity(R)
+        lead_series.append('L' if cL >= cR else 'R')
+
+    # Count max consecutive same lead
+    if lead_series:
+        max_run = 1
+        current_run = 1
+        for i in range(1, len(lead_series)):
+            if lead_series[i] == lead_series[i-1]:
+                current_run += 1
+                max_run = max(max_run, current_run)
+            else:
+                current_run = 1
+        # Odd alternation: max run should be 1 or 3 (not 2, 4, 6)
+        r3 = 1 if max_run in [1, 3, 5, 7] else 0
+        # Also: at least one switch must occur
+        switches = sum(1 for i in range(1, len(lead_series))
+                       if lead_series[i] != lead_series[i-1])
+        if switches == 0 and n > 2:
+            r3 = 0
+        rule_totals[3] = r3
+        rule_max[3] = 1
+    else:
+        rule_totals[3] = 1
+        rule_max[3] = 1
+
+    # Calculate overall score
+    total = sum(rule_totals.values())
+    maximum = sum(rule_max.values())
+    pct = total / maximum * 100 if maximum > 0 else 0
+
+    # Grade: A(90+), B(75+), C(60+), D(40+), F(<40)
+    if pct >= 90:
+        grade = 'A'
+    elif pct >= 75:
+        grade = 'B'
+    elif pct >= 60:
+        grade = 'C'
+    elif pct >= 40:
+        grade = 'D'
+    else:
+        grade = 'F'
+
+    return {
+        'grade': grade,
+        'total': total,
+        'max': maximum,
+        'pct': pct,
+        'rules': {r: f"{rule_totals[r]}/{rule_max[r]}" for r in range(1, 6)},
+        'rule_names': {
+            1: 'Zones', 2: 'Anti-sym', 3: 'Alternation',
+            4: 'Smoothness', 5: 'Conservation'
+        },
+        'tacts': tact_scores,
+        'lead_pattern': ''.join(lead_series) if lead_series else '-',
+    }
+
+
+def format_score_report(score):
+    """Format a kata score as a human-readable report."""
+    lines = []
+    lines.append(f"  Grade: {score['grade']} ({score['pct']:.0f}%) "
+                 f"[{score['total']}/{score['max']}]")
+    for r in range(1, 6):
+        name = score['rule_names'][r]
+        val = score['rules'][r]
+        lines.append(f"    Rule {r} ({name:12s}): {val}")
+    lines.append(f"    Lead pattern: {score['lead_pattern']}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SEASONAL KATA GENERATOR — annual plan Q1-Q4
+# ═══════════════════════════════════════════════════════════
+
+# Rhythm patterns: beat durations in relative units
+# Based on Scarab odd series {1, 3, 5, 7}
+RHYTHM_PATTERNS = {
+    'Q1': [1, 1, 1, 1, 1, 1, 1],           # Even: march tempo (foundation)
+    'Q2': [1, 3, 1, 3, 1, 3, 1],           # Waltz: 1-3-1-3 (flow)
+    'Q3': [1, 1, 3, 1, 1, 3, 1],           # Syncopated: burst patterns (fire)
+    'Q4': [3, 1, 5, 1, 3, 1, 7],           # Free: all odd lengths (wind)
+}
+
+# BPM ranges per season (tacts per minute)
+TEMPO_RANGES = {
+    'Q1': (40, 60),    # Slow — winter — learning
+    'Q2': (60, 90),    # Medium — spring — flowing
+    'Q3': (90, 140),   # Fast — summer — intensity
+    'Q4': (60, 120),   # Variable — autumn — freedom
+}
+
+
+def generate_seasonal_kata(quarter, mastery_level=1, year=1, use_dual=False,
+                           use_mudras=False, seed=None):
+    """
+    Generate a kata appropriate for the given quarter of the training year.
+
+    Maps directly to TRAINING_PLAN:
+      Q1 (Winter/Earth/3D): Foundation — single symbols, groups 1-2
+      Q2 (Spring/Water/2D): Flow — 3-tact transitions, groups 1-3
+      Q3 (Summer/Fire/0D):  Intensity — 5-tact patterns, groups 1-5
+      Q4 (Autumn/Air/1D):   Freedom — 7-tact full kata, all groups
+
+    Args:
+        quarter: 'Q1', 'Q2', 'Q3', or 'Q4'
+        mastery_level: 1-5
+        year: training year (1-5)
+        use_dual: if True, generate dual-hand kata
+        use_mudras: if True, use 8-mudra system
+        seed: random seed
+
+    Returns:
+        dict with kata, rhythm, tempo, metadata, and score (for dual)
+    """
+    rng = random.Random(seed)
+    plan = TRAINING_PLAN.get(quarter, TRAINING_PLAN['Q1'])
+
+    kata_length = plan['kata_length']
+    groups = plan['groups']
+    k_min, k_max = plan['k_range']
+
+    # Deformation parameter for this session
+    k = k_min + rng.random() * (k_max - k_min)
+
+    # Effective mastery: year progression within the quarter
+    eff_mastery = min(5, mastery_level + (year - 1))
+
+    # Rhythm pattern
+    rhythm = RHYTHM_PATTERNS[quarter][:kata_length]
+    tempo_min, tempo_max = TEMPO_RANGES[quarter]
+    tempo = tempo_min + rng.random() * (tempo_max - tempo_min)
+
+    # Beat durations in seconds (from tempo BPM and rhythm pattern)
+    beat_base = 60.0 / tempo  # seconds per base beat
+    beat_durations = [r * beat_base for r in rhythm]
+    total_duration = sum(beat_durations)
+
+    result = {
+        'quarter': quarter,
+        'season': plan['name'],
+        'kata_length': kata_length,
+        'mastery': eff_mastery,
+        'year': year,
+        'k': round(k, 2),
+        'tempo_bpm': round(tempo, 1),
+        'rhythm': rhythm,
+        'beat_durations_s': [round(d, 2) for d in beat_durations],
+        'total_duration_s': round(total_duration, 2),
+    }
+
+    if use_dual:
+        dual = DualMatchStickAutomaton(
+            mastery_level=eff_mastery, use_mudras=use_mudras,
+            seed=rng.randint(0, 2**31))
+        # Filter to seasonal groups
+        seasonal_syms = [s for s in range(64) if get_group(s) in groups]
+        dual.left.available_symbols = seasonal_syms
+        dual.right.available_symbols = seasonal_syms
+        kata = dual.generate_dual_kata(length=kata_length)
+        score = score_dual_kata(kata)
+        result['kata'] = kata
+        result['score'] = score
+        result['mode'] = 'dual'
+    else:
+        msa = MatchStickAutomaton(mastery_level=eff_mastery,
+                                   seed=rng.randint(0, 2**31))
+        msa.available_symbols = [s for s in range(64) if get_group(s) in groups]
+        kata = msa.generate_kata(length=kata_length)
+        result['kata'] = kata
+        result['mode'] = 'single'
+
+    return result
+
+
+def format_seasonal_kata(skata, use_mudras=False):
+    """Format a seasonal kata as a human-readable string."""
+    group_names = {1: 'Soft', 2: 'Hard', 3: 'MVS', 4: 'Rot',
+                   5: 'Wpn', 6: 'Mstr', 7: 'Peak'}
+    chvs_names = MUDRA_NAMES if use_mudras else CHVS_NAMES
+
+    lines = []
+    lines.append(f"  {skata['quarter']} — {skata['season']}")
+    lines.append(f"  Year {skata['year']}, Mastery {skata['mastery']}, "
+                 f"k={skata['k']}")
+    lines.append(f"  Tempo: {skata['tempo_bpm']} BPM, "
+                 f"Rhythm: {skata['rhythm']}")
+    lines.append(f"  Total: {skata['total_duration_s']}s "
+                 f"({skata['kata_length']} tacts)")
+
+    if skata['mode'] == 'dual':
+        for i, (L, R, cL, cR) in enumerate(skata['kata']):
+            gL, gR = get_group(L), get_group(R)
+            dur = skata['beat_durations_s'][i] if i < len(skata['beat_durations_s']) else 0
+            cL_name = chvs_names.get(cL, '?')
+            cR_name = chvs_names.get(cR, '?')
+            lines.append(f"    T{i}: L={L:06b}(G{gL}/{group_names[gL]:4s},{cL_name:5s}) "
+                         f"R={R:06b}(G{gR}/{group_names[gR]:4s},{cR_name:5s}) "
+                         f"[{dur:.2f}s]")
+        lines.append(format_score_report(skata['score']))
+    else:
+        for i, sym in enumerate(skata['kata']):
+            grp = get_group(sym)
+            dur = skata['beat_durations_s'][i] if i < len(skata['beat_durations_s']) else 0
+            lines.append(f"    T{i}: {sym:06b} G{grp}/{group_names[grp]:4s} [{dur:.2f}s]")
+
+    return '\n'.join(lines)
 
 
 def symbol_to_ascii(sym, size=5):
@@ -1988,7 +2285,27 @@ if __name__ == '__main__':
         print(f"  {line}")
     print("  ...")
 
-    # 18. Graph statistics (summary)
+    # 18. Score the dual kata from demo 16
+    print("\n--- Kata Score Report (from dual kata above) ---")
+    score = score_dual_kata(dkata_r45)
+    print(format_score_report(score))
+
+    # 19. Seasonal kata generator — full year cycle
+    print("\n--- Seasonal Kata Generator (Year 2) ---")
+    for q in ['Q1', 'Q2', 'Q3', 'Q4']:
+        use_d = (q in ['Q3', 'Q4'])
+        sk = generate_seasonal_kata(q, mastery_level=2, year=2,
+                                     use_dual=use_d, seed=42)
+        print(format_seasonal_kata(sk))
+        print()
+
+    # 20. Seasonal dual kata with mudras (Year 4, Q4 — near mastery)
+    print("--- Q4 Mastery Kata (Year 4, dual + mudras) ---")
+    sk_q4 = generate_seasonal_kata('Q4', mastery_level=4, year=4,
+                                    use_dual=True, use_mudras=True, seed=77)
+    print(format_seasonal_kata(sk_q4, use_mudras=True))
+
+    # 21. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
@@ -2012,5 +2329,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v5: Rules 4+5 (phase offset, complexity conservation),")
-    print("    dual-hand training session generation & export.")
+    print("v6: Scoring system, seasonal kata generator,")
+    print("    hard zone enforcement, rhythm/tempo patterns.")
