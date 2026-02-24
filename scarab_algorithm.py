@@ -24124,6 +24124,405 @@ def format_circuit_breaker(cb):
     return '\n'.join(lines)
 
 
+# ══════════════════════════════════════════════════════════════
+# v63: Template Engine, Report Builder, Export Formatter
+# ══════════════════════════════════════════════════════════════
+
+class TemplateEngine:
+    """Simple template engine with variable substitution.
+
+    Supports {{variable}}, {{if condition}}...{{endif}},
+    and {{foreach item in list}}...{{endfor}} constructs.
+    """
+
+    def __init__(self):
+        self.templates = {}
+        self._helpers = {}
+
+    def register(self, name, template_str):
+        """Register a named template."""
+        self.templates[name] = template_str
+
+    def register_helper(self, name, fn):
+        """Register a helper function for templates."""
+        self._helpers[name] = fn
+
+    def render(self, name_or_template, context=None):
+        """Render a template with context."""
+        ctx = context or {}
+
+        # Resolve template
+        if name_or_template in self.templates:
+            tpl = self.templates[name_or_template]
+        else:
+            tpl = name_or_template
+
+        # Process foreach
+        tpl = self._process_foreach(tpl, ctx)
+
+        # Process if/endif
+        tpl = self._process_conditions(tpl, ctx)
+
+        # Replace variables
+        tpl = self._replace_vars(tpl, ctx)
+
+        return tpl
+
+    def _replace_vars(self, tpl, ctx):
+        """Replace {{variable}} with values."""
+        result = tpl
+        for key, value in ctx.items():
+            if isinstance(value, (str, int, float)):
+                result = result.replace('{{' + key + '}}', str(value))
+
+        # Apply helpers
+        for hname, hfn in self._helpers.items():
+            marker = '{{' + hname + '}}'
+            if marker in result:
+                result = result.replace(marker, str(hfn(ctx)))
+
+        return result
+
+    def _process_foreach(self, tpl, ctx):
+        """Process {{foreach item in list}}...{{endfor}} blocks."""
+        import re
+        pattern = r'\{\{foreach (\w+) in (\w+)\}\}(.*?)\{\{endfor\}\}'
+
+        def replacer(match):
+            item_name = match.group(1)
+            list_name = match.group(2)
+            body = match.group(3)
+            items = ctx.get(list_name, [])
+
+            result_parts = []
+            for item in items:
+                sub_ctx = dict(ctx)
+                if isinstance(item, dict):
+                    sub_ctx.update(item)
+                sub_ctx[item_name] = item
+                part = self._replace_vars(body, sub_ctx)
+                result_parts.append(part)
+
+            return ''.join(result_parts)
+
+        return re.sub(pattern, replacer, tpl, flags=re.DOTALL)
+
+    def _process_conditions(self, tpl, ctx):
+        """Process {{if var}}...{{endif}} blocks."""
+        import re
+        pattern = r'\{\{if (\w+)\}\}(.*?)\{\{endif\}\}'
+
+        def replacer(match):
+            var_name = match.group(1)
+            body = match.group(2)
+            value = ctx.get(var_name)
+            if value:
+                return self._replace_vars(body, ctx)
+            return ''
+
+        return re.sub(pattern, replacer, tpl, flags=re.DOTALL)
+
+    def list_templates(self):
+        """List all registered templates."""
+        return list(self.templates.keys())
+
+    def statistics(self):
+        """Get template engine statistics."""
+        return {
+            'templates': len(self.templates),
+            'helpers': len(self._helpers),
+            'names': list(self.templates.keys())
+        }
+
+
+def format_template_engine(te):
+    """Format template engine status."""
+    stats = te.statistics()
+    lines = ["=== Template Engine ==="]
+    lines.append(f"Templates: {stats['templates']}")
+    lines.append(f"Helpers: {stats['helpers']}")
+    if stats['names']:
+        lines.append("\nRegistered:")
+        for n in stats['names']:
+            preview = te.templates[n][:50].replace('\n', '\\n')
+            lines.append(f"  {n}: {preview}...")
+    return '\n'.join(lines)
+
+
+class ReportBuilder:
+    """Fluent report builder for structured output.
+
+    Provides a chainable API for building reports with
+    headers, sections, tables, and summaries.
+    """
+
+    def __init__(self, title=''):
+        self.title = title
+        self._sections = []
+        self._metadata = {}
+
+    def set_metadata(self, key, value):
+        """Set report metadata."""
+        self._metadata[key] = value
+        return self
+
+    def add_header(self, text, level=1):
+        """Add a header section."""
+        self._sections.append({
+            'type': 'header',
+            'text': text,
+            'level': level
+        })
+        return self
+
+    def add_text(self, text):
+        """Add a text paragraph."""
+        self._sections.append({
+            'type': 'text',
+            'text': text
+        })
+        return self
+
+    def add_table(self, headers, rows):
+        """Add a data table."""
+        self._sections.append({
+            'type': 'table',
+            'headers': headers,
+            'rows': rows
+        })
+        return self
+
+    def add_key_value(self, items):
+        """Add key-value pairs."""
+        self._sections.append({
+            'type': 'kv',
+            'items': items
+        })
+        return self
+
+    def add_list(self, items, ordered=False):
+        """Add a list."""
+        self._sections.append({
+            'type': 'list',
+            'items': items,
+            'ordered': ordered
+        })
+        return self
+
+    def add_separator(self):
+        """Add a horizontal separator."""
+        self._sections.append({'type': 'separator'})
+        return self
+
+    def add_chart(self, data, chart_type='bar'):
+        """Add an ASCII chart."""
+        self._sections.append({
+            'type': 'chart',
+            'data': data,
+            'chart_type': chart_type
+        })
+        return self
+
+    def build(self):
+        """Build the report as text."""
+        lines = []
+
+        if self.title:
+            border = '═' * (len(self.title) + 4)
+            lines.append(f"╔{border}╗")
+            lines.append(f"║  {self.title}  ║")
+            lines.append(f"╚{border}╝")
+            lines.append('')
+
+        if self._metadata:
+            for k, v in self._metadata.items():
+                lines.append(f"{k}: {v}")
+            lines.append('')
+
+        for section in self._sections:
+            stype = section['type']
+
+            if stype == 'header':
+                level = section['level']
+                prefix = '#' * level + ' '
+                lines.append(f"{prefix}{section['text']}")
+                lines.append('')
+
+            elif stype == 'text':
+                lines.append(section['text'])
+                lines.append('')
+
+            elif stype == 'table':
+                headers = section['headers']
+                rows = section['rows']
+                widths = [len(str(h)) for h in headers]
+                for row in rows:
+                    for i, cell in enumerate(row):
+                        if i < len(widths):
+                            widths[i] = max(widths[i], len(str(cell)))
+
+                header_line = ' | '.join(
+                    str(h).ljust(widths[i])
+                    for i, h in enumerate(headers))
+                sep_line = '-+-'.join('-' * w for w in widths)
+                lines.append(header_line)
+                lines.append(sep_line)
+                for row in rows:
+                    row_line = ' | '.join(
+                        str(cell).ljust(widths[i])
+                        for i, cell in enumerate(row))
+                    lines.append(row_line)
+                lines.append('')
+
+            elif stype == 'kv':
+                max_k = max(len(str(k)) for k, _ in section['items'])
+                for k, v in section['items']:
+                    lines.append(f"  {str(k).ljust(max_k)} : {v}")
+                lines.append('')
+
+            elif stype == 'list':
+                for i, item in enumerate(section['items']):
+                    prefix = f"{i+1}." if section['ordered'] else '•'
+                    lines.append(f"  {prefix} {item}")
+                lines.append('')
+
+            elif stype == 'separator':
+                lines.append('─' * 50)
+                lines.append('')
+
+            elif stype == 'chart':
+                data = section['data']
+                if data:
+                    max_val = max(v for _, v in data)
+                    for label, val in data:
+                        bar_len = int(val / max(1, max_val) * 30)
+                        bar = '█' * bar_len
+                        lines.append(f"  {label:>12} │{bar} {val}")
+                lines.append('')
+
+        return '\n'.join(lines)
+
+    def section_count(self):
+        """Count sections in the report."""
+        return len(self._sections)
+
+
+class ExportFormatter:
+    """Multi-format export formatter.
+
+    Formats data into various output formats: plain text,
+    CSV, JSON-like, HTML-like, and Markdown.
+    """
+
+    FORMATS = ['text', 'csv', 'json', 'html', 'markdown']
+
+    def __init__(self):
+        self._formatters = {
+            'text': self._to_text,
+            'csv': self._to_csv,
+            'json': self._to_json,
+            'html': self._to_html,
+            'markdown': self._to_markdown
+        }
+
+    def export(self, data, fmt='text', title='Export'):
+        """Export data in specified format."""
+        if fmt not in self._formatters:
+            return f"Unknown format: {fmt}"
+        return self._formatters[fmt](data, title)
+
+    def _to_text(self, data, title):
+        """Format as plain text."""
+        lines = [f"=== {title} ==="]
+        if isinstance(data, dict):
+            for k, v in data.items():
+                lines.append(f"  {k}: {v}")
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    parts = [f"{k}={v}" for k, v in item.items()]
+                    lines.append(f"  {', '.join(parts)}")
+                else:
+                    lines.append(f"  {item}")
+        return '\n'.join(lines)
+
+    def _to_csv(self, data, title):
+        """Format as CSV."""
+        lines = []
+        if isinstance(data, list) and data:
+            if isinstance(data[0], dict):
+                headers = list(data[0].keys())
+                lines.append(','.join(headers))
+                for item in data:
+                    row = [str(item.get(h, '')) for h in headers]
+                    lines.append(','.join(row))
+            else:
+                for item in data:
+                    lines.append(str(item))
+        elif isinstance(data, dict):
+            lines.append('key,value')
+            for k, v in data.items():
+                lines.append(f'{k},{v}')
+        return '\n'.join(lines)
+
+    def _to_json(self, data, title):
+        """Format as JSON-like string."""
+        import json
+        wrapper = {'title': title, 'data': data}
+        return json.dumps(wrapper, indent=2, default=str)
+
+    def _to_html(self, data, title):
+        """Format as simple HTML table."""
+        lines = [f'<h2>{title}</h2>']
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            headers = list(data[0].keys())
+            lines.append('<table>')
+            lines.append('<tr>' + ''.join(
+                f'<th>{h}</th>' for h in headers) + '</tr>')
+            for item in data:
+                cells = ''.join(
+                    f'<td>{item.get(h, "")}</td>'
+                    for h in headers)
+                lines.append(f'<tr>{cells}</tr>')
+            lines.append('</table>')
+        elif isinstance(data, dict):
+            lines.append('<table>')
+            for k, v in data.items():
+                lines.append(f'<tr><td>{k}</td><td>{v}</td></tr>')
+            lines.append('</table>')
+        return '\n'.join(lines)
+
+    def _to_markdown(self, data, title):
+        """Format as Markdown table."""
+        lines = [f'## {title}', '']
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            headers = list(data[0].keys())
+            lines.append('| ' + ' | '.join(headers) + ' |')
+            lines.append('| ' + ' | '.join(
+                '---' for _ in headers) + ' |')
+            for item in data:
+                cells = ' | '.join(
+                    str(item.get(h, '')) for h in headers)
+                lines.append(f'| {cells} |')
+        elif isinstance(data, dict):
+            lines.append('| Key | Value |')
+            lines.append('| --- | --- |')
+            for k, v in data.items():
+                lines.append(f'| {k} | {v} |')
+        return '\n'.join(lines)
+
+    def supported_formats(self):
+        """List supported formats."""
+        return list(self._formatters.keys())
+
+
+def format_export_formatter(ef):
+    """Format export formatter status."""
+    lines = ["=== Export Formatter ==="]
+    lines.append(f"Formats: {', '.join(ef.supported_formats())}")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -27110,3 +27509,135 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v62: Caching system, rate limiter, circuit breaker.")
+
+    # ── v63: Template Engine, Report Builder, Export Formatter ──
+
+    # 213. Template Engine
+    print("\n" + "=" * 60)
+    print("--- Template Engine ---")
+
+    te63 = TemplateEngine()
+
+    # Register templates
+    te63.register('student_report',
+        "Student: {{name}}\n"
+        "Level: {{mastery}}\n"
+        "Sessions: {{sessions}}\n"
+        "{{if badge}}Badge: {{badge}}{{endif}}\n"
+        "Scores:\n"
+        "{{foreach s in scores}}  - {{pct}}%\n{{endfor}}")
+
+    te63.register('summary',
+        "=== {{title}} ===\n"
+        "Total: {{total}} students\n"
+        "Average: {{avg}}%\n")
+
+    # Register helper
+    te63.register_helper('timestamp', lambda ctx: '2024-01-15')
+
+    # Render
+    report = te63.render('student_report', {
+        'name': 'Anna',
+        'mastery': 5,
+        'sessions': 12,
+        'badge': 'Expert',
+        'scores': [
+            {'pct': 75}, {'pct': 82}, {'pct': 90}
+        ]
+    })
+    print(report)
+
+    summary = te63.render('summary', {
+        'title': 'School Report',
+        'total': 4,
+        'avg': 75.1
+    })
+    print(summary)
+
+    # Inline template
+    inline = te63.render(
+        "Hello {{name}}, your rank is #{{rank}}!",
+        {'name': 'Ivan', 'rank': 2})
+    print(inline)
+
+    print(f"\n{format_template_engine(te63)}")
+
+    # 214. Report Builder
+    print("\n--- Report Builder ---")
+
+    rb = ReportBuilder('Scarab Training Report')
+    rb.set_metadata('Version', 'v63')
+    rb.set_metadata('Students', 4)
+
+    rb.add_header('Student Performance', level=1)
+    rb.add_text('This report summarizes training results for all students.')
+
+    rb.add_table(
+        ['Student', 'Avg Score', 'Mastery', 'Sessions'],
+        [
+            ['Anna', '75.3%', 5, 12],
+            ['Ivan', '74.9%', 4, 12],
+            ['Lena', '74.5%', 4, 12],
+            ['Max', '75.2%', 4, 12]
+        ])
+
+    rb.add_separator()
+    rb.add_header('Key Metrics', level=2)
+    rb.add_key_value([
+        ('Total Sessions', 48),
+        ('Average Score', '74.98%'),
+        ('Highest Score', '92.9%'),
+        ('Compliance', '100%')
+    ])
+
+    rb.add_header('Top Priorities', level=2)
+    rb.add_list([
+        'Increase session frequency',
+        'Focus on group diversity',
+        'Advance mastery levels'
+    ], ordered=True)
+
+    rb.add_header('Score Distribution', level=2)
+    rb.add_chart([
+        ('50-60%', 12),
+        ('60-70%', 0),
+        ('70-80%', 12),
+        ('80-90%', 0),
+        ('90-100%', 24)
+    ])
+
+    print(rb.build())
+    print(f"Sections: {rb.section_count()}")
+
+    # 215. Export Formatter
+    print("\n--- Export Formatter ---")
+
+    ef = ExportFormatter()
+
+    sample_data = [
+        {'student': 'Anna', 'score': 75.3, 'mastery': 5},
+        {'student': 'Ivan', 'score': 74.9, 'mastery': 4},
+        {'student': 'Lena', 'score': 74.5, 'mastery': 4},
+        {'student': 'Max', 'score': 75.2, 'mastery': 4}
+    ]
+
+    for fmt in ['text', 'csv', 'markdown']:
+        result = ef.export(sample_data, fmt, 'Student Data')
+        print(f"\n[{fmt.upper()}]")
+        print(result)
+
+    # HTML export
+    html = ef.export(sample_data, 'html', 'Student Data')
+    print(f"\n[HTML] (first 200 chars)")
+    print(html[:200])
+
+    # JSON export
+    json_out = ef.export({'avg': 74.98, 'students': 4}, 'json',
+                          'Summary')
+    print(f"\n[JSON]")
+    print(json_out)
+
+    print(f"\n{format_export_formatter(ef)}")
+
+    print("\n" + "=" * 60)
+    print("v63: Template engine, report builder, export formatter.")
