@@ -3131,3 +3131,132 @@ Markdown:   ~3100 строк
   Визуализ.  → sparkline, dashboard, report card, ASCII art
   Аудит      → 8/8 integrity checks
 ```
+
+---
+
+## Часть 33: Сравнительная аналитика, выпуск, учебный план (v18)
+
+### 33.1 Сравнительная аналитика
+
+```python
+cmp = compare_students([student_a, student_b, student_c])
+print(format_comparison(cmp))
+```
+
+9 измерений:
+
+```
+Dimension        Описание                  Higher=better
+──────────────────────────────────────────────────────────
+avg_pct          Средняя оценка            ✓
+best_pct         Лучшая ката               ✓
+avg_resonance    Средний резонанс          ✓
+group_entropy    Энтропия Шеннона групп    ✓
+trend            Тренд (recent-older)      ✓
+achievements     Число достижений          ✓
+mastery          Уровень мастерства        ✓
+rule_avgs[1..5]  Комплаенс по правилам     (показано)
+──────────────────────────────────────────────────────────
+overall          Сумма рангов → composite  ↓ меньше = лучше
+```
+
+Пример таблицы:
+```
+Metric               Anna        Ivan        Lena
+─────────────────────────────────────────────────
+Avg Grade           75.7%       74.9%       74.5%
+Resonance            0.6         0.6         0.6
+Group Entropy        1.6         1.4         1.4
+Trend                8.2%        8.6%        7.3%
+─────────────────────────────────────────────────
+Overall ranking: Anna > Ivan > Lena
+```
+
+### 33.2 Церемония выпуска
+
+```python
+cer = graduation_ceremony(school)
+print(format_ceremony(cer))
+```
+
+Процесс:
+```
+Для каждого не-выпускника:
+  school.graduate(name) → проверка 4 требований:
+    1. ≥ 8 сессий
+    2. ≥ L3 mastery
+    3. Хотя бы 1 Grade A
+    4. ≥ 5 achievements
+
+  Если eligible:
+    avg_pct ≥ 90, ach ≥ 8 → Summa Cum Laude
+    avg_pct ≥ 85, ach ≥ 6 → Magna Cum Laude
+    avg_pct ≥ 80          → Cum Laude
+
+Awards:
+  Valedictorian       — лучший avg_pct
+  Most Sessions       — больше всех занятий
+  Most Achievements   — больше всех бейджей
+```
+
+### 33.3 Генератор учебного плана
+
+```python
+cur = generate_curriculum(student, weeks=8, sessions_per_week=2)
+print(format_weekly_curriculum(cur))
+```
+
+4 фазы (по 25% длительности):
+
+```
+Фаза          Недели     Активность           Фокус
+───────────────────────────────────────────────────────
+Foundation    1-2        drill_rule / kata     Слабые правила
+Development   3-4        drill_group / kata    Пустые группы
+Refinement    5-6        sparring + kata       Конкурентоспособность
+Mastery       7-8        exam_prep + optimize  Финальный экзамен
+```
+
+Милестоуны:
+```
+Week ¼   → Foundation complete
+Week ½   → Mid-program review (level up если < L5)
+Week ¾   → Pre-exam readiness
+Week N   → Final exam
+```
+
+Пример 8-недельного плана для Lena (L4→L5):
+```
+Week 1 [L4] Level 4 mastery
+  1. kata len=4
+  2. kata len=4
+Week 4 [L4] Group expansion ★ Mid-program review
+  1. drill_group G4 len=5
+  2. drill_group G6 len=5
+Week 6 [L5] Competitive readiness ★ Pre-exam readiness
+  1. sparring len=5
+  2. kata len=5
+Week 8 [L5] Level 5 mastery ★ Final exam
+  1. exam_prep len=6
+  2. optimize len=5
+```
+
+### 33.4 Итоговая статистика v18
+
+```
+SCARAB Algorithm v18
+
+Код:        ~7000 строк
+Markdown:   ~3300 строк
+Всего:      ~10300 строк
+Демо:       65 секций
+Документ:   33 части
+
+Новые функции v18:
+  compare_students()       — 9-мерное сравнение
+  graduation_ceremony()    — выпуск с Honors и Awards
+  generate_curriculum()    — 8-недельный план с 4 фазами
+  format_comparison()      — таблица сравнения
+  format_ceremony()        — box-drawn церемония
+  format_weekly_curriculum()— план с милестоунами
+```

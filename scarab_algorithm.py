@@ -5735,6 +5735,409 @@ def format_report_card(rc):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# COMPARATIVE ANALYTICS — compare students (v18)
+# ═══════════════════════════════════════════════════════════
+
+def compare_students(students):
+    """
+    Compare 2 or more StudentProfile objects across multiple dimensions.
+
+    Dimensions:
+    1. Grade average, best, worst
+    2. Rule compliance per rule
+    3. Group coverage entropy
+    4. Achievement progress
+    5. Trend (last 4 vs previous 4)
+    6. Resonance average
+
+    Returns:
+        dict with per-student metrics and rankings per dimension
+    """
+    import math
+
+    profiles = []
+    for st in students:
+        n = len(st.sessions)
+        if n == 0:
+            continue
+
+        avg_pct = sum(s['pct'] for s in st.sessions) / n
+        best_pct = max(s['pct'] for s in st.sessions)
+        worst_pct = min(s['pct'] for s in st.sessions)
+        avg_res = sum(s['resonance'] for s in st.sessions) / n
+
+        # Rule compliance
+        rule_avgs = {}
+        for r in range(1, 6):
+            h = st.rule_history.get(r, [])
+            rule_avgs[r] = sum(h) / len(h) if h else 0
+
+        # Group entropy (Shannon)
+        total_g = sum(st.group_hits.values())
+        if total_g > 0:
+            probs = [st.group_hits.get(g, 0) / total_g for g in range(1, 8)]
+            entropy = -sum(p * math.log2(p) if p > 0 else 0 for p in probs)
+        else:
+            entropy = 0
+
+        # Trend
+        if n >= 8:
+            recent4 = st.sessions[-4:]
+            older4 = st.sessions[-8:-4]
+            trend = (sum(s['pct'] for s in recent4) / 4 -
+                     sum(s['pct'] for s in older4) / 4)
+        elif n >= 4:
+            trend = (sum(s['pct'] for s in st.sessions[-4:]) / 4 -
+                     sum(s['pct'] for s in st.sessions[:n//2]) /
+                     max(1, n // 2))
+        else:
+            trend = 0
+
+        # Achievements
+        ach = check_achievements(st)
+
+        profiles.append({
+            'name': st.name,
+            'mastery': st.mastery_level,
+            'sessions': n,
+            'avg_pct': round(avg_pct, 1),
+            'best_pct': round(best_pct, 1),
+            'worst_pct': round(worst_pct, 1),
+            'avg_resonance': round(avg_res, 2),
+            'rule_avgs': {r: round(v, 1) for r, v in rule_avgs.items()},
+            'group_entropy': round(entropy, 2),
+            'trend': round(trend, 1),
+            'achievements': len(ach['earned']),
+            'ach_total': ach['total'],
+        })
+
+    # Rankings
+    dimensions = [
+        ('avg_pct', True), ('best_pct', True), ('avg_resonance', True),
+        ('group_entropy', True), ('trend', True), ('achievements', True),
+        ('mastery', True),
+    ]
+    rankings = {}
+    for dim, higher_better in dimensions:
+        sorted_p = sorted(profiles, key=lambda p: p[dim],
+                          reverse=higher_better)
+        rankings[dim] = [p['name'] for p in sorted_p]
+
+    # Overall score (composite rank)
+    rank_sums = {p['name']: 0 for p in profiles}
+    for dim, _ in dimensions:
+        for rank_idx, name in enumerate(rankings[dim]):
+            rank_sums[name] += rank_idx
+    overall = sorted(rank_sums.items(), key=lambda x: x[1])
+    rankings['overall'] = [name for name, _ in overall]
+
+    return {
+        'profiles': profiles,
+        'rankings': rankings,
+        'n_students': len(profiles),
+    }
+
+
+def format_comparison(cmp):
+    """Format comparison as a readable table."""
+    profiles = cmp['profiles']
+    if not profiles:
+        return "No data to compare"
+
+    lines = ["Student Comparison"]
+    lines.append("─" * 65)
+
+    # Header
+    names = [p['name'] for p in profiles]
+    hdr = f"{'Metric':<20s}" + ''.join(f"{n:>12s}" for n in names)
+    lines.append(hdr)
+    lines.append("─" * 65)
+
+    # Rows
+    rows = [
+        ('Level', 'mastery', ''),
+        ('Sessions', 'sessions', ''),
+        ('Avg Grade', 'avg_pct', '%'),
+        ('Best Grade', 'best_pct', '%'),
+        ('Worst Grade', 'worst_pct', '%'),
+        ('Resonance', 'avg_resonance', ''),
+        ('Group Entropy', 'group_entropy', ''),
+        ('Trend', 'trend', '%'),
+        ('Achievements', 'achievements', ''),
+    ]
+    for label, key, suffix in rows:
+        row = f"{label:<20s}"
+        for p in profiles:
+            val = p[key]
+            if isinstance(val, float):
+                row += f"{val:>10.1f}{suffix:>2s}"
+            else:
+                row += f"{val!s:>10s}{suffix:>2s}"
+        lines.append(row)
+
+    # Rule compliance
+    lines.append("─" * 65)
+    rule_names = {1: 'R1 Zones', 2: 'R2 Anti-sym', 3: 'R3 Alternation',
+                  4: 'R4 Smooth', 5: 'R5 Conserv'}
+    for r in range(1, 6):
+        row = f"{rule_names[r]:<20s}"
+        for p in profiles:
+            row += f"{p['rule_avgs'][r]:>10.1f}% "
+        lines.append(row)
+
+    # Overall ranking
+    lines.append("─" * 65)
+    overall = cmp['rankings']['overall']
+    lines.append("Overall ranking: " + ' > '.join(overall))
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# GRADUATION CEREMONY — complete school lifecycle (v18)
+# ═══════════════════════════════════════════════════════════
+
+def graduation_ceremony(school):
+    """
+    Attempt graduation for all eligible students.
+    Returns ceremony results with honors, awards, statistics.
+    """
+    results = []
+    for name in list(school.students.keys()):
+        if name in school.graduated:
+            continue
+        grad = school.graduate(name)
+        if grad['eligible']:
+            student = school.students[name]
+            ach = check_achievements(student)
+            avg = (sum(s['pct'] for s in student.sessions) /
+                   max(1, len(student.sessions)))
+
+            # Honors determination
+            if avg >= 90 and len(ach['earned']) >= 8:
+                honor = 'Summa Cum Laude'
+            elif avg >= 85 and len(ach['earned']) >= 6:
+                honor = 'Magna Cum Laude'
+            elif avg >= 80:
+                honor = 'Cum Laude'
+            else:
+                honor = None
+
+            results.append({
+                'name': name,
+                'graduated': True,
+                'mastery': student.mastery_level,
+                'avg_pct': round(avg, 1),
+                'sessions': len(student.sessions),
+                'achievements': len(ach['earned']),
+                'honor': honor,
+            })
+        else:
+            results.append({
+                'name': name,
+                'graduated': False,
+                'requirements': grad['requirements'],
+            })
+
+    # Awards
+    grads = [r for r in results if r['graduated']]
+    awards = {}
+    if grads:
+        awards['valedictorian'] = max(grads, key=lambda r: r['avg_pct'])['name']
+        awards['most_sessions'] = max(grads, key=lambda r: r['sessions'])['name']
+        awards['most_achievements'] = max(
+            grads, key=lambda r: r['achievements'])['name']
+
+    return {
+        'graduates': grads,
+        'not_ready': [r for r in results if not r['graduated']],
+        'awards': awards,
+        'total_graduates': len(grads),
+    }
+
+
+def format_ceremony(cer):
+    """Format graduation ceremony as readable text."""
+    lines = []
+    lines.append("╔══════════════════════════════════════════╗")
+    lines.append("║       GRADUATION CEREMONY                ║")
+    lines.append("╠══════════════════════════════════════════╣")
+
+    if not cer['graduates']:
+        lines.append("║  No graduates this session.              ║")
+    else:
+        for g in cer['graduates']:
+            honor_str = f" ({g['honor']})" if g['honor'] else ""
+            lines.append(
+                f"║  {g['name']:10s} L{g['mastery']} "
+                f"avg={g['avg_pct']:5.1f}%{honor_str}")
+
+    if cer['not_ready']:
+        lines.append("╠══════════════════════════════════════════╣")
+        lines.append("║  Not yet eligible:")
+        for nr in cer['not_ready']:
+            failed = [k for k, (ok, _) in nr['requirements'].items()
+                      if not ok]
+            lines.append(f"║    {nr['name']:10s} needs: {', '.join(failed)}")
+
+    if cer['awards']:
+        lines.append("╠══════════════════════════════════════════╣")
+        lines.append("║  Awards:")
+        for award, name in cer['awards'].items():
+            label = award.replace('_', ' ').title()
+            lines.append(f"║    {label:20s}: {name}")
+
+    lines.append(f"╠══════════════════════════════════════════╣")
+    lines.append(f"║  Total graduates: {cer['total_graduates']:3d}"
+                 f"                    ║")
+    lines.append("╚══════════════════════════════════════════╝")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# CURRICULUM GENERATOR — automatic training program (v18)
+# ═══════════════════════════════════════════════════════════
+
+def generate_curriculum(student, weeks=8, sessions_per_week=2):
+    """
+    Generate a multi-week personalized training plan.
+
+    Structure per week:
+    - Session type(s) based on recommendation engine
+    - Progressive mastery level increases
+    - Rule/group focus areas
+    - Milestones
+
+    Returns:
+        dict with weekly plans and overview
+    """
+    rec = recommend_next(student)
+    current_ml = student.mastery_level
+    weaknesses = student.weaknesses()
+    ach = check_achievements(student)
+
+    # Classify weak rules and groups
+    weak_rules = [w['rule'] for w in weaknesses if w['type'] == 'rule'
+                  and w.get('pct', 100) < 60]
+    weak_groups = [w['group'] for w in weaknesses if w['type'] == 'group']
+
+    plan = []
+    ml = current_ml
+    pending_ach = [p['key'] for p in ach['pending']]
+
+    for week in range(1, weeks + 1):
+        week_plan = {
+            'week': week,
+            'mastery_level': ml,
+            'sessions': [],
+            'focus': None,
+            'milestone': None,
+        }
+
+        # Phase logic
+        phase_frac = week / weeks
+        if phase_frac <= 0.25:
+            phase = 'foundation'
+        elif phase_frac <= 0.5:
+            phase = 'development'
+        elif phase_frac <= 0.75:
+            phase = 'refinement'
+        else:
+            phase = 'mastery'
+
+        for si in range(sessions_per_week):
+            if phase == 'foundation':
+                if weak_rules:
+                    rule_target = weak_rules[si % len(weak_rules)]
+                    sess = {'type': 'drill_rule', 'rule': rule_target,
+                            'length': 4, 'mastery_level': ml}
+                else:
+                    sess = {'type': 'kata', 'length': 4,
+                            'mastery_level': ml}
+            elif phase == 'development':
+                if weak_groups:
+                    group_target = weak_groups[si % len(weak_groups)]
+                    sess = {'type': 'drill_group', 'group': group_target,
+                            'length': 5, 'mastery_level': ml}
+                else:
+                    sess = {'type': 'kata', 'length': 5,
+                            'mastery_level': ml}
+            elif phase == 'refinement':
+                if si == 0:
+                    sess = {'type': 'sparring', 'length': 5,
+                            'mastery_level': ml}
+                else:
+                    sess = {'type': 'kata', 'length': 5,
+                            'mastery_level': ml}
+            else:  # mastery
+                if si == 0:
+                    sess = {'type': 'exam_prep', 'length': 6,
+                            'mastery_level': ml}
+                else:
+                    sess = {'type': 'optimize', 'length': 5,
+                            'mastery_level': ml}
+
+            week_plan['sessions'].append(sess)
+
+        # Focus
+        if phase == 'foundation' and weak_rules:
+            week_plan['focus'] = f"Rule {weak_rules[0]} remediation"
+        elif phase == 'development' and weak_groups:
+            week_plan['focus'] = f"Group {weak_groups[0]} expansion"
+        elif phase == 'refinement':
+            week_plan['focus'] = "Competitive readiness"
+        else:
+            week_plan['focus'] = f"Level {ml} mastery"
+
+        # Milestones
+        if week == weeks // 4:
+            week_plan['milestone'] = 'Foundation complete'
+        elif week == weeks // 2:
+            week_plan['milestone'] = 'Mid-program review'
+            if ml < 5:
+                ml += 1  # Level up at midpoint
+        elif week == 3 * weeks // 4:
+            week_plan['milestone'] = 'Pre-exam readiness'
+        elif week == weeks:
+            week_plan['milestone'] = 'Final exam'
+
+        plan.append(week_plan)
+
+    total_sessions = sum(len(w['sessions']) for w in plan)
+    return {
+        'student': student.name,
+        'start_level': current_ml,
+        'target_level': ml,
+        'weeks': weeks,
+        'total_sessions': total_sessions,
+        'plan': plan,
+    }
+
+
+def format_weekly_curriculum(cur):
+    """Format weekly curriculum plan as readable text."""
+    lines = [f"Curriculum for {cur['student']}"]
+    lines.append(f"  L{cur['start_level']} → L{cur['target_level']}  "
+                 f"{cur['weeks']} weeks, {cur['total_sessions']} sessions")
+    lines.append("─" * 50)
+
+    for w in cur['plan']:
+        milestone = f" ★ {w['milestone']}" if w['milestone'] else ""
+        lines.append(f"  Week {w['week']:2d} [L{w['mastery_level']}] "
+                     f"{w['focus']}{milestone}")
+        for si, sess in enumerate(w['sessions']):
+            parts = [f"{sess['type']}"]
+            if 'rule' in sess:
+                parts.append(f"R{sess['rule']}")
+            if 'group' in sess:
+                parts.append(f"G{sess['group']}")
+            parts.append(f"len={sess['length']}")
+            lines.append(f"    {si+1}. {' '.join(parts)}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -6527,6 +6930,32 @@ if __name__ == '__main__':
     rc = report_card(sim_school.students[best_name], year=1)
     print(format_report_card(rc))
 
+    # 63. Comparative Analytics
+    print("\n--- Comparative Analytics ---")
+    # Compare students from the simulated school
+    sim_students = [sim_school.students[n]
+                    for n in sim_school.students
+                    if n not in sim_school.graduated]
+    cmp = compare_students(sim_students)
+    print(format_comparison(cmp))
+
+    # 64. Graduation Ceremony
+    print("\n--- Graduation Ceremony ---")
+    cer = graduation_ceremony(sim_school)
+    print(format_ceremony(cer))
+
+    # 65. Curriculum Generator
+    print("\n--- Curriculum Generator ---")
+    # Pick a non-graduated student
+    active = [n for n in sim_school.students
+              if n not in sim_school.graduated]
+    if active:
+        cur_student = sim_school.students[active[0]]
+    else:
+        cur_student = list(sim_school.students.values())[0]
+    cur = generate_curriculum(cur_student, weeks=8, sessions_per_week=2)
+    print(format_weekly_curriculum(cur))
+
     print("\n" + "=" * 60)
-    print("v17: Recommendation engine, year simulator,")
-    print("     report card with full analytics.")
+    print("v18: Comparative analytics, graduation ceremony,")
+    print("     curriculum generator (8-week plan).")
