@@ -3742,3 +3742,101 @@ Week 4: Achieve >85% avg
 
 Total: 12 sessions over 4 weeks
 ```
+
+---
+
+## Часть 39: Таксономия, фингерпринтинг, диагностика (v24)
+
+### 39.1 Таксономия символов
+
+6-битовая анатомия символа:
+```
+Bit 0: base-H   (горизонтальная основа)  ───
+Bit 1: base-V   (вертикальная основа)    │
+Bit 2: arm-L    (левая рука)            ╱
+Bit 3: arm-R    (правая рука)             ╲
+Bit 4: ext-U    (верхнее расширение)     ╿
+Bit 5: ext-D    (нижнее расширение)      ╽
+```
+
+```python
+tax = symbol_taxonomy(21)  # S21 = 0b010101
+# group=G5, complexity=3, symmetry='asymmetric'
+# category='compound', bits=['base-H','arm-L','ext-U']
+# dual_complement=S42, neighbors=[S20,S23,S17,S29]
+```
+
+Классификация симметрии:
+```
+bilateral  — L/R и U/D оба симметричны (16 символов)
+partial    — одна ось симметрична (32 символа)
+asymmetric — нет осей симметрии (16 символов)
+```
+
+Категории движения:
+```
+rest=1  isolate=6  open=7  diagonal=8
+compound=20  complex=15  dense=6  full=1
+Total: 64 base symbols
+```
+
+### 39.2 Паттерн-фингерпринтинг
+
+```python
+fp = compute_fingerprint(kata)
+# hash='15b02fca', features={...}
+
+sim = fingerprint_similarity(fp1, fp2)  # 0.0–1.0
+```
+
+Вектор признаков:
+```
+length           — длина ката
+group_mean       — средняя группа (2.42)
+group_range      — диапазон групп (4)
+complexity_mean  — средняя сложность (1.58)
+complexity_var   — дисперсия сложности (1.08)
+transition_sum   — сумма переходов между группами
+gradient_sum     — сумма градиентов сложности
+symmetry_ratio   — доля bilateral символов (0.33)
+unique_groups    — кол-во уникальных групп (4)
+```
+
+Сравнение: нормализованное расстояние по фичам → similarity 0.907.
+
+### 39.3 Диагностический отчёт
+
+```python
+diag = generate_diagnostic(student)
+print(format_diagnostic(diag))
+```
+
+```
+╔══════════════════════════════════════════╗
+║  DIAGNOSTIC REPORT: Anna                ║
+╠══════════════════════════════════════════╣
+║  Mastery: L5  Sessions: 12             ║
+║  Avg: 75.7%  Best: 92.9%  Recent: 88.6%║
+║  Trend: ↑ improving (slope=+4.2)       ║
+╠══════════════════════════════════════════╣
+║  Strengths:                             ║
+║    ✓ R1-Zone (100%)                     ║
+║    ✓ R4-Smoothness (97%)               ║
+║  Weaknesses:                            ║
+║    ✗ R3-Alternation (40%)              ║
+║    ✗ G4-Parallel (0%)                  ║
+║  Anomalies: 3 detected                 ║
+╠══════════════════════════════════════════╣
+║  Recommended Actions:                   ║
+║    → Focus on: R3-Alternation (40%)    ║
+║    → Ready for promotion to L6         ║
+╚══════════════════════════════════════════╝
+```
+
+Компоненты отчёта:
+- Профиль: ML, sessions, avg/best/recent
+- Тренд: slope, R², direction
+- Сильные стороны: правила ≥80%, группы >30%
+- Слабые стороны: правила <50%, группы <5%
+- Аномалии: кол-во z-отклонений
+- Рекомендации: автоматические на основе анализа

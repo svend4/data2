@@ -7925,6 +7925,410 @@ def format_training_plan(plan):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# SYMBOL TAXONOMY — classification & visual catalog (v24)
+# ═══════════════════════════════════════════════════════════
+
+# Bit-position names for 6-bit matchstick representation
+BIT_NAMES = {
+    0: 'base-H',    # horizontal base
+    1: 'base-V',    # vertical base
+    2: 'arm-L',     # left arm
+    3: 'arm-R',     # right arm
+    4: 'ext-U',     # upper extension
+    5: 'ext-D',     # lower extension
+}
+
+# Visual ASCII art for each bit position
+BIT_VISUALS = {
+    0: '───',   # horizontal
+    1: ' │ ',   # vertical
+    2: '╱  ',   # left arm
+    3: '  ╲',   # right arm
+    4: ' ╿ ',   # upper ext
+    5: ' ╽ ',   # lower ext
+}
+
+
+def symbol_taxonomy(sym):
+    """
+    Complete taxonomic classification of a single symbol.
+
+    Returns dict with:
+    - binary: 6-bit string
+    - group: Kryukov group (1-7)
+    - complexity: popcount
+    - active_bits: which bits are set
+    - bit_names: human names for active bits
+    - symmetry_class: bilateral, rotational, asymmetric
+    - category: descriptive movement category
+    - dual_complement: XOR inverse symbol
+    - neighbors: symbols at Hamming distance 1
+    """
+    bits = format(sym, '06b')
+    active = [i for i in range(6) if (sym >> i) & 1]
+    comp = bin(sym).count('1')
+    group = get_group(sym)
+
+    # Symmetry classification
+    # L/R symmetric: bits 2,3 both set or both unset
+    lr_sym = ((sym >> 2) & 1) == ((sym >> 3) & 1)
+    # U/D symmetric: bits 4,5 both set or both unset
+    ud_sym = ((sym >> 4) & 1) == ((sym >> 5) & 1)
+
+    if lr_sym and ud_sym:
+        sym_class = 'bilateral'
+    elif lr_sym or ud_sym:
+        sym_class = 'partial'
+    else:
+        sym_class = 'asymmetric'
+
+    # Movement category
+    if comp == 0:
+        category = 'rest'
+    elif comp == 1:
+        category = 'isolate'
+    elif comp == 2:
+        if lr_sym:
+            category = 'open'
+        else:
+            category = 'diagonal'
+    elif comp == 3:
+        category = 'compound'
+    elif comp == 4:
+        category = 'complex'
+    elif comp == 5:
+        category = 'dense'
+    else:
+        category = 'full'
+
+    # Dual complement (XOR with 0b111111)
+    dual = sym ^ 0b111111
+
+    # Hamming-1 neighbors
+    neighbors = [sym ^ (1 << i) for i in range(6)]
+
+    return {
+        'symbol': sym,
+        'binary': bits,
+        'group': group,
+        'complexity': comp,
+        'active_bits': active,
+        'bit_names': [BIT_NAMES[b] for b in active],
+        'symmetry_class': sym_class,
+        'category': category,
+        'dual_complement': dual,
+        'neighbors': neighbors,
+    }
+
+
+def format_symbol_card(tax):
+    """Format a symbol taxonomy as a visual card."""
+    lines = [f"Symbol S{tax['symbol']:02d} (0b{tax['binary']})"]
+    lines.append("┌───────────────────────────┐")
+    lines.append(f"│ Group: G{tax['group']}  "
+                 f"Complexity: {tax['complexity']}  │")
+    lines.append(f"│ Symmetry: {tax['symmetry_class']:<12s}   │")
+    lines.append(f"│ Category: {tax['category']:<12s}   │")
+    lines.append(f"│ Bits: {', '.join(tax['bit_names']) or 'none':<19s} │")
+    lines.append(f"│ Dual: S{tax['dual_complement']:02d}"
+                 f"{'':19s}│")
+    nbr = ', '.join(f"S{n:02d}" for n in tax['neighbors'][:4])
+    lines.append(f"│ Near: {nbr:<19s} │")
+    lines.append("└───────────────────────────┘")
+    return '\n'.join(lines)
+
+
+def build_taxonomy_catalog():
+    """Build complete taxonomy for all 64 base symbols."""
+    catalog = {}
+    stats = {
+        'by_group': {},
+        'by_symmetry': {'bilateral': 0, 'partial': 0, 'asymmetric': 0},
+        'by_category': {},
+        'by_complexity': {},
+    }
+
+    for sym in range(64):
+        tax = symbol_taxonomy(sym)
+        catalog[sym] = tax
+
+        g = tax['group']
+        stats['by_group'][g] = stats['by_group'].get(g, 0) + 1
+        stats['by_symmetry'][tax['symmetry_class']] += 1
+        cat = tax['category']
+        stats['by_category'][cat] = stats['by_category'].get(cat, 0) + 1
+        c = tax['complexity']
+        stats['by_complexity'][c] = stats['by_complexity'].get(c, 0) + 1
+
+    return catalog, stats
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN FINGERPRINT — unique kata signature (v24)
+# ═══════════════════════════════════════════════════════════
+
+def compute_fingerprint(kata):
+    """
+    Compute a unique fingerprint for a kata sequence.
+
+    The fingerprint captures structural properties:
+    - Group sequence hash
+    - Complexity profile
+    - Rule compliance vector
+    - Symmetry distribution
+
+    Two katas with the same fingerprint have equivalent
+    structural properties even if symbols differ.
+    """
+    if not kata:
+        return {'hash': '0000', 'features': {}}
+
+    # Feature extraction
+    groups = []
+    complexities = []
+    symmetries = []
+
+    for t in kata:
+        if isinstance(t, (list, tuple)) and len(t) >= 2:
+            sl, sr = t[0], t[1]
+        else:
+            sl, sr = t, 0
+
+        gl, gr = get_group(sl), get_group(sr)
+        cl, cr = symbol_complexity(sl), symbol_complexity(sr)
+
+        groups.extend([gl, gr])
+        complexities.extend([cl, cr])
+
+        tax = symbol_taxonomy(sl)
+        symmetries.append(tax['symmetry_class'])
+
+    # Group transition pattern
+    transitions = []
+    for i in range(1, len(groups)):
+        transitions.append(groups[i] - groups[i - 1])
+
+    # Complexity gradient
+    gradients = []
+    for i in range(1, len(complexities)):
+        gradients.append(complexities[i] - complexities[i - 1])
+
+    # Feature vector
+    features = {
+        'length': len(kata),
+        'group_mean': round(sum(groups) / len(groups), 2),
+        'group_range': max(groups) - min(groups),
+        'complexity_mean': round(sum(complexities) / len(complexities), 2),
+        'complexity_var': round(
+            sum((c - sum(complexities) / len(complexities)) ** 2
+                for c in complexities) / len(complexities), 2),
+        'transition_sum': sum(abs(t) for t in transitions),
+        'gradient_sum': sum(abs(g) for g in gradients),
+        'symmetry_ratio': round(
+            symmetries.count('bilateral') / len(symmetries), 2),
+        'unique_groups': len(set(groups)),
+    }
+
+    # Hash from features (deterministic)
+    h = 0
+    for k, v in sorted(features.items()):
+        h = (h * 31 + hash((k, round(v, 1)))) & 0xFFFFFFFF
+    fp_hash = format(h, '08x')
+
+    return {
+        'hash': fp_hash,
+        'features': features,
+        'group_seq': groups,
+        'complexity_seq': complexities,
+    }
+
+
+def fingerprint_similarity(fp1, fp2):
+    """
+    Compute similarity between two fingerprints (0.0 to 1.0).
+
+    Uses normalized feature distance.
+    """
+    f1 = fp1['features']
+    f2 = fp2['features']
+
+    if not f1 or not f2:
+        return 0.0
+
+    keys = set(f1.keys()) & set(f2.keys())
+    if not keys:
+        return 0.0
+
+    diffs = []
+    for k in keys:
+        v1, v2 = f1[k], f2[k]
+        max_val = max(abs(v1), abs(v2), 1)
+        diffs.append(abs(v1 - v2) / max_val)
+
+    avg_diff = sum(diffs) / len(diffs)
+    return round(max(0, 1 - avg_diff), 3)
+
+
+def format_fingerprint(fp):
+    """Format fingerprint as readable text."""
+    lines = [f"Fingerprint: #{fp['hash']}"]
+    lines.append("─" * 40)
+    for k, v in sorted(fp['features'].items()):
+        lines.append(f"  {k:<20s}: {v}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# DIAGNOSTIC REPORT — comprehensive student assessment (v24)
+# ═══════════════════════════════════════════════════════════
+
+def generate_diagnostic(student):
+    """
+    Generate a comprehensive diagnostic report for a student.
+
+    Combines all analytical tools into a single assessment:
+    - Profile summary
+    - Performance statistics
+    - Trend analysis
+    - Anomaly scan
+    - Heatmap summary
+    - Strengths & weaknesses
+    - Recommended actions
+    """
+    profile = {
+        'name': student.name,
+        'mastery_level': student.mastery_level,
+        'n_sessions': len(student.sessions),
+    }
+
+    # Performance stats
+    if student.sessions:
+        scores = [s['pct'] for s in student.sessions]
+        profile['avg_score'] = round(sum(scores) / len(scores), 1)
+        profile['best_score'] = round(max(scores), 1)
+        profile['worst_score'] = round(min(scores), 1)
+        profile['recent_avg'] = round(
+            sum(scores[-5:]) / min(5, len(scores)), 1)
+        profile['improvement'] = round(
+            profile['recent_avg'] - profile['avg_score'], 1)
+    else:
+        profile['avg_score'] = 0
+        profile['best_score'] = 0
+        profile['worst_score'] = 0
+        profile['recent_avg'] = 0
+        profile['improvement'] = 0
+
+    # Trend
+    trend = predict_trend(student, horizon=5)
+
+    # Anomalies
+    anomalies = detect_anomalies(student, z_threshold=1.5)
+
+    # Heatmap summary
+    heatmap = build_heatmap(student)
+
+    # Strengths & weaknesses
+    strengths = []
+    weaknesses = []
+
+    for r in range(1, 6):
+        rh = student.rule_history.get(r, [])
+        if rh:
+            avg = sum(rh[-5:]) / min(5, len(rh))
+            rule_name = {1: 'Zone', 2: 'Anti-symmetry', 3: 'Alternation',
+                         4: 'Smoothness', 5: 'Conservation'}[r]
+            if avg >= 80:
+                strengths.append(f"R{r}-{rule_name} ({avg:.0f}%)")
+            elif avg < 50:
+                weaknesses.append(f"R{r}-{rule_name} ({avg:.0f}%)")
+
+    # Group coverage
+    total_hits = sum(student.group_hits.values())
+    for g in range(1, 8):
+        pct = student.group_hits.get(g, 0) / max(1, total_hits) * 100
+        gname = {1: 'Empty', 2: 'Single', 3: 'Angle', 4: 'Parallel',
+                 5: 'Triple', 6: 'Master', 7: 'Peak'}[g]
+        if pct > 30:
+            strengths.append(f"G{g}-{gname} ({pct:.0f}%)")
+        elif pct < 5 and g <= student.mastery_level + 2:
+            weaknesses.append(f"G{g}-{gname} ({pct:.0f}%)")
+
+    # Recommended actions
+    actions = []
+    if weaknesses:
+        actions.append(f"Focus on: {weaknesses[0]}")
+    if trend.get('sufficient_data') and \
+       trend['score_trend']['direction'] == 'declining':
+        actions.append("Score declining — reduce difficulty temporarily")
+    if anomalies.get('n_anomalies', 0) > 3:
+        actions.append("High anomaly count — review session consistency")
+    if profile['recent_avg'] > 85 and student.mastery_level < 7:
+        actions.append(f"Ready for promotion to L{student.mastery_level + 1}")
+    if not actions:
+        actions.append("Continue current training regimen")
+
+    return {
+        'profile': profile,
+        'trend': trend,
+        'anomalies': anomalies,
+        'heatmap': heatmap,
+        'strengths': strengths,
+        'weaknesses': weaknesses,
+        'actions': actions,
+    }
+
+
+def format_diagnostic(diag):
+    """Format diagnostic report."""
+    p = diag['profile']
+
+    lines = ["╔══════════════════════════════════════════╗"]
+    lines.append(f"║  DIAGNOSTIC REPORT: {p['name']:<19s} ║")
+    lines.append("╠══════════════════════════════════════════╣")
+    lines.append(f"║  Mastery: L{p['mastery_level']}  "
+                 f"Sessions: {p['n_sessions']:<14d}║")
+    lines.append(f"║  Avg: {p['avg_score']:5.1f}%  "
+                 f"Best: {p['best_score']:5.1f}%  "
+                 f"Recent: {p['recent_avg']:5.1f}% ║")
+
+    # Trend
+    tr = diag['trend']
+    if tr.get('sufficient_data'):
+        st = tr['score_trend']
+        arrow = '↑' if st['direction'] == 'improving' else \
+                '↓' if st['direction'] == 'declining' else '→'
+        lines.append(f"║  Trend: {arrow} {st['direction']:<10s} "
+                     f"(slope={st['slope']:+.1f}, "
+                     f"R²={st['r2']:.2f})  ║")
+
+    lines.append("╠══════════════════════════════════════════╣")
+
+    # Strengths
+    lines.append("║  Strengths:                              ║")
+    for s in diag['strengths'][:3]:
+        lines.append(f"║    ✓ {s:<34s} ║")
+
+    # Weaknesses
+    lines.append("║  Weaknesses:                             ║")
+    for w in diag['weaknesses'][:3]:
+        lines.append(f"║    ✗ {w:<34s} ║")
+
+    # Anomalies
+    n_anom = diag['anomalies'].get('n_anomalies', 0)
+    lines.append(f"║  Anomalies: {n_anom} detected"
+                 f"{'':>18s}║")
+
+    lines.append("╠══════════════════════════════════════════╣")
+    lines.append("║  Recommended Actions:                    ║")
+    for a in diag['actions']:
+        lines.append(f"║    → {a:<34s} ║")
+
+    lines.append("╚══════════════════════════════════════════╝")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -8903,5 +9307,34 @@ if __name__ == '__main__':
         sim_school.students['Anna'], weeks=4, sessions_per_week=3)
     print(format_training_plan(tp))
 
+    # 81. Symbol Taxonomy
+    print("\n--- Symbol Taxonomy ---")
+    for s in [0, 7, 21, 42, 63]:
+        tax = symbol_taxonomy(s)
+        print(format_symbol_card(tax))
+
+    catalog, cat_stats = build_taxonomy_catalog()
+    print(f"  Catalog: {len(catalog)} symbols")
+    print(f"  By symmetry: {cat_stats['by_symmetry']}")
+    print(f"  By category: {cat_stats['by_category']}")
+
+    # 82. Pattern Fingerprint
+    print("\n--- Pattern Fingerprint ---")
+    fp_dma1 = DualMatchStickAutomaton(mastery_level=3, seed=100)
+    fp_kata1 = fp_dma1.generate_dual_kata(length=6)
+    fp1 = compute_fingerprint(fp_kata1)
+    print(format_fingerprint(fp1))
+
+    fp_dma2 = DualMatchStickAutomaton(mastery_level=3, seed=200)
+    fp_kata2 = fp_dma2.generate_dual_kata(length=6)
+    fp2 = compute_fingerprint(fp_kata2)
+    sim = fingerprint_similarity(fp1, fp2)
+    print(f"\n  Similarity to another kata: {sim}")
+
+    # 83. Diagnostic Report
+    print("\n--- Diagnostic Report ---")
+    diag = generate_diagnostic(sim_school.students['Anna'])
+    print(format_diagnostic(diag))
+
     print("\n" + "=" * 60)
-    print("v23: Trend prediction, anomaly detection, training plans.")
+    print("v24: Symbol taxonomy, fingerprinting, diagnostic reports.")
