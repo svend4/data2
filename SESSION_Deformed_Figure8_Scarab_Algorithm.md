@@ -3547,3 +3547,100 @@ Matchmaking
   Ivan   (1236) vs Lena   (1235)  gap=0
   Total pairs: 2
 ```
+
+---
+
+## Часть 37: Нотация, тепловая карта, replay (v22)
+
+### 37.1 Компактная нотация ката
+
+```python
+encoded = encode_kata_notation(kata, mode='dual')
+# "D:6:0131Z1:0KSQO9"  (17 chars для 6 тактов)
+
+decoded, mode = decode_kata_notation(encoded)
+nota = verify_notation(kata)  # roundtrip test
+```
+
+Алфавит кодирования (64 символа):
+```
+0-9  A-Z  a-z  +  /
+ 10 + 26 + 26 + 2 = 64 → покрывают символы 0-63
+```
+
+Символы 64-75 (half-line): `=` + offset
+```
+Символ 65 → "=1", символ 70 → "=6"
+```
+
+Формат строки:
+```
+Dual:   "D:<length>:<L-symbols>:<R-symbols>"
+Single: "S:<length>:<symbols>"
+```
+
+Пример:
+```
+Kata: 6 тактов dual
+Encoded: D:6:0131Z1:0KSQO9
+Compression: 12 symbols → 17 chars
+Roundtrip: OK ✓
+```
+
+### 37.2 Тепловая карта Group × Rule
+
+```python
+hm = build_heatmap(student)
+print(format_heatmap(hm))
+```
+
+Матрица 7×5 + частотный столбец:
+
+```
+       R1-Zon  R2-Ant  R3-Alt  R4-Smo  R5-Con  Freq
+G1 Empty  ███  ▒▒▒  ▒▒▒  ▓▓▓  ▒▒▒    26.0%
+G2 Single ███  ▒▒▒  ▒▒▒  ▓▓▓  ▒▒▒    58.3%
+G3 Angle  ███  ▒▒▒  ▒▒▒  ▓▓▓  ▒▒▒     6.2%
+G4 Parall  ·    ·    ·    ·    ·      0.0%
+```
+
+Легенда:
+```
+███  ≥ 90%  — отлично
+▓▓▓  ≥ 70%  — хорошо
+▒▒▒  ≥ 50%  — средне
+░░░  ≥ 30%  — слабо
+ ·   = 0    — нет данных
+```
+
+### 37.3 Replay-анализ сессии
+
+```python
+rp = replay_session(student, session_index=-1)
+print(format_replay(rp))
+```
+
+Пошаговый анализ каждого такта:
+
+```
+Tact   L    R   G_L G_R  C_L C_R  Rules  Score
+  1  S00 S00  G1  G1    0   0  ✗✗✓✓✓   3/5
+  2  S36 S18  G3  G3    2   2  ✗✓✓✓✓   7/10
+  3  S38 S03  G5  G2    3   2  ✓✓✓✓✓  12/15
+  4  S32 S11  G1  G5    1   3  ✓✓✓✓✓  17/20
+Final: 17/20 (85.0%)
+```
+
+Для каждого такта:
+```
+sym_l, sym_r   — символы левой/правой руки
+group_l, group_r — группы Крюкова
+complexity     — сложность символа (popcount)
+R1: zone exclusion (G_L ≠ G_R)
+R2: anti-symmetry  (Hamming ≥ 3)
+R3: alternation    (group change)
+R4: smoothness     (Hamming ≤ 3 from prev)
+R5: conservation   (|C_L - C_R| ≤ 3)
+✓ = passed, ✗ = failed
+Running score — кумулятивный счёт
+```

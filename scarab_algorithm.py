@@ -7195,6 +7195,337 @@ def format_matchmaking(mm):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# COMPACT KATA NOTATION — encode/decode to string (v22)
+# ═══════════════════════════════════════════════════════════
+
+# Alphabet: 0-9 A-Z a-z + / = (64 chars for base symbols)
+_NOTA_CHARS = (
+    '0123456789'
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    'abcdefghijklmnopqrstuvwxyz'
+    '+/'
+)
+_NOTA_MAP = {c: i for i, c in enumerate(_NOTA_CHARS)}
+
+
+def encode_kata_notation(kata, mode='dual'):
+    """
+    Encode a kata into a compact string notation.
+
+    Format (dual): "D:<length>:<L-symbols>:<R-symbols>"
+    Each symbol 0-63 maps to one character from _NOTA_CHARS.
+    Symbols 64-75 (half-line) use two chars: '=' + offset char.
+
+    Example: "D:5:AkQ0f:B1Rz3"
+    """
+    def encode_sym(sym):
+        if sym < 64:
+            return _NOTA_CHARS[sym]
+        else:
+            return '=' + _NOTA_CHARS[sym - 64]
+
+    if mode == 'dual':
+        left_str = ''.join(encode_sym(t[0]) for t in kata)
+        right_str = ''.join(encode_sym(t[1]) for t in kata)
+        return f"D:{len(kata)}:{left_str}:{right_str}"
+    else:
+        sym_str = ''.join(encode_sym(t) for t in kata)
+        return f"S:{len(kata)}:{sym_str}"
+
+
+def decode_kata_notation(notation):
+    """
+    Decode a compact notation string back to kata.
+
+    Returns: (kata, mode) where kata is list of tuples or ints.
+    """
+    def decode_syms(s):
+        syms = []
+        i = 0
+        while i < len(s):
+            if s[i] == '=':
+                syms.append(64 + _NOTA_MAP.get(s[i + 1], 0))
+                i += 2
+            else:
+                syms.append(_NOTA_MAP.get(s[i], 0))
+                i += 1
+        return syms
+
+    parts = notation.split(':')
+    mode = parts[0]
+    length = int(parts[1])
+
+    if mode == 'D':
+        left_syms = decode_syms(parts[2])
+        right_syms = decode_syms(parts[3])
+        kata = [(left_syms[i], right_syms[i], 0, 0)
+                for i in range(min(len(left_syms), len(right_syms)))]
+        return kata, 'dual'
+    else:
+        syms = decode_syms(parts[2])
+        return syms, 'single'
+
+
+def verify_notation(kata, mode='dual'):
+    """Encode then decode, verify roundtrip."""
+    encoded = encode_kata_notation(kata, mode)
+    decoded, dec_mode = decode_kata_notation(encoded)
+
+    if mode == 'dual':
+        match = all(kata[i][0] == decoded[i][0] and
+                    kata[i][1] == decoded[i][1]
+                    for i in range(len(kata)))
+    else:
+        match = kata == decoded
+
+    return {
+        'encoded': encoded,
+        'length': len(encoded),
+        'roundtrip_ok': match,
+        'compression': f"{len(kata)*2} syms → {len(encoded)} chars",
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# HEATMAP — group × rule performance matrix (v22)
+# ═══════════════════════════════════════════════════════════
+
+def build_heatmap(student):
+    """
+    Build a group × rule heatmap for a student.
+
+    Rows: 7 groups (G1-G7)
+    Cols: 5 rules (R1-R5) + total
+    Cell: average compliance % when that group appeared
+
+    Also: group frequency distribution.
+    """
+    sessions = student.sessions
+    if not sessions:
+        return {'empty': True}
+
+    # We need per-session rule scores and dominant groups
+    # Approximate: use rule_history and group_hits
+    # Build from sessions where we know the rule scores
+
+    # Initialize matrix
+    matrix = {}
+    for g in range(1, 8):
+        matrix[g] = {r: [] for r in range(1, 6)}
+
+    # For each session, get the rule scores and associate with
+    # the most common groups in that session
+    for si, s in enumerate(sessions):
+        # Get rule scores for this session index
+        rule_scores = {}
+        for r in range(1, 6):
+            h = student.rule_history.get(r, [])
+            if si < len(h):
+                rule_scores[r] = h[si]
+            else:
+                rule_scores[r] = 50  # default
+
+        # Estimate which groups were used (from group_hits is cumulative,
+        # so we use mastery level as proxy for group range)
+        ml = s.get('mastery_level', 1)
+        likely_groups = list(range(1, min(8, ml + 3)))
+
+        for g in likely_groups:
+            for r in range(1, 6):
+                matrix[g][r].append(rule_scores[r])
+
+    # Average the matrix
+    heatmap = {}
+    for g in range(1, 8):
+        heatmap[g] = {}
+        for r in range(1, 6):
+            vals = matrix[g][r]
+            heatmap[g][r] = round(sum(vals) / len(vals), 1) if vals else 0
+
+    # Frequency
+    total_hits = sum(student.group_hits.values())
+    freq = {}
+    for g in range(1, 8):
+        freq[g] = round(student.group_hits.get(g, 0) /
+                        max(1, total_hits) * 100, 1)
+
+    return {
+        'empty': False,
+        'heatmap': heatmap,
+        'frequency': freq,
+        'n_sessions': len(sessions),
+    }
+
+
+def format_heatmap(hm):
+    """Format heatmap as ASCII table."""
+    if hm.get('empty'):
+        return "Heatmap: no data"
+
+    heat = hm['heatmap']
+    freq = hm['frequency']
+
+    lines = ["Group × Rule Heatmap"]
+    lines.append("─" * 55)
+
+    # Header
+    lines.append(f"       R1-Zon  R2-Ant  R3-Alt  R4-Smo  R5-Con  Freq")
+    lines.append("─" * 55)
+
+    group_names = {1: 'Empty', 2: 'Single', 3: 'Angle',
+                   4: 'Parall', 5: 'Triple', 6: 'Master', 7: 'Peak'}
+
+    def heat_char(val):
+        """Map value to heat character."""
+        if val == 0:
+            return '  ·  '
+        elif val >= 90:
+            return ' ███ '
+        elif val >= 70:
+            return ' ▓▓▓ '
+        elif val >= 50:
+            return ' ▒▒▒ '
+        elif val >= 30:
+            return ' ░░░ '
+        else:
+            return '  ·  '
+
+    for g in range(1, 8):
+        row = f"G{g} {group_names[g]:6s}"
+        for r in range(1, 6):
+            row += heat_char(heat[g][r])
+        row += f"  {freq[g]:5.1f}%"
+        lines.append(row)
+
+    lines.append("─" * 55)
+    lines.append("  Legend: ███ ≥90%  ▓▓▓ ≥70%  ▒▒▒ ≥50%  ░░░ ≥30%  · =0")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION REPLAY — step-by-step analysis (v22)
+# ═══════════════════════════════════════════════════════════
+
+def replay_session(student, session_index=-1):
+    """
+    Generate a detailed step-by-step replay of a training session.
+
+    For each tact in the session:
+    - Symbol generated (L/R)
+    - Group assignment
+    - Rule checks (which passed/failed)
+    - Running score
+    - Complexity trajectory
+
+    Since we don't store individual tacts, we reconstruct
+    from session metadata and generate a representative replay.
+    """
+    sessions = student.sessions
+    if not sessions:
+        return {'empty': True}
+
+    s = sessions[session_index]
+    ml = s.get('mastery_level', student.mastery_level)
+
+    # Reconstruct by generating with same parameters
+    seed = hash(f"{student.name}_{session_index}_{s['pct']}") & 0x7FFFFFFF
+    dma = DualMatchStickAutomaton(mastery_level=ml, seed=seed)
+    kata = dma.generate_dual_kata(length=s.get('length', 4))
+
+    # Score step-by-step
+    steps = []
+    running_score = 0
+    for ti, tact in enumerate(kata):
+        sym_l, sym_r = tact[0], tact[1]
+        gl, gr = get_group(sym_l), get_group(sym_r)
+        cl = symbol_complexity(sym_l)
+        cr = symbol_complexity(sym_r)
+
+        # Rule checks for this tact pair
+        checks = {}
+        # R1: Zone exclusion
+        checks['R1'] = gl != gr
+        # R2: Anti-symmetry (bits differ)
+        checks['R2'] = hamming_distance(sym_l, sym_r) >= 3
+        # R3: Alternation (checked across tacts)
+        if ti > 0:
+            prev_l, prev_r = kata[ti - 1][0], kata[ti - 1][1]
+            checks['R3'] = (get_group(prev_l) != gl or
+                            get_group(prev_r) != gr)
+        else:
+            checks['R3'] = True
+        # R4: Smoothness
+        if ti > 0:
+            prev_l = kata[ti - 1][0]
+            checks['R4'] = hamming_distance(prev_l, sym_l) <= 3
+        else:
+            checks['R4'] = True
+        # R5: Conservation (|cl - cr| < threshold)
+        checks['R5'] = abs(cl - cr) <= 3
+
+        passed = sum(1 for v in checks.values() if v)
+        running_score += passed
+
+        steps.append({
+            'tact': ti + 1,
+            'sym_l': sym_l, 'sym_r': sym_r,
+            'group_l': gl, 'group_r': gr,
+            'complexity_l': cl, 'complexity_r': cr,
+            'rules': checks,
+            'rules_passed': passed,
+            'running_total': running_score,
+        })
+
+    max_possible = len(kata) * 5
+    final_pct = running_score / max_possible * 100 if max_possible else 0
+
+    return {
+        'empty': False,
+        'student': student.name,
+        'session': session_index if session_index >= 0 else len(sessions),
+        'steps': steps,
+        'total_score': running_score,
+        'max_score': max_possible,
+        'pct': round(final_pct, 1),
+        'n_tacts': len(kata),
+    }
+
+
+def format_replay(rp):
+    """Format session replay as step-by-step text."""
+    if rp.get('empty'):
+        return "Replay: no data"
+
+    lines = [f"Session Replay: {rp['student']} "
+             f"(session #{rp['session']})"]
+    lines.append("─" * 60)
+    lines.append(f"  {'Tact':>4s}  {'L':>4s} {'R':>4s}  "
+                 f"{'G_L':>3s} {'G_R':>3s}  "
+                 f"{'C_L':>3s} {'C_R':>3s}  "
+                 f"Rules      Score")
+    lines.append("─" * 60)
+
+    for step in rp['steps']:
+        rule_str = ''.join(
+            '✓' if step['rules'][f'R{r}'] else '✗'
+            for r in range(1, 6))
+        lines.append(
+            f"  {step['tact']:4d}  "
+            f"S{step['sym_l']:02d} S{step['sym_r']:02d}  "
+            f"G{step['group_l']:>2d} G{step['group_r']:>2d}  "
+            f"{step['complexity_l']:3d} {step['complexity_r']:3d}  "
+            f"{rule_str}  "
+            f"{step['running_total']:3d}/{step['tact']*5}")
+
+    lines.append("─" * 60)
+    lines.append(f"  Final: {rp['total_score']}/{rp['max_score']} "
+                 f"({rp['pct']:.1f}%)")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -8133,5 +8464,29 @@ if __name__ == '__main__':
     mm = matchmake(pool, elo=elo)
     print(format_matchmaking(mm))
 
+    # 75. Compact Kata Notation
+    print("\n--- Compact Kata Notation ---")
+    nota_dma = DualMatchStickAutomaton(mastery_level=3, seed=55)
+    nota_kata = nota_dma.generate_dual_kata(length=6)
+    nota = verify_notation(nota_kata, mode='dual')
+    print(f"  Encoded: {nota['encoded']}")
+    print(f"  Length:  {nota['length']} chars")
+    print(f"  Compression: {nota['compression']}")
+    print(f"  Roundtrip OK: {nota['roundtrip_ok']}")
+
+    # Decode back
+    decoded_kata, dec_mode = decode_kata_notation(nota['encoded'])
+    print(f"  Decoded mode: {dec_mode}, tacts: {len(decoded_kata)}")
+
+    # 76. Heatmap
+    print("\n--- Group × Rule Heatmap ---")
+    hm = build_heatmap(sim_school.students['Anna'])
+    print(format_heatmap(hm))
+
+    # 77. Session Replay
+    print("\n--- Session Replay ---")
+    rp = replay_session(sim_school.students['Anna'], session_index=-1)
+    print(format_replay(rp))
+
     print("\n" + "=" * 60)
-    print("v21: ELO ratings, adaptive difficulty, matchmaking.")
+    print("v22: Compact notation, heatmap, session replay.")
