@@ -5058,3 +5058,34 @@ print(format_performance_zones(pz))
 ```
 
 🔴 red (<60%), 🟡 yellow (60-75%), 🟢 green (75-85%), 🔵 blue (85-95%), 🏆 gold (95%+).
+
+---
+
+## Часть 63: Training log, competition, assessment (v48)
+
+### 63.1 TrainingLog
+
+```python
+tlog = TrainingLog(student)
+print(tlog.format_log(last_n=6))
+```
+
+### 63.2 CompetitionHistory
+
+```python
+ch = CompetitionHistory('Anna')
+ch.record_match('Ivan', 85, 80, 'Round 1')
+print(ch.format_history())
+h2h = ch.head_to_head('Ivan')
+```
+
+### 63.3 Skill Assessment
+
+6 dimensions (weighted): accuracy (25%), consistency (20%), progression (15%), mastery_depth (20%), experience (10%), achievements (10%).
+
+```python
+sa = comprehensive_skill_assessment(student)
+print(format_skill_assessment(sa, student_name='Anna'))
+```
+
+Grades: S (90+), A (75+), B (60+), C (40+), D (<40).

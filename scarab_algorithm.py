@@ -15830,6 +15830,254 @@ def format_performance_zones(zones_data, student_name=''):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# TRAINING LOG (v48)
+# ═══════════════════════════════════════════════════════════
+
+class TrainingLog:
+    """
+    Structured training log with summary statistics.
+
+    Aggregates all training data into a readable report.
+    """
+
+    def __init__(self, student):
+        self.student = student
+
+    def generate(self):
+        """Generate complete training log."""
+        st = self.student
+        sessions = st.sessions
+        scores = [s['pct'] for s in sessions]
+        n = len(scores)
+
+        if n == 0:
+            return {'name': st.name, 'status': 'empty', 'entries': []}
+
+        entries = []
+        running_avg = 0
+        best_so_far = 0
+
+        for i, s in enumerate(sessions):
+            pct = s['pct']
+            running_avg = (running_avg * i + pct) / (i + 1)
+            best_so_far = max(best_so_far, pct)
+
+            entry = {
+                'session': i + 1,
+                'score': round(pct, 1),
+                'running_avg': round(running_avg, 1),
+                'personal_best': round(best_so_far, 1),
+                'grade': ('A' if pct >= 90 else 'B' if pct >= 70
+                          else 'C' if pct >= 50 else 'D'),
+            }
+            entries.append(entry)
+
+        return {
+            'name': st.name,
+            'status': 'active',
+            'total_sessions': n,
+            'mastery': st.mastery_level,
+            'final_avg': round(running_avg, 1),
+            'best': round(best_so_far, 1),
+            'entries': entries,
+        }
+
+    def format_log(self, last_n=10):
+        """Format training log."""
+        data = self.generate()
+        lines = [f"Training Log: {data['name']}"]
+        lines.append("═" * 55)
+
+        if data['status'] == 'empty':
+            lines.append("  No training data.")
+            return '\n'.join(lines)
+
+        lines.append(f"  Sessions: {data['total_sessions']}  |  "
+                     f"Mastery: L{data['mastery']}  |  "
+                     f"Avg: {data['final_avg']}%  |  "
+                     f"Best: {data['best']}%")
+        lines.append("─" * 55)
+
+        entries = data['entries'][-last_n:]
+        for e in entries:
+            lines.append(f"  #{e['session']:3d}  {e['grade']} "
+                         f"score={e['score']:5.1f}%  "
+                         f"avg={e['running_avg']:5.1f}%  "
+                         f"pb={e['personal_best']:5.1f}%")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# COMPETITION HISTORY (v48)
+# ═══════════════════════════════════════════════════════════
+
+class CompetitionHistory:
+    """
+    Track student's competition history.
+
+    Records matches, tournament results, and W/L/D record.
+    """
+
+    def __init__(self, student_name):
+        self.student_name = student_name
+        self.matches = []
+
+    def record_match(self, opponent, my_score, opp_score, event='match'):
+        """Record a competition result."""
+        if my_score > opp_score:
+            result = 'win'
+        elif my_score < opp_score:
+            result = 'loss'
+        else:
+            result = 'draw'
+
+        self.matches.append({
+            'opponent': opponent,
+            'my_score': round(my_score, 1),
+            'opp_score': round(opp_score, 1),
+            'result': result,
+            'event': event,
+            'index': len(self.matches),
+        })
+
+    def record(self):
+        """Get W/L/D record."""
+        w = sum(1 for m in self.matches if m['result'] == 'win')
+        l = sum(1 for m in self.matches if m['result'] == 'loss')
+        d = sum(1 for m in self.matches if m['result'] == 'draw')
+        return {'wins': w, 'losses': l, 'draws': d, 'total': len(self.matches)}
+
+    def win_rate(self):
+        """Win rate percentage."""
+        total = len(self.matches)
+        if total == 0:
+            return 0
+        wins = sum(1 for m in self.matches if m['result'] == 'win')
+        return round(wins / total * 100, 1)
+
+    def head_to_head(self, opponent):
+        """H2H record against specific opponent."""
+        matches = [m for m in self.matches if m['opponent'] == opponent]
+        w = sum(1 for m in matches if m['result'] == 'win')
+        l = sum(1 for m in matches if m['result'] == 'loss')
+        d = sum(1 for m in matches if m['result'] == 'draw')
+        return {'wins': w, 'losses': l, 'draws': d}
+
+    def format_history(self, last_n=10):
+        """Format competition history."""
+        lines = [f"Competition History: {self.student_name}"]
+        lines.append("═" * 50)
+
+        rec = self.record()
+        lines.append(f"  Record: {rec['wins']}W {rec['losses']}L "
+                     f"{rec['draws']}D  |  Win rate: {self.win_rate()}%")
+        lines.append("─" * 50)
+
+        result_icons = {'win': '✓', 'loss': '✗', 'draw': '='}
+        for m in self.matches[-last_n:]:
+            icon = result_icons.get(m['result'], '?')
+            lines.append(f"  {icon} vs {m['opponent']:12s}  "
+                         f"{m['my_score']}% — {m['opp_score']}%  "
+                         f"[{m['event']}]")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SKILL ASSESSMENT (v48)
+# ═══════════════════════════════════════════════════════════
+
+def comprehensive_skill_assessment(student):
+    """
+    Comprehensive skill assessment across all dimensions.
+
+    Returns scores (0-100) for each skill area and overall.
+    """
+    st = student
+    sessions = st.sessions
+    scores = [s['pct'] for s in sessions]
+    n = len(scores)
+
+    assessment = {}
+
+    # 1. Accuracy (based on scores)
+    if scores:
+        recent = scores[-5:] if n >= 5 else scores
+        assessment['accuracy'] = round(sum(recent) / len(recent), 1)
+    else:
+        assessment['accuracy'] = 0
+
+    # 2. Consistency (inverse of variance)
+    if n >= 3:
+        avg = sum(scores) / n
+        var = sum((s - avg) ** 2 for s in scores) / n
+        # Scale: var=0→100, var=400→0
+        assessment['consistency'] = round(max(0, 100 - var / 4), 1)
+    else:
+        assessment['consistency'] = 50
+
+    # 3. Progression (slope-based)
+    if n >= 3:
+        x_mean = (n - 1) / 2
+        y_mean = sum(scores) / n
+        num = sum((i - x_mean) * (scores[i] - y_mean) for i in range(n))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        slope = num / den if den > 0 else 0
+        # Scale: slope * 10, clamped to 0-100
+        assessment['progression'] = round(
+            max(0, min(100, 50 + slope * 10)), 1)
+    else:
+        assessment['progression'] = 50
+
+    # 4. Mastery depth
+    assessment['mastery_depth'] = round(
+        st.mastery_level / 7 * 100, 1)
+
+    # 5. Experience
+    exp = min(100, n * 4)  # 25 sessions = 100%
+    assessment['experience'] = exp
+
+    # 6. Achievement diversity
+    badges = check_badges(st)
+    assessment['achievements'] = round(
+        min(100, len(badges) / 10 * 100), 1)
+
+    # Overall
+    weights = {
+        'accuracy': 0.25, 'consistency': 0.2, 'progression': 0.15,
+        'mastery_depth': 0.2, 'experience': 0.1, 'achievements': 0.1,
+    }
+    overall = sum(assessment[k] * weights[k] for k in weights)
+    assessment['overall'] = round(overall, 1)
+
+    return assessment
+
+
+def format_skill_assessment(assessment, student_name=''):
+    """Format skill assessment."""
+    name = f" — {student_name}" if student_name else ''
+    lines = [f"Skill Assessment{name}"]
+    lines.append("═" * 50)
+
+    for skill, val in assessment.items():
+        if skill == 'overall':
+            continue
+        bar_len = int(val / 5)
+        bar = '▓' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  {skill:16s} [{bar}] {val:5.1f}%")
+
+    overall = assessment.get('overall', 0)
+    lines.append(f"\n  Overall: {overall}%")
+
+    grade = ('S' if overall >= 90 else 'A' if overall >= 75 else
+             'B' if overall >= 60 else 'C' if overall >= 40 else 'D')
+    lines.append(f"  Grade: {grade}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -17601,3 +17849,29 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v47: Batch processor, rule validator, performance zones.")
+
+    # 153. Training Log
+    print("\n--- Training Log ---")
+    tlog = TrainingLog(sim_school.students['Anna'])
+    print(tlog.format_log(last_n=6))
+
+    # 154. Competition History
+    print("\n--- Competition History ---")
+    ch154 = CompetitionHistory('Anna')
+    ch154.record_match('Ivan', 85, 80, 'Round 1')
+    ch154.record_match('Lena', 78, 82, 'Round 2')
+    ch154.record_match('Max', 90, 85, 'Round 3')
+    ch154.record_match('Ivan', 88, 88, 'Round 4')
+    ch154.record_match('Lena', 92, 78, 'Semi-final')
+    print(ch154.format_history())
+    h2h = ch154.head_to_head('Ivan')
+    print(f"  H2H vs Ivan: {h2h}")
+
+    # 155. Skill Assessment
+    print("\n--- Skill Assessment ---")
+    for sname in ['Anna', 'Ivan']:
+        sa155 = comprehensive_skill_assessment(sim_school.students[sname])
+        print(format_skill_assessment(sa155, student_name=sname))
+
+    print("\n" + "=" * 60)
+    print("v48: Training log, competition history, skill assessment.")
