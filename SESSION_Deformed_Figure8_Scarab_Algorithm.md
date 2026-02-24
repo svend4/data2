@@ -4088,3 +4088,78 @@ Students: 4, Sessions: 48, Avg/student: 12.0
 School avg: 75.1%, Best: 92.9%
 Mastery levels: {5: 1, 4: 3}
 ```
+
+---
+
+## Часть 43: Diff-движок, бейджи, аннотированный replay (v28)
+
+### 43.1 Kata Diff Engine
+
+```python
+diff = kata_diff(kata_a, kata_b, label_a='V1', label_b='V2')
+print(format_kata_diff(diff))
+```
+
+Поля результата:
+```
+identical     — список индексов совпадающих тактов
+changed       — [{idx, a, b, delta_complexity, group_shift}]
+only_a/only_b — такты за пределами общей длины
+similarity    — 0..100% (identical / max_len)
+```
+
+Пример вывода:
+```
+Kata Diff: Seed931 (8T) vs Seed932 (8T)
+  Similarity: 12.5%
+  Changed tacts: 7
+  T2: (17,06) → (36,09) Δcplx=0
+  T6: (03,04) → (07,26) Δcplx=+3
+```
+
+### 43.2 Achievement Badges
+
+12 бейджей в BADGE_DEFS:
+```
+🐣 First Steps    — 1 сессия
+🔟 Dedicated      — 10 сессий
+🎖️ Veteran        — 50 сессий
+💯 Perfectionist   — 100% в сессии
+⭐ Excellent       — 90%+ в сессии
+🔥 Hot Streak      — 5 подряд ≥70%
+🗺️ Explorer        — все 7 групп
+🥉 Intermediate    — ML ≥ 3
+🥇 Expert          — ML ≥ 5
+👑 Grandmaster     — ML = 7
+📈 Growth Spurt    — улучшение avg ≥20 пунктов
+🏆 Champion        — победа в турнире
+```
+
+```python
+badges = check_badges(student)
+print(format_badges(badges))  # earned + locked
+```
+
+### 43.3 Annotated Session Replay
+
+```python
+ann = annotate_session(session)
+print(format_annotated_replay(ann, max_tacts=8))
+```
+
+Аннотации к каждому такту:
+```
+⚠  Rule violation      — какое правило нарушено
+↑↓ Complexity spike/drop — delta ≥4
+↔  Group shift          — смена группы L/R/обеих
+🔥 Clean streak 5/10   — безошибочная серия
+⛔ 3 consecutive violations — серия ошибок
+```
+
+Формат:
+```
+T01 ✓ L=S05(G2) R=S18(G3) cplx=4
+T02 ✗ L=S17(G3) R=S06(G2) cplx=3
+       ⚠ R1_Zone: zone mismatch
+       ↔ L group shift: G2→G3
+```

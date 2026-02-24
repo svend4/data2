@@ -9505,6 +9505,334 @@ def format_batch_summary(bs):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# KATA DIFF ENGINE — compare two katas (v28)
+# ═══════════════════════════════════════════════════════════
+
+def kata_diff(kata_a, kata_b, label_a='A', label_b='B'):
+    """
+    Compare two katas tact-by-tact.
+
+    Returns:
+    - identical: list of tact indices where both match
+    - changed: list of {idx, a, b, delta_complexity, delta_group}
+    - only_a: tacts only in kata_a (when lengths differ)
+    - only_b: tacts only in kata_b
+    - similarity: 0..100 percentage
+    """
+    len_a, len_b = len(kata_a), len(kata_b)
+    common = min(len_a, len_b)
+
+    identical = []
+    changed = []
+
+    for i in range(common):
+        ta, tb = kata_a[i], kata_b[i]
+        if ta[0] == tb[0] and ta[1] == tb[1]:
+            identical.append(i)
+        else:
+            ca = symbol_complexity(ta[0]) + symbol_complexity(ta[1])
+            cb = symbol_complexity(tb[0]) + symbol_complexity(tb[1])
+            ga = (get_group(ta[0]), get_group(ta[1]))
+            gb = (get_group(tb[0]), get_group(tb[1]))
+            changed.append({
+                'idx': i,
+                'a': ta, 'b': tb,
+                'delta_complexity': cb - ca,
+                'group_shift': (gb[0] - ga[0], gb[1] - ga[1]),
+            })
+
+    only_a = list(range(common, len_a))
+    only_b = list(range(common, len_b))
+
+    max_len = max(len_a, len_b)
+    similarity = round(len(identical) / max_len * 100, 1) if max_len else 100
+
+    return {
+        'label_a': label_a, 'label_b': label_b,
+        'len_a': len_a, 'len_b': len_b,
+        'identical': identical,
+        'changed': changed,
+        'only_a': only_a,
+        'only_b': only_b,
+        'similarity': similarity,
+    }
+
+
+def format_kata_diff(diff):
+    """Format kata diff as a readable report."""
+    lines = [f"Kata Diff: {diff['label_a']} ({diff['len_a']}T) vs "
+             f"{diff['label_b']} ({diff['len_b']}T)"]
+    lines.append("═" * 55)
+    lines.append(f"  Similarity: {diff['similarity']}%")
+    lines.append(f"  Identical tacts: {len(diff['identical'])}")
+    lines.append(f"  Changed tacts:   {len(diff['changed'])}")
+
+    if diff['only_a']:
+        lines.append(f"  Only in {diff['label_a']}: tacts {diff['only_a']}")
+    if diff['only_b']:
+        lines.append(f"  Only in {diff['label_b']}: tacts {diff['only_b']}")
+
+    if diff['changed']:
+        lines.append("")
+        lines.append("  Changes:")
+        for c in diff['changed'][:10]:
+            idx = c['idx']
+            a_l, a_r = c['a'][0], c['a'][1]
+            b_l, b_r = c['b'][0], c['b'][1]
+            dc = c['delta_complexity']
+            sign = '+' if dc > 0 else '' if dc == 0 else ''
+            lines.append(f"    T{idx + 1}: "
+                         f"({a_l:02d},{a_r:02d}) → ({b_l:02d},{b_r:02d}) "
+                         f"Δcplx={sign}{dc}")
+        if len(diff['changed']) > 10:
+            lines.append(f"    ... and {len(diff['changed']) - 10} more")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# ACHIEVEMENT BADGES — gamification system (v28)
+# ═══════════════════════════════════════════════════════════
+
+# Badge definitions: id → {name, icon, description, check_fn_key}
+BADGE_DEFS = {
+    'first_session':     {'name': 'First Steps',     'icon': '🐣',
+                          'desc': 'Complete your first session'},
+    'ten_sessions':      {'name': 'Dedicated',        'icon': '🔟',
+                          'desc': 'Complete 10 sessions'},
+    'fifty_sessions':    {'name': 'Veteran',           'icon': '🎖️',
+                          'desc': 'Complete 50 sessions'},
+    'perfect_score':     {'name': 'Perfectionist',     'icon': '💯',
+                          'desc': 'Score 100% on any session'},
+    'score_90':          {'name': 'Excellent',          'icon': '⭐',
+                          'desc': 'Score 90%+ on any session'},
+    'streak_5':          {'name': 'Hot Streak',         'icon': '🔥',
+                          'desc': '5 consecutive sessions above 70%'},
+    'all_groups':        {'name': 'Explorer',           'icon': '🗺️',
+                          'desc': 'Encounter all 7 symbol groups'},
+    'mastery_3':         {'name': 'Intermediate',       'icon': '🥉',
+                          'desc': 'Reach mastery level 3'},
+    'mastery_5':         {'name': 'Expert',             'icon': '🥇',
+                          'desc': 'Reach mastery level 5'},
+    'mastery_7':         {'name': 'Grandmaster',        'icon': '👑',
+                          'desc': 'Reach mastery level 7'},
+    'improvement_20':    {'name': 'Growth Spurt',       'icon': '📈',
+                          'desc': 'Improve avg by 20+ points'},
+    'tournament_win':    {'name': 'Champion',           'icon': '🏆',
+                          'desc': 'Win a tournament'},
+}
+
+
+def check_badges(student):
+    """
+    Check which badges a student has earned.
+    Returns list of earned badge ids with timestamps.
+    """
+    earned = []
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+    n = len(sessions)
+
+    # Session count badges
+    if n >= 1:
+        earned.append('first_session')
+    if n >= 10:
+        earned.append('ten_sessions')
+    if n >= 50:
+        earned.append('fifty_sessions')
+
+    # Score badges
+    if scores:
+        if max(scores) >= 100:
+            earned.append('perfect_score')
+        if max(scores) >= 90:
+            earned.append('score_90')
+
+    # Streak: 5 consecutive ≥ 70%
+    if n >= 5:
+        for i in range(n - 4):
+            window = scores[i:i + 5]
+            if all(s >= 70 for s in window):
+                earned.append('streak_5')
+                break
+
+    # All groups encountered
+    groups_seen = set()
+    for s in sessions:
+        kata = s.get('kata', [])
+        for t in kata:
+            if len(t) >= 2:
+                groups_seen.add(get_group(t[0]))
+                groups_seen.add(get_group(t[1]))
+    if len(groups_seen) >= 7:
+        earned.append('all_groups')
+
+    # Mastery badges
+    ml = student.mastery_level
+    if ml >= 3:
+        earned.append('mastery_3')
+    if ml >= 5:
+        earned.append('mastery_5')
+    if ml >= 7:
+        earned.append('mastery_7')
+
+    # Improvement badge
+    if n >= 10:
+        first5 = sum(scores[:5]) / 5
+        last5 = sum(scores[-5:]) / 5
+        if last5 - first5 >= 20:
+            earned.append('improvement_20')
+
+    # Tournament badge (check history)
+    if hasattr(student, 'tournament_wins') and student.tournament_wins > 0:
+        earned.append('tournament_win')
+
+    return earned
+
+
+def format_badges(earned_ids):
+    """Format earned badges as a display card."""
+    lines = [f"Badges Earned: {len(earned_ids)}/{len(BADGE_DEFS)}"]
+    lines.append("─" * 40)
+
+    for bid in earned_ids:
+        bd = BADGE_DEFS.get(bid, {})
+        lines.append(f"  {bd.get('icon', '?')} {bd.get('name', bid)}: "
+                     f"{bd.get('desc', '')}")
+
+    # Show locked badges
+    locked = [b for b in BADGE_DEFS if b not in earned_ids]
+    if locked:
+        lines.append("")
+        lines.append("  Locked:")
+        for bid in locked:
+            bd = BADGE_DEFS[bid]
+            lines.append(f"  🔒 {bd['name']}: {bd['desc']}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# ANNOTATED REPLAY — session replay with commentary (v28)
+# ═══════════════════════════════════════════════════════════
+
+def annotate_session(session):
+    """
+    Build an annotated replay of a session.
+
+    Adds commentary to each tact based on:
+    - Rule violations
+    - Group transitions
+    - Complexity jumps
+    - Streaks (good/bad)
+    """
+    kata = session.get('kata', [])
+    violations = session.get('violations', [])
+    n = len(kata)
+
+    # Index violations by tact
+    viol_map = {}
+    for v in violations:
+        idx = v.get('tact', -1)
+        viol_map.setdefault(idx, []).append(v)
+
+    annotations = []
+    streak_good = 0
+    streak_bad = 0
+    prev_cplx = None
+
+    for i, t in enumerate(kata):
+        sl, sr = t[0], t[1]
+        gl, gr = get_group(sl), get_group(sr)
+        cplx = symbol_complexity(sl) + symbol_complexity(sr)
+
+        notes = []
+
+        # Check violations at this tact
+        tviol = viol_map.get(i, [])
+        for v in tviol:
+            notes.append(f"⚠ {v.get('rule', '?')}: {v.get('msg', 'violation')}")
+
+        # Complexity jump
+        if prev_cplx is not None:
+            delta = cplx - prev_cplx
+            if delta >= 4:
+                notes.append(f"↑ Complexity spike (+{delta})")
+            elif delta <= -4:
+                notes.append(f"↓ Complexity drop ({delta})")
+
+        # Group transitions
+        if i > 0:
+            prev_t = kata[i - 1]
+            pg_l, pg_r = get_group(prev_t[0]), get_group(prev_t[1])
+            if gl != pg_l and gr != pg_r:
+                notes.append(f"↔ Double group shift: "
+                             f"({pg_l},{pg_r})→({gl},{gr})")
+            elif gl != pg_l:
+                notes.append(f"↔ L group shift: G{pg_l}→G{gl}")
+            elif gr != pg_r:
+                notes.append(f"↔ R group shift: G{pg_r}→G{gr}")
+
+        # Streak tracking
+        if not tviol:
+            streak_good += 1
+            streak_bad = 0
+            if streak_good == 5:
+                notes.append("🔥 5-tact clean streak!")
+            elif streak_good == 10:
+                notes.append("🔥🔥 10-tact clean streak!")
+        else:
+            streak_bad += 1
+            streak_good = 0
+            if streak_bad == 3:
+                notes.append("⛔ 3 consecutive violations")
+
+        annotations.append({
+            'tact': i + 1,
+            'L': sl, 'R': sr,
+            'group_L': gl, 'group_R': gr,
+            'complexity': cplx,
+            'violations': len(tviol),
+            'notes': notes,
+        })
+
+        prev_cplx = cplx
+
+    return annotations
+
+
+def format_annotated_replay(annotations, max_tacts=None):
+    """Format annotated replay as timeline."""
+    lines = [f"Annotated Replay ({len(annotations)} tacts)"]
+    lines.append("═" * 55)
+
+    display = annotations[:max_tacts] if max_tacts else annotations
+
+    for a in display:
+        viol_icon = '✗' if a['violations'] else '✓'
+        line = (f"  T{a['tact']:02d} {viol_icon} "
+                f"L=S{a['L']:02d}(G{a['group_L']}) "
+                f"R=S{a['R']:02d}(G{a['group_R']}) "
+                f"cplx={a['complexity']}")
+        lines.append(line)
+
+        for note in a['notes']:
+            lines.append(f"        {note}")
+
+    if max_tacts and len(annotations) > max_tacts:
+        lines.append(f"  ... +{len(annotations) - max_tacts} more tacts")
+
+    # Summary
+    total_v = sum(a['violations'] for a in annotations)
+    noted = sum(1 for a in annotations if a['notes'])
+    lines.append("")
+    lines.append(f"  Total violations: {total_v}, "
+                 f"Annotated tacts: {noted}/{len(annotations)}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -10587,3 +10915,26 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v27: SVG export, skill tree, batch processor.")
+
+    # 93. Kata Diff
+    print("\n--- Kata Diff ---")
+    dma_d1 = DualMatchStickAutomaton(mastery_level=3, seed=931)
+    dma_d2 = DualMatchStickAutomaton(mastery_level=3, seed=932)
+    k_d1 = dma_d1.generate_dual_kata(length=8)
+    k_d2 = dma_d2.generate_dual_kata(length=8)
+    diff = kata_diff(k_d1, k_d2, label_a='Seed931', label_b='Seed932')
+    print(format_kata_diff(diff))
+
+    # 94. Achievement Badges
+    print("\n--- Achievement Badges ---")
+    badges = check_badges(sim_school.students['Anna'])
+    print(format_badges(badges))
+
+    # 95. Annotated Replay
+    print("\n--- Annotated Replay ---")
+    replay_session = sim_school.students['Anna'].sessions[-1]
+    ann = annotate_session(replay_session)
+    print(format_annotated_replay(ann, max_tacts=8))
+
+    print("\n" + "=" * 60)
+    print("v28: Kata diff, achievement badges, annotated replay.")
