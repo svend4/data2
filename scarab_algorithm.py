@@ -4301,6 +4301,330 @@ def format_session_plan(plan):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# TOURNAMENT — bracket competition for N students (v14)
+# ═══════════════════════════════════════════════════════════
+
+def tournament(students, quarter='Q3', year=2, seed=None):
+    """
+    Run a bracket-style tournament among N students.
+
+    Bracket format:
+    - Students paired randomly
+    - Each pair sparring → winner advances
+    - Byes for odd numbers
+    - Continues until one champion remains
+
+    Returns:
+        dict with rounds, results per match, champion, rankings
+    """
+    rng = random.Random(seed)
+    n = len(students)
+    if n < 2:
+        return {'error': 'Need at least 2 students', 'rounds': []}
+
+    # Shuffle students
+    pool = list(students)
+    rng.shuffle(pool)
+
+    rounds = []
+    eliminated = []
+    round_num = 0
+
+    while len(pool) > 1:
+        round_num += 1
+        matches = []
+        winners = []
+
+        # Pair up students
+        i = 0
+        while i < len(pool) - 1:
+            a, b = pool[i], pool[i + 1]
+            result = sparring(a, b, quarter=quarter, year=year,
+                              seed=rng.randint(0, 2**31))
+            if result['winner'] == 'A':
+                winners.append(a)
+                eliminated.append((b, round_num))
+            elif result['winner'] == 'B':
+                winners.append(b)
+                eliminated.append((a, round_num))
+            else:
+                # Draw: first player advances (home advantage)
+                winners.append(a)
+                eliminated.append((b, round_num))
+            matches.append({
+                'a': a.name, 'b': b.name,
+                'score_a': result['A']['composite'],
+                'score_b': result['B']['composite'],
+                'winner': result[result['winner']]['student']
+                          if result['winner'] != 'draw' else a.name,
+                'margin': result['margin'],
+                'decisive': result['decisive'],
+            })
+            i += 2
+
+        # Bye for odd player
+        if len(pool) % 2 == 1:
+            bye = pool[-1]
+            winners.append(bye)
+            matches.append({
+                'a': bye.name, 'b': 'BYE',
+                'winner': bye.name, 'margin': 0, 'decisive': False,
+                'score_a': 0, 'score_b': 0,
+            })
+
+        rounds.append({
+            'round': round_num,
+            'matches': matches,
+            'advancing': [w.name for w in winners],
+        })
+        pool = winners
+
+    champion = pool[0]
+
+    # Build rankings: champion=1, finalist=2, semifinalists=3-4, etc.
+    rankings = [(champion.name, 1)]
+    for student, elim_round in reversed(eliminated):
+        rank = len(rankings) + 1
+        rankings.append((student.name, rank))
+
+    return {
+        'rounds': rounds,
+        'n_rounds': round_num,
+        'champion': champion.name,
+        'rankings': rankings,
+        'n_students': n,
+    }
+
+
+def format_tournament(result):
+    """Format tournament results as readable text."""
+    lines = [f"Tournament ({result['n_students']} students, "
+             f"{result['n_rounds']} rounds)"]
+    lines.append("=" * 50)
+    for rnd in result['rounds']:
+        lines.append(f"\n  Round {rnd['round']}:")
+        for m in rnd['matches']:
+            if m['b'] == 'BYE':
+                lines.append(f"    {m['a']} — BYE")
+            else:
+                dec = '*' if m['decisive'] else ''
+                lines.append(
+                    f"    {m['a']} ({m['score_a']:.3f}) vs "
+                    f"{m['b']} ({m['score_b']:.3f}) "
+                    f"→ {m['winner']}{dec} (+{m['margin']:.3f})")
+    lines.append(f"\n  Champion: {result['champion']}")
+    lines.append("  Rankings:")
+    for name, rank in result['rankings']:
+        lines.append(f"    #{rank}: {name}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# DIFFICULTY ESTIMATOR — predict kata difficulty (v14)
+# ═══════════════════════════════════════════════════════════
+
+def estimate_difficulty(kata, mode='dual'):
+    """
+    Estimate difficulty of a kata on a 1-10 scale.
+
+    Factors (each contributes 0-2 points):
+    1. Complexity variance — high variance = harder
+    2. Transition speed — large Hamming jumps = harder
+    3. Group diversity — more groups = harder
+    4. Rule compliance difficulty — low natural score = harder
+    5. Length — longer = harder
+
+    Returns:
+        dict with total difficulty (1-10), per-factor breakdown
+    """
+    if mode == 'dual':
+        syms_L = [e[0] for e in kata]
+        syms_R = [e[1] for e in kata]
+    else:
+        syms_L = list(kata)
+        syms_R = []
+
+    n = len(syms_L)
+    all_syms = syms_L + syms_R
+
+    # Factor 1: Complexity variance (0-2)
+    complexities = [symbol_complexity(s) for s in all_syms]
+    c_mean = sum(complexities) / len(complexities) if complexities else 0
+    c_var = (sum((c - c_mean)**2 for c in complexities)
+             / len(complexities)) if complexities else 0
+    f1 = min(2.0, c_var / 1.5)
+
+    # Factor 2: Transition speed (0-2)
+    hammings = []
+    for syms in [syms_L, syms_R]:
+        for i in range(1, len(syms)):
+            hammings.append(hamming_distance(syms[i], syms[i-1]))
+    avg_h = sum(hammings) / len(hammings) if hammings else 0
+    f2 = min(2.0, avg_h / 3.0 * 2)
+
+    # Factor 3: Group diversity (0-2)
+    groups = set(get_group(s) for s in all_syms)
+    f3 = min(2.0, len(groups) / 4.0 * 2)
+
+    # Factor 4: Rule compliance difficulty (0-2)
+    if mode == 'dual':
+        sc = score_dual_kata(kata)
+        natural_pct = sc['pct'] / 100.0
+        # Lower natural score = harder to perform
+        f4 = min(2.0, (1 - natural_pct) * 3)
+    else:
+        f4 = 0.5
+
+    # Factor 5: Length (0-2)
+    f5 = min(2.0, n / 6.0 * 2)
+
+    total = f1 + f2 + f3 + f4 + f5
+    # Clamp to 1-10
+    difficulty = max(1.0, min(10.0, total))
+
+    return {
+        'difficulty': round(difficulty, 1),
+        'factors': {
+            'complexity_variance': round(f1, 2),
+            'transition_speed': round(f2, 2),
+            'group_diversity': round(f3, 2),
+            'rule_challenge': round(f4, 2),
+            'length': round(f5, 2),
+        },
+        'level_name': _difficulty_name(difficulty),
+    }
+
+
+def _difficulty_name(d):
+    """Map difficulty score to a name."""
+    if d <= 2:
+        return 'Beginner'
+    elif d <= 4:
+        return 'Elementary'
+    elif d <= 6:
+        return 'Intermediate'
+    elif d <= 8:
+        return 'Advanced'
+    else:
+        return 'Master'
+
+
+# ═══════════════════════════════════════════════════════════
+# ACHIEVEMENT SYSTEM — milestone badges (v14)
+# ═══════════════════════════════════════════════════════════
+
+ACHIEVEMENTS = {
+    'first_kata': {
+        'name': 'First Steps',
+        'desc': 'Complete your first training session',
+        'check': lambda s: len(s.sessions) >= 1,
+    },
+    'ten_sessions': {
+        'name': 'Dedicated Student',
+        'desc': 'Complete 10 training sessions',
+        'check': lambda s: len(s.sessions) >= 10,
+    },
+    'grade_a': {
+        'name': 'Excellence',
+        'desc': 'Achieve Grade A on any kata',
+        'check': lambda s: any(sess['grade'] == 'A' for sess in s.sessions),
+    },
+    'all_groups': {
+        'name': 'Explorer',
+        'desc': 'Use symbols from all 7 Kryukov groups',
+        'check': lambda s: sum(1 for g in range(1, 8)
+                               if s.group_hits.get(g, 0) > 0) == 7,
+    },
+    'high_resonance': {
+        'name': 'Resonance Master',
+        'desc': 'Achieve resonance score > 0.8 in a session',
+        'check': lambda s: any(sess['resonance'] > 0.8 for sess in s.sessions),
+    },
+    'mastery_3': {
+        'name': 'Intermediate',
+        'desc': 'Reach mastery level 3',
+        'check': lambda s: s.mastery_level >= 3,
+    },
+    'mastery_5': {
+        'name': 'Master',
+        'desc': 'Reach mastery level 5',
+        'check': lambda s: s.mastery_level >= 5,
+    },
+    'consistency': {
+        'name': 'Consistent',
+        'desc': 'Score above 70% in 5 consecutive sessions',
+        'check': lambda s: _check_consecutive(s, 5, 70),
+    },
+    'hundred_tacts': {
+        'name': 'Centurion',
+        'desc': 'Perform 100 total tacts',
+        'check': lambda s: s.total_tacts >= 100,
+    },
+    'lci_pi': {
+        'name': 'Pi Seeker',
+        'desc': 'Achieve LCI average within 0.5 of pi',
+        'check': lambda s: any(abs(sess['lci_avg'] - math.pi) < 0.5
+                               for sess in s.sessions),
+    },
+}
+
+
+def _check_consecutive(student, n, min_pct):
+    """Check if student has n consecutive sessions above min_pct."""
+    if len(student.sessions) < n:
+        return False
+    for i in range(len(student.sessions) - n + 1):
+        window = student.sessions[i:i+n]
+        if all(s['pct'] >= min_pct for s in window):
+            return True
+    return False
+
+
+def check_achievements(student):
+    """
+    Check which achievements a student has earned.
+
+    Returns:
+        dict with 'earned' (list), 'pending' (list), 'progress' (pct)
+    """
+    earned = []
+    pending = []
+    for key, ach in ACHIEVEMENTS.items():
+        if ach['check'](student):
+            earned.append({'key': key, 'name': ach['name'],
+                           'desc': ach['desc']})
+        else:
+            pending.append({'key': key, 'name': ach['name'],
+                            'desc': ach['desc']})
+
+    progress = len(earned) / len(ACHIEVEMENTS) * 100 if ACHIEVEMENTS else 0
+
+    return {
+        'earned': earned,
+        'pending': pending,
+        'progress': round(progress, 1),
+        'total': len(ACHIEVEMENTS),
+    }
+
+
+def format_achievements(result):
+    """Format achievements as readable text."""
+    lines = [f"Achievements: {len(result['earned'])}/{result['total']} "
+             f"({result['progress']:.0f}%)"]
+    if result['earned']:
+        lines.append("  Earned:")
+        for a in result['earned']:
+            lines.append(f"    [{a['name']}] {a['desc']}")
+    if result['pending']:
+        lines.append("  Pending:")
+        for a in result['pending'][:3]:  # Show top 3 pending
+            lines.append(f"    [ ] {a['name']}: {a['desc']}")
+        if len(result['pending']) > 3:
+            lines.append(f"    ... and {len(result['pending'])-3} more")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -4915,6 +5239,59 @@ if __name__ == '__main__':
     print(f"  Dual + ChVS(4):    304^2   = 92,416 (raw), ~30K valid")
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
+    # 51. Tournament
+    print("\n--- Tournament ---")
+    t_students = []
+    for name, ml in [('Alexei', 3), ('Boris', 2), ('Vera', 4),
+                     ('Galina', 3), ('Dmitri', 2), ('Elena', 3)]:
+        sp = StudentProfile(name, mastery_level=ml)
+        for j in range(4):
+            sk = generate_seasonal_kata('Q2', mastery_level=ml, year=2,
+                                        use_dual=True,
+                                        seed=hash(name+str(j)) % 2**31)
+            sp.record_session(sk['kata'], quarter='Q2', year=2, mode='dual')
+        t_students.append(sp)
+    t_result = tournament(t_students, quarter='Q3', year=2, seed=42)
+    print(format_tournament(t_result))
+
+    # 52. Difficulty Estimator
+    print("\n--- Difficulty Estimator ---")
+    # Compare difficulty of different kata
+    test_katas = [
+        ('Easy (L1, len=3)', DualMatchStickAutomaton(mastery_level=1, seed=10)
+         .generate_dual_kata(length=3)),
+        ('Medium (L3, len=5)', DualMatchStickAutomaton(mastery_level=3, seed=10)
+         .generate_dual_kata(length=5)),
+        ('Hard (L5, len=8)', DualMatchStickAutomaton(mastery_level=5, seed=10)
+         .generate_dual_kata(length=8)),
+        ('Optimized A', opt_kata['kata']),
+        ('Battle №4', bk['kata']),
+    ]
+    for label, tk in test_katas:
+        diff = estimate_difficulty(tk, mode='dual')
+        f = diff['factors']
+        print(f"  {label:20s} → {diff['difficulty']:4.1f}/10 "
+              f"({diff['level_name']:12s}) "
+              f"var={f['complexity_variance']:.1f} "
+              f"trans={f['transition_speed']:.1f} "
+              f"div={f['group_diversity']:.1f} "
+              f"rule={f['rule_challenge']:.1f} "
+              f"len={f['length']:.1f}")
+
+    # 53. Achievement System
+    print("\n--- Achievement System ---")
+    # Create a well-practised student
+    ach_student = StudentProfile('Vera', mastery_level=5)
+    for i in range(12):
+        q = ['Q1', 'Q2', 'Q3', 'Q4'][i % 4]
+        sk = generate_seasonal_kata(q, mastery_level=min(5, 2 + i//3),
+                                    year=1 + i//4, use_dual=True,
+                                    seed=hash(f'vera{i}') % 2**31)
+        ach_student.record_session(sk['kata'], quarter=q,
+                                   year=1 + i//4, mode='dual')
+    ach_result = check_achievements(ach_student)
+    print(format_achievements(ach_result))
+
     print("\n" + "=" * 60)
-    print("v13: Kata library, mutation system,")
-    print("     structured session planner.")
+    print("v14: Tournament system, difficulty estimator,")
+    print("     achievement badges.")

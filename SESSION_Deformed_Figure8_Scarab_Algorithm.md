@@ -2619,3 +2619,155 @@ Session Plan: Elena (Q3/Y2, 45 min)
 │  ГРАФ: 64 узла, 672 ребра, диаметр 3            │
 └─────────────────────────────────────────────────┘
 ```
+
+---
+
+## Часть 29: Турнир, оценка сложности, достижения (v14)
+
+### 29.1 Турнирная система
+
+```python
+students = [StudentProfile('A', 3), StudentProfile('B', 2), ...]
+result = tournament(students, quarter='Q3', year=2, seed=42)
+print(format_tournament(result))
+```
+
+Формат: bracket (олимпийская система):
+
+```
+Раунд 1:  A vs B → победитель₁
+          C vs D → победитель₂
+          E vs F → победитель₃
+Раунд 2:  победитель₁ vs победитель₂
+          победитель₃ — BYE
+Раунд 3:  финал → Чемпион
+```
+
+Пример (6 участников):
+```
+Tournament (6 students, 3 rounds)
+  Round 1:
+    Galina (0.674) vs Boris (0.688) → Boris (+0.014)
+    Vera (0.719) vs Dmitri (0.683) → Vera (+0.036)
+    Alexei (0.743) vs Elena (0.713) → Alexei (+0.030)
+  Round 2:
+    Boris (0.679) vs Vera (0.715) → Vera (+0.036)
+    Alexei — BYE
+  Round 3:
+    Vera (0.729) vs Alexei (0.719) → Vera (+0.010)
+  Champion: Vera
+  Rankings: #1 Vera, #2 Alexei, #3 Boris, ...
+```
+
+Правила:
+- Случайная жеребьёвка в первом раунде
+- Нечётный игрок получает BYE (проход)
+- Ничья → первый игрок проходит (преимущество хозяина)
+- `decisive` = разница > 0.1 (отмечается `*`)
+
+### 29.2 Оценка сложности
+
+```python
+diff = estimate_difficulty(kata, mode='dual')
+# → {difficulty: 6.1, level_name: 'Advanced', factors: {...}}
+```
+
+5 факторов (каждый 0-2 балла, итого 0-10):
+
+```
+Фактор                Формула                          Что измеряет
+─────────────────────────────────────────────────────────────────────
+complexity_variance   var(C) / 1.5                     Разброс сложности
+transition_speed      avg_hamming / 3 × 2              Скорость переходов
+group_diversity       n_groups / 4 × 2                 Широта алфавита
+rule_challenge        (1 - score_pct) × 3              Трудность правил
+length                n_tacts / 6 × 2                  Длина ката
+```
+
+Шкала:
+```
+1-2:  Beginner      (новичок)
+3-4:  Elementary    (начальный)
+5-6:  Intermediate  (средний)
+7-8:  Advanced      (продвинутый)
+9-10: Master        (мастер)
+```
+
+Пример:
+```
+Easy (L1, len=3)   → 4.5/10 (Intermediate)
+Medium (L3, len=5) → 6.1/10 (Advanced)
+Optimized A        → 6.1/10 (Advanced)
+```
+
+### 29.3 Система достижений
+
+10 бейджей:
+
+```
+Бейдж              Условие
+────────────────────────────────────────────────
+First Steps        1+ сессия
+Dedicated Student  10+ сессий
+Excellence         хотя бы 1 Grade A
+Explorer           все 7 групп Крюкова
+Resonance Master   resonance > 0.8
+Intermediate       mastery ≥ 3
+Master             mastery ≥ 5
+Consistent         5 сессий подряд > 70%
+Centurion          100+ тактов суммарно
+Pi Seeker          |LCI - π| < 0.5
+```
+
+```python
+ach = check_achievements(student)
+# → {earned: [...], pending: [...], progress: 50.0, total: 10}
+print(format_achievements(ach))
+```
+
+Пример:
+```
+Achievements: 5/10 (50%)
+  Earned:
+    [First Steps] Complete your first training session
+    [Dedicated Student] Complete 10 training sessions
+    [Resonance Master] Achieve resonance score > 0.8
+    [Intermediate] Reach mastery level 3
+    [Master] Reach mastery level 5
+  Pending:
+    [ ] Excellence: Achieve Grade A
+    [ ] Explorer: All 7 groups
+    [ ] Consistent: 5 consecutive > 70%
+```
+
+### 29.4 Полный список функций v14 (53 демо)
+
+```
+ГЕНЕРАЦИЯ (10):
+  MatchStickAutomaton, DualMatchStickAutomaton,
+  trajectory_kata, generate_battle_kata, optimize_kata,
+  resonance_kata, generate_seasonal_kata, generate_training_session,
+  mutate_kata, mutate_series
+
+ТРЕНИРОВКА (8):
+  simulate_progression, generate_exam, evaluate_exam,
+  adaptive_curriculum, generate_drill, sparring,
+  plan_session, tournament
+
+АНАЛИЗ (8):
+  score_dual_kata, analyze_kata, detect_resonance, compute_lci,
+  kata_dna, kata_similarity, estimate_difficulty, check_achievements
+
+ДАННЫЕ (3):
+  KataLibrary, StudentProfile, ACHIEVEMENTS
+
+ПРЕДСТАВЛЕНИЕ (10):
+  symbol_to_ascii, stick_figure_frame, dual_stick_figure,
+  animate_dual_kata, plot_trajectory_ascii, kata_to_notation,
+  export_training_session, format_curriculum, format_drill,
+  format_sparring, format_tournament, format_session_plan,
+  format_library_search, format_achievements
+
+ИТОГО: 53 демо-секции, 29 частей документации,
+       ~5300 строк кода
+```
