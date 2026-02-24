@@ -9111,6 +9111,400 @@ def format_rubric_score(rs):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# SVG EXPORT — visual kata diagram (v27)
+# ═══════════════════════════════════════════════════════════
+
+# Color palette for groups
+GROUP_COLORS = {
+    1: '#4CAF50',  # green - empty
+    2: '#2196F3',  # blue - single
+    3: '#FF9800',  # orange - angle
+    4: '#9C27B0',  # purple - parallel
+    5: '#F44336',  # red - triple
+    6: '#FFD700',  # gold - master
+    7: '#00BCD4',  # cyan - peak
+}
+
+
+def kata_to_svg(kata, title='Kata', width=800, height=400):
+    """
+    Generate SVG visualization of a kata sequence.
+
+    Layout: horizontal timeline with symbol nodes.
+    Each tact is a column with L (top) and R (bottom) circles.
+    Color = group, size = complexity, connections = transitions.
+    """
+    n = len(kata)
+    if n == 0:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">' \
+               '<text x="10" y="30">Empty kata</text></svg>'
+
+    margin = 60
+    col_w = (width - 2 * margin) / max(1, n - 1) if n > 1 else width - 2 * margin
+    mid_y = height / 2
+    row_gap = 80
+
+    parts = []
+    # SVG header
+    parts.append(f'<svg xmlns="http://www.w3.org/2000/svg" '
+                 f'width="{width}" height="{height}" '
+                 f'viewBox="0 0 {width} {height}">')
+
+    # Background
+    parts.append(f'<rect width="{width}" height="{height}" '
+                 f'fill="#1a1a2e" rx="10"/>')
+
+    # Title
+    parts.append(f'<text x="{width // 2}" y="25" text-anchor="middle" '
+                 f'font-family="monospace" font-size="14" '
+                 f'fill="#eee">{title}</text>')
+
+    # Timeline axis
+    parts.append(f'<line x1="{margin}" y1="{mid_y}" '
+                 f'x2="{width - margin}" y2="{mid_y}" '
+                 f'stroke="#555" stroke-width="1" stroke-dasharray="4,4"/>')
+
+    # Draw connections first (behind nodes)
+    for i in range(1, n):
+        x1 = margin + (i - 1) * col_w
+        x2 = margin + i * col_w
+        # L connections
+        parts.append(f'<line x1="{x1:.0f}" y1="{mid_y - row_gap // 2}" '
+                     f'x2="{x2:.0f}" y2="{mid_y - row_gap // 2}" '
+                     f'stroke="#444" stroke-width="1"/>')
+        # R connections
+        parts.append(f'<line x1="{x1:.0f}" y1="{mid_y + row_gap // 2}" '
+                     f'x2="{x2:.0f}" y2="{mid_y + row_gap // 2}" '
+                     f'stroke="#444" stroke-width="1"/>')
+
+    # Draw nodes
+    for i, t in enumerate(kata):
+        sl, sr = t[0], t[1]
+        gl, gr = get_group(sl), get_group(sr)
+        cl, cr = symbol_complexity(sl), symbol_complexity(sr)
+
+        x = margin + i * col_w
+
+        # L node (top)
+        r_l = 8 + cl * 3
+        color_l = GROUP_COLORS.get(gl, '#888')
+        parts.append(f'<circle cx="{x:.0f}" cy="{mid_y - row_gap // 2}" '
+                     f'r="{r_l}" fill="{color_l}" opacity="0.85"/>')
+        parts.append(f'<text x="{x:.0f}" y="{mid_y - row_gap // 2 + 4}" '
+                     f'text-anchor="middle" font-family="monospace" '
+                     f'font-size="9" fill="#fff">S{sl:02d}</text>')
+
+        # R node (bottom)
+        r_r = 8 + cr * 3
+        color_r = GROUP_COLORS.get(gr, '#888')
+        parts.append(f'<circle cx="{x:.0f}" cy="{mid_y + row_gap // 2}" '
+                     f'r="{r_r}" fill="{color_r}" opacity="0.85"/>')
+        parts.append(f'<text x="{x:.0f}" y="{mid_y + row_gap // 2 + 4}" '
+                     f'text-anchor="middle" font-family="monospace" '
+                     f'font-size="9" fill="#fff">S{sr:02d}</text>')
+
+        # Tact label
+        parts.append(f'<text x="{x:.0f}" y="{height - 15}" '
+                     f'text-anchor="middle" font-family="monospace" '
+                     f'font-size="10" fill="#888">T{i + 1}</text>')
+
+    # Labels
+    parts.append(f'<text x="{margin - 30}" y="{mid_y - row_gap // 2 + 4}" '
+                 f'font-family="monospace" font-size="11" fill="#aaa">L</text>')
+    parts.append(f'<text x="{margin - 30}" y="{mid_y + row_gap // 2 + 4}" '
+                 f'font-family="monospace" font-size="11" fill="#aaa">R</text>')
+
+    # Legend
+    ly = height - 40
+    lx = margin
+    for g in range(1, 8):
+        color = GROUP_COLORS[g]
+        parts.append(f'<rect x="{lx}" y="{ly}" width="10" height="10" '
+                     f'fill="{color}" rx="2"/>')
+        parts.append(f'<text x="{lx + 14}" y="{ly + 9}" '
+                     f'font-family="monospace" font-size="8" '
+                     f'fill="#aaa">G{g}</text>')
+        lx += 45
+
+    parts.append('</svg>')
+    return '\n'.join(parts)
+
+
+# ═══════════════════════════════════════════════════════════
+# SKILL TREE — progression map (v27)
+# ═══════════════════════════════════════════════════════════
+
+def build_skill_tree(student):
+    """
+    Build a skill tree showing mastery progression.
+
+    Tree structure:
+    L1 Foundation → L2 Basic → L3 Intermediate →
+    L4 Advanced → L5 Expert → L6 Master → L7 Peak
+
+    Each node has:
+    - requirements (min score, sessions)
+    - unlocked skills
+    - completion status
+    """
+    ml = student.mastery_level
+    n_sessions = len(student.sessions)
+
+    tree = []
+    skill_defs = {
+        1: {
+            'name': 'Foundation',
+            'skills': ['Basic symbols', 'Single-hand kata', 'Group 1-2'],
+            'req_sessions': 0, 'req_score': 0,
+        },
+        2: {
+            'name': 'Basic',
+            'skills': ['Dual-hand kata', 'Rule R1 (Zone)', 'Group 3'],
+            'req_sessions': 3, 'req_score': 50,
+        },
+        3: {
+            'name': 'Intermediate',
+            'skills': ['All 5 rules', 'Mutations', 'Group 4-5'],
+            'req_sessions': 8, 'req_score': 60,
+        },
+        4: {
+            'name': 'Advanced',
+            'skills': ['Sparring', 'Tournaments', 'Fingerprinting'],
+            'req_sessions': 15, 'req_score': 70,
+        },
+        5: {
+            'name': 'Expert',
+            'skills': ['Markov analysis', 'Training plans', 'Group 6'],
+            'req_sessions': 25, 'req_score': 75,
+        },
+        6: {
+            'name': 'Master',
+            'skills': ['Federation', 'Curriculum design', 'Full rubric'],
+            'req_sessions': 40, 'req_score': 80,
+        },
+        7: {
+            'name': 'Peak',
+            'skills': ['All symbols', 'Research mode', 'Peer review'],
+            'req_sessions': 60, 'req_score': 85,
+        },
+    }
+
+    # Compute recent score
+    recent_scores = [s['pct'] for s in student.sessions[-5:]]
+    recent_avg = sum(recent_scores) / len(recent_scores) if recent_scores else 0
+
+    for level in range(1, 8):
+        sd = skill_defs[level]
+        if level <= ml:
+            status = 'completed'
+            progress = 100
+        elif level == ml + 1:
+            status = 'current'
+            # Progress toward next level
+            score_prog = min(100, recent_avg / max(1, sd['req_score']) * 100)
+            session_prog = min(100, n_sessions / max(1, sd['req_sessions']) * 100)
+            progress = round((score_prog + session_prog) / 2)
+        else:
+            status = 'locked'
+            progress = 0
+
+        tree.append({
+            'level': level,
+            'name': sd['name'],
+            'skills': sd['skills'],
+            'req_sessions': sd['req_sessions'],
+            'req_score': sd['req_score'],
+            'status': status,
+            'progress': progress,
+        })
+
+    return {
+        'student': student.name,
+        'current_level': ml,
+        'n_sessions': n_sessions,
+        'recent_avg': round(recent_avg, 1),
+        'tree': tree,
+    }
+
+
+def format_skill_tree(st):
+    """Format skill tree as ASCII visualization."""
+    lines = [f"Skill Tree: {st['student']} "
+             f"(L{st['current_level']}, {st['n_sessions']} sessions)"]
+    lines.append("═" * 55)
+
+    for node in st['tree']:
+        lvl = node['level']
+        name = node['name']
+        status = node['status']
+
+        if status == 'completed':
+            icon = '◉'
+            bar = '████████████████████'
+            pct_str = '100%'
+        elif status == 'current':
+            icon = '◎'
+            filled = node['progress'] // 5
+            bar = '█' * filled + '░' * (20 - filled)
+            pct_str = f"{node['progress']}%"
+        else:
+            icon = '○'
+            bar = '░' * 20
+            pct_str = 'locked'
+
+        lines.append(f"  {icon} L{lvl} {name:<13s} [{bar}] {pct_str}")
+
+        # Show skills
+        for skill in node['skills']:
+            if status == 'completed':
+                lines.append(f"      ✓ {skill}")
+            elif status == 'current':
+                lines.append(f"      ▸ {skill}")
+            else:
+                lines.append(f"      · {skill}")
+
+        # Connector
+        if lvl < 7:
+            lines.append("      │")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# BATCH PROCESSOR — multi-student evaluation (v27)
+# ═══════════════════════════════════════════════════════════
+
+def batch_evaluate(school, evaluation_fn=None):
+    """
+    Run batch evaluation across all students in a school.
+
+    Default evaluation: diagnostic report for each student.
+    Custom evaluation_fn(student) → dict with results.
+
+    Returns aggregated results with rankings.
+    """
+    if evaluation_fn is None:
+        evaluation_fn = generate_diagnostic
+
+    results = {}
+    for name, student in school.students.items():
+        try:
+            results[name] = evaluation_fn(student)
+        except Exception as e:
+            results[name] = {'error': str(e)}
+
+    return results
+
+
+def batch_rank(school, metric='recent_avg'):
+    """
+    Rank all students by a given metric.
+
+    Metrics: 'recent_avg', 'mastery', 'sessions', 'improvement', 'elo'
+    """
+    rankings = []
+
+    for name, student in school.students.items():
+        sessions = student.sessions
+        scores = [s['pct'] for s in sessions]
+        recent = scores[-5:] if scores else []
+
+        entry = {
+            'name': name,
+            'mastery': student.mastery_level,
+            'sessions': len(sessions),
+            'avg': round(sum(scores) / len(scores), 1) if scores else 0,
+            'recent_avg': round(sum(recent) / len(recent), 1) if recent else 0,
+            'best': round(max(scores), 1) if scores else 0,
+            'elo': getattr(student, 'elo', 1200),
+            'improvement': 0,
+        }
+
+        # Improvement: recent_avg - first 5 avg
+        if len(scores) >= 5:
+            first5 = sum(scores[:5]) / 5
+            entry['improvement'] = round(entry['recent_avg'] - first5, 1)
+
+        rankings.append(entry)
+
+    # Sort by metric
+    reverse = True
+    rankings.sort(key=lambda r: r.get(metric, 0), reverse=reverse)
+
+    # Add rank
+    for i, r in enumerate(rankings):
+        r['rank'] = i + 1
+
+    return rankings
+
+
+def format_batch_ranking(rankings, metric='recent_avg'):
+    """Format batch rankings as leaderboard."""
+    lines = [f"Leaderboard (by {metric})"]
+    lines.append("═" * 60)
+    lines.append(f"  {'#':>3s} {'Name':<12s} {'ML':>3s} {'Sess':>5s} "
+                 f"{'Avg':>6s} {'Recent':>7s} {'Best':>6s} {'ELO':>6s}")
+    lines.append("  " + "─" * 55)
+
+    medals = {1: '🥇', 2: '🥈', 3: '🥉'}
+
+    for r in rankings:
+        medal = medals.get(r['rank'], '  ')
+        lines.append(
+            f"  {medal}{r['rank']:1d} {r['name']:<12s} "
+            f"L{r['mastery']:1d}  {r['sessions']:4d}  "
+            f"{r['avg']:5.1f}%  {r['recent_avg']:5.1f}%  "
+            f"{r['best']:5.1f}%  {r['elo']:6.0f}")
+
+    return '\n'.join(lines)
+
+
+def batch_summary(school):
+    """Generate aggregate summary statistics for the school."""
+    students = list(school.students.values())
+    if not students:
+        return {'empty': True}
+
+    all_sessions = sum(len(s.sessions) for s in students)
+    all_scores = []
+    for s in students:
+        all_scores.extend(s_['pct'] for s_ in s.sessions)
+
+    ml_dist = {}
+    for s in students:
+        ml = s.mastery_level
+        ml_dist[ml] = ml_dist.get(ml, 0) + 1
+
+    return {
+        'empty': False,
+        'n_students': len(students),
+        'total_sessions': all_sessions,
+        'avg_sessions_per_student': round(all_sessions / len(students), 1),
+        'school_avg': round(sum(all_scores) / len(all_scores), 1)
+                      if all_scores else 0,
+        'school_best': round(max(all_scores), 1) if all_scores else 0,
+        'mastery_distribution': ml_dist,
+    }
+
+
+def format_batch_summary(bs):
+    """Format batch summary."""
+    if bs.get('empty'):
+        return "School: no students"
+
+    lines = ["School Summary"]
+    lines.append("─" * 40)
+    lines.append(f"  Students: {bs['n_students']}")
+    lines.append(f"  Total sessions: {bs['total_sessions']}")
+    lines.append(f"  Avg sessions/student: {bs['avg_sessions_per_student']}")
+    lines.append(f"  School avg score: {bs['school_avg']}%")
+    lines.append(f"  School best: {bs['school_best']}%")
+    lines.append(f"  Mastery levels: {bs['mastery_distribution']}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -10168,4 +10562,28 @@ if __name__ == '__main__':
     print(format_rubric_score(rs))
 
     print("\n" + "=" * 60)
-    print("v26: Rhythm analysis, Markov transitions, scoring rubric.")
+    # 90. SVG Export
+    print("\n--- SVG Export ---")
+    svg_dma = DualMatchStickAutomaton(mastery_level=4, seed=90)
+    svg_kata = svg_dma.generate_dual_kata(length=6)
+    svg_str = kata_to_svg(svg_kata, title='Demo Kata L4')
+    print(f"  SVG generated: {len(svg_str)} chars")
+    print(f"  Starts with: {svg_str[:60]}...")
+    # In production: write to file with open('kata.svg','w')
+
+    # 91. Skill Tree
+    print("\n--- Skill Tree ---")
+    sk = build_skill_tree(sim_school.students['Anna'])
+    print(format_skill_tree(sk))
+
+    # 92. Batch Processor
+    print("\n--- Batch Ranking ---")
+    rankings = batch_rank(sim_school, metric='recent_avg')
+    print(format_batch_ranking(rankings))
+
+    bs = batch_summary(sim_school)
+    print()
+    print(format_batch_summary(bs))
+
+    print("\n" + "=" * 60)
+    print("v27: SVG export, skill tree, batch processor.")

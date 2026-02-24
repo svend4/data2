@@ -4012,3 +4012,79 @@ Weighted: 20.5/30.0 = 68.3% → C
 A+ ≥ 90%   A ≥ 80%   B ≥ 70%
 C  ≥ 60%   D ≥ 50%   F < 50%
 ```
+
+---
+
+## Часть 42: SVG-экспорт, дерево навыков, пакетная обработка (v27)
+
+### 42.1 SVG-экспорт ката
+
+```python
+svg = kata_to_svg(kata, title='Demo Kata', width=800, height=400)
+# Записать: open('kata.svg', 'w').write(svg)
+```
+
+Визуальная схема:
+```
+Тёмный фон (#1a1a2e)
+Timeline: горизонтальная ось тактов T1..Tn
+L-hand: верхний ряд кругов (color=group, r=8+complexity*3)
+R-hand: нижний ряд кругов
+Соединения: линии между соседними тактами
+Легенда: G1-G7 цветовая палитра
+```
+
+Цвета групп:
+```
+G1=#4CAF50 (зелёный)    G2=#2196F3 (синий)
+G3=#FF9800 (оранжевый)  G4=#9C27B0 (фиолетовый)
+G5=#F44336 (красный)    G6=#FFD700 (золотой)
+G7=#00BCD4 (бирюзовый)
+```
+
+### 42.2 Дерево навыков
+
+```python
+sk = build_skill_tree(student)
+print(format_skill_tree(sk))
+```
+
+```
+◉ L1 Foundation    [████████████████████] 100%
+    ✓ Basic symbols, Single-hand kata, Group 1-2
+◉ L5 Expert        [████████████████████] 100%
+    ✓ Markov analysis, Training plans, Group 6
+◎ L6 Master        [█████████████░░░░░░░] 65%
+    ▸ Federation, Curriculum design, Full rubric
+○ L7 Peak          [░░░░░░░░░░░░░░░░░░░░] locked
+    · All symbols, Research mode, Peer review
+```
+
+Иконки: ◉ completed, ◎ current, ○ locked.
+Прогресс = (score_progress + session_progress) / 2.
+
+### 42.3 Пакетный процессор
+
+```python
+rankings = batch_rank(school, metric='recent_avg')
+print(format_batch_ranking(rankings))
+
+bs = batch_summary(school)
+print(format_batch_summary(bs))
+```
+
+Leaderboard:
+```
+🥇 Anna  L5  12 sess  avg=75.7%  recent=88.6%  ELO=1200
+🥈 Ivan  L4  12 sess  avg=74.9%  recent=87.9%  ELO=1200
+🥉 Max   L4  12 sess  avg=75.2%  recent=87.6%  ELO=1200
+```
+
+Метрики ранжирования: `recent_avg`, `mastery`, `sessions`, `improvement`, `elo`.
+
+Агрегированная статистика школы:
+```
+Students: 4, Sessions: 48, Avg/student: 12.0
+School avg: 75.1%, Best: 92.9%
+Mastery levels: {5: 1, 4: 3}
+```
