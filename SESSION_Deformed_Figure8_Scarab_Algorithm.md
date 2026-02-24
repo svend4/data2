@@ -2768,6 +2768,141 @@ Achievements: 5/10 (50%)
   format_sparring, format_tournament, format_session_plan,
   format_library_search, format_achievements
 
-ИТОГО: 53 демо-секции, 29 частей документации,
-       ~5300 строк кода
+ИТОГО: 56 демо-секций, 30 частей документации,
+       ~5700 строк кода
+```
+
+---
+
+## Часть 30: Школа, экспорт/импорт, системный аудит (v15)
+
+### 30.1 Класс School — полный жизненный цикл
+
+```python
+school = School('ETD Academy')
+
+# Зачисление
+school.enroll('Alexei', mastery_level=1)
+school.enroll('Vera', mastery_level=1)
+
+# Обучение (план сессии + запись в профиль + добавление в библиотеку)
+school.train('Alexei', quarter='Q1', year=1, seed=42)
+
+# Экзамен
+result = school.examine('Alexei', quarter='Q3', year=2, seed=42)
+
+# Выпуск (проверка 4 требований)
+grad = school.graduate('Alexei')
+print(format_graduation(grad))
+
+# Турнир среди всех активных
+t = school.run_tournament(quarter='Q3', year=3, seed=42)
+
+# Журнал
+print(format_roster(school.roster()))
+```
+
+Требования для выпуска:
+```
+[V] sessions:     ≥ 8 тренировок
+[V] mastery:      ≥ L3
+[V] grade_a:      хотя бы 1 Grade A
+[V] achievements: ≥ 5 бейджей
+```
+
+Метод `train()` автоматически:
+1. Создаёт 5-фазную сессию через `plan_session()`
+2. Записывает main kata в `student.record_session()`
+3. Добавляет kata в `school.library` с тегами
+4. Логирует событие в `school.history`
+
+### 30.2 JSON экспорт/импорт
+
+```python
+# Экспорт
+data = export_school_json(school)
+json_str = json.dumps(data, indent=2)  # → 67K chars
+
+# Импорт
+restored = import_school_json(data)
+```
+
+Содержимое экспорта:
+```
+{
+  "school_name": "ETD Academy",
+  "students": {          ← профили со всеми сессиями
+    "Alexei": {mastery, sessions, group_hits, rule_history}
+  },
+  "library": [           ← DNA-дайджесты (без сырых ката)
+    {id, dna_hex, dna_profile, grade, tags, source}
+  ],
+  "history": [           ← полный лог событий
+    {event: "enroll"}, {event: "train"}, {event: "exam"}, ...
+  ],
+  "graduated": ["Vera"]
+}
+```
+
+### 30.3 Системный аудит
+
+```python
+audit = audit_system()
+print(format_audit(audit))
+# → System Audit: 8/8 passed
+```
+
+8 проверок целостности:
+
+```
+№  Проверка               Что тестирует
+───────────────────────────────────────────────────────
+1  Alphabet               76 символов (64 base + 12 half)
+2  Graph connectivity     BFS от 0 → все 64 узла достижимы
+3  Scoring                score_dual_kata → grade ∈ {A,B,C,D,F}
+4  Quaternion             |ScarabQuaternion(1,0,0,0)| = 1.0
+5  DNA reproducibility    одинаковая ката → одинаковый hex
+6  Library search         self-search → similarity = 1.000
+7  Mirror reversibility   mirror(mirror(kata)) = kata
+8  Achievement monoton.   больше сессий → ≥ достижений
+```
+
+### 30.4 Финальная архитектура SCARAB v15
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                  SCARAB Algorithm v15                     │
+│            ETD Four-Sphere Movement System                │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  ШКОЛА (School)                                          │
+│  ├── enroll() → StudentProfile                           │
+│  ├── train()  → plan_session() → record + library        │
+│  ├── examine()→ generate_exam() → evaluate_exam()        │
+│  ├── graduate() → check requirements                     │
+│  ├── run_tournament() → bracket → champion               │
+│  └── roster() → full status table                        │
+│                                                          │
+│  ГЕНЕРАЦИЯ           ТРЕНИРОВКА         АНАЛИЗ           │
+│  ├ MatchStick        ├ Seasonal         ├ score_dual     │
+│  ├ DualMatchStick    ├ Session          ├ analyze_kata   │
+│  ├ trajectory        ├ Progression      ├ resonance      │
+│  ├ battle_kata       ├ Exam             ├ compute_lci    │
+│  ├ optimize          ├ Curriculum       ├ kata_dna       │
+│  ├ resonance_kata    ├ Drill            ├ similarity     │
+│  └ mutate_kata       ├ Sparring         ├ difficulty     │
+│                      ├ plan_session     ├ achievements   │
+│                      └ Tournament       └ KataLibrary    │
+│                                                          │
+│  PERSISTENCE         INTEGRITY          THEORY           │
+│  ├ export_json       ├ audit_system     ├ Quaternion     │
+│  └ import_json       └ 8/8 checks      ├ 4 spheres      │
+│                                         └ π-invariant    │
+│                                                          │
+│  АЛФАВИТ: 76 sym × 4 ChVS × 8 mudra = 608 states       │
+│  ГРАФ: 64 nodes, 672 edges, diameter 3                   │
+│  DUAL: ~110K valid state pairs                           │
+└──────────────────────────────────────────────────────────┘
+
+56 demo sections │ 30 parts documentation │ ~5700 lines code
 ```

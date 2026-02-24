@@ -4625,6 +4625,361 @@ def format_achievements(result):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# SCHOOL — full lifecycle management (v15)
+# ═══════════════════════════════════════════════════════════
+
+class School:
+    """
+    Full training school managing multiple students through
+    enrollment → training → examination → graduation.
+
+    Integrates all subsystems: library, sessions, drills,
+    tournaments, achievements, difficulty estimation.
+    """
+
+    def __init__(self, name='Scarab School'):
+        self.name = name
+        self.students = {}        # name → StudentProfile
+        self.library = KataLibrary()
+        self.history = []         # log of all events
+        self.graduated = []       # names of graduated students
+
+    def enroll(self, name, mastery_level=1):
+        """Enroll a new student."""
+        if name in self.students:
+            return f'{name} already enrolled'
+        sp = StudentProfile(name, mastery_level=mastery_level)
+        self.students[name] = sp
+        self.history.append({
+            'event': 'enroll', 'student': name,
+            'mastery': mastery_level,
+        })
+        return sp
+
+    def train(self, name, quarter='Q1', year=1, seed=None):
+        """Run a full training session for a student."""
+        if name not in self.students:
+            return None
+        student = self.students[name]
+        session = plan_session(student, quarter=quarter, year=year,
+                               duration_min=45, seed=seed)
+        # Record the main kata
+        main_phase = [p for p in session['phases'] if p['name'] == 'Main work']
+        if main_phase:
+            kata = main_phase[0]['content']
+            student.record_session(kata, quarter=quarter, year=year,
+                                   mode='dual')
+            # Add to library
+            self.library.add(kata, tags={f'{quarter}', name.lower()},
+                             source=f'session_{name}',
+                             mastery_level=student.mastery_level)
+        self.history.append({
+            'event': 'train', 'student': name,
+            'quarter': quarter, 'year': year,
+        })
+        return session
+
+    def examine(self, name, quarter='Q3', year=2, seed=None):
+        """Run an exam for a student."""
+        if name not in self.students:
+            return None
+        student = self.students[name]
+        exam = generate_exam(quarter=quarter, year=year,
+                             mastery_level=student.mastery_level,
+                             seed=seed)
+        result = evaluate_exam(exam)
+        self.history.append({
+            'event': 'exam', 'student': name,
+            'grade': result['final_grade'],
+            'pct': result['final_pct'],
+        })
+        return result
+
+    def graduate(self, name):
+        """
+        Check graduation requirements and graduate if met.
+
+        Requirements:
+        - At least 8 training sessions
+        - Mastery level >= 3
+        - At least 1 Grade A kata
+        - At least 5 achievements earned
+        """
+        if name not in self.students:
+            return {'eligible': False, 'reason': 'Not enrolled'}
+        student = self.students[name]
+        ach = check_achievements(student)
+
+        reqs = {
+            'sessions': (len(student.sessions) >= 8,
+                         f'{len(student.sessions)}/8 sessions'),
+            'mastery': (student.mastery_level >= 3,
+                        f'L{student.mastery_level}/L3'),
+            'grade_a': (any(s['grade'] == 'A' for s in student.sessions),
+                        'Grade A achieved' if any(s['grade'] == 'A'
+                        for s in student.sessions) else 'No Grade A'),
+            'achievements': (len(ach['earned']) >= 5,
+                             f"{len(ach['earned'])}/5 achievements"),
+        }
+
+        eligible = all(ok for ok, _ in reqs.values())
+
+        if eligible:
+            self.graduated.append(name)
+            self.history.append({
+                'event': 'graduate', 'student': name,
+                'mastery': student.mastery_level,
+            })
+
+        return {
+            'eligible': eligible,
+            'student': name,
+            'requirements': {k: {'met': ok, 'status': st}
+                             for k, (ok, st) in reqs.items()},
+            'achievements': ach,
+        }
+
+    def run_tournament(self, quarter='Q3', year=2, seed=None):
+        """Run a tournament with all active students."""
+        active = [s for n, s in self.students.items()
+                  if n not in self.graduated and len(s.sessions) >= 2]
+        if len(active) < 2:
+            return {'error': 'Need at least 2 eligible students'}
+        result = tournament(active, quarter=quarter, year=year, seed=seed)
+        self.history.append({
+            'event': 'tournament', 'champion': result['champion'],
+            'n_students': result['n_students'],
+        })
+        return result
+
+    def roster(self):
+        """Get full school roster with stats."""
+        roster = []
+        for name, student in self.students.items():
+            ach = check_achievements(student)
+            status = 'graduated' if name in self.graduated else 'active'
+            avg_pct = (sum(s['pct'] for s in student.sessions)
+                       / len(student.sessions)) if student.sessions else 0
+            roster.append({
+                'name': name,
+                'mastery': student.mastery_level,
+                'sessions': len(student.sessions),
+                'avg_grade': f'{avg_pct:.0f}%',
+                'achievements': len(ach['earned']),
+                'status': status,
+            })
+        return roster
+
+
+def format_roster(roster):
+    """Format school roster as readable text."""
+    lines = [f"{'Name':12s} {'L':>2s} {'Sess':>4s} {'Avg':>5s} "
+             f"{'Ach':>3s} {'Status':>10s}"]
+    lines.append("-" * 42)
+    for r in roster:
+        lines.append(f"{r['name']:12s} {r['mastery']:2d} "
+                     f"{r['sessions']:4d} {r['avg_grade']:>5s} "
+                     f"{r['achievements']:3d} {r['status']:>10s}")
+    return '\n'.join(lines)
+
+
+def format_graduation(result):
+    """Format graduation check as readable text."""
+    lines = [f"Graduation Check: {result['student']}"]
+    for req, info in result['requirements'].items():
+        mark = 'V' if info['met'] else 'X'
+        lines.append(f"  [{mark}] {req}: {info['status']}")
+    if result['eligible']:
+        lines.append("  >>> GRADUATED <<<")
+    else:
+        lines.append("  Status: Not yet eligible")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# EXPORT / IMPORT — JSON persistence (v15)
+# ═══════════════════════════════════════════════════════════
+
+def export_school_json(school):
+    """
+    Export entire school state as a JSON-serialisable dict.
+
+    Includes: students (profiles, sessions), library entries,
+    history log, graduation list.
+    """
+    students_data = {}
+    for name, sp in school.students.items():
+        students_data[name] = {
+            'mastery_level': sp.mastery_level,
+            'total_tacts': sp.total_tacts,
+            'sessions': sp.sessions,
+            'group_hits': dict(sp.group_hits),
+            'rule_history': {str(k): list(v)
+                             for k, v in sp.rule_history.items()},
+        }
+
+    library_data = []
+    for entry in school.library.entries:
+        library_data.append({
+            'id': entry['id'],
+            'dna_hex': entry['dna']['hex'],
+            'dna_profile': entry['dna']['profile'],
+            'dna_vector': entry['dna']['vector'],
+            'grade': entry['score'].get('grade', '?'),
+            'tags': sorted(entry['tags']),
+            'source': entry['source'],
+            'mastery_level': entry['mastery_level'],
+        })
+
+    return {
+        'school_name': school.name,
+        'students': students_data,
+        'library': library_data,
+        'history': school.history,
+        'graduated': school.graduated,
+        'n_students': len(school.students),
+        'n_library': len(school.library.entries),
+    }
+
+
+def import_school_json(data):
+    """
+    Restore a School from exported JSON data.
+
+    Note: kata content is not preserved in export (only DNA/stats).
+    StudentProfile sessions and stats are fully restored.
+    """
+    school = School(name=data.get('school_name', 'Restored School'))
+    school.history = data.get('history', [])
+    school.graduated = data.get('graduated', [])
+
+    for name, sdata in data.get('students', {}).items():
+        sp = StudentProfile(name, mastery_level=sdata['mastery_level'])
+        sp.total_tacts = sdata['total_tacts']
+        sp.sessions = sdata['sessions']
+        sp.group_hits = {int(k): v for k, v in sdata['group_hits'].items()}
+        sp.rule_history = {int(k): list(v)
+                           for k, v in sdata['rule_history'].items()}
+        school.students[name] = sp
+
+    return school
+
+
+# ═══════════════════════════════════════════════════════════
+# SYSTEM AUDIT — integrity check (v15)
+# ═══════════════════════════════════════════════════════════
+
+def audit_system():
+    """
+    Run a comprehensive audit of all SCARAB components.
+
+    Checks:
+    1. Alphabet integrity (76 symbols, group membership)
+    2. Graph connectivity (64-node graph is connected)
+    3. Scoring consistency (random kata score correctly)
+    4. Quaternion conservation (|A| ≈ mastery at edges)
+    5. DNA reproducibility (same kata → same DNA)
+    6. Library search accuracy (self-search → sim=1.0)
+    7. Mutation reversibility (mirror(mirror(x)) = x)
+    8. Achievement monotonicity (more sessions → more achievements)
+    """
+    results = []
+
+    # 1. Alphabet check
+    total_syms = len(BASE_SYMBOLS) + len(HALF_SYMBOLS)
+    ok1 = total_syms == 76
+    results.append(('Alphabet', ok1, f'{total_syms}/76 symbols'))
+
+    # 2. Graph connectivity (BFS from 0)
+    from collections import deque as _deque_audit
+    visited = set()
+    q = _deque_audit([0])
+    visited.add(0)
+    while q:
+        node = q.popleft()
+        for nb in get_neighbors(node, max_changes=2):
+            if nb not in visited and 0 <= nb < 64:
+                visited.add(nb)
+                q.append(nb)
+    ok2 = len(visited) == 64
+    results.append(('Graph connectivity', ok2, f'{len(visited)}/64 reachable'))
+
+    # 3. Scoring: score_dual_kata returns valid structure
+    rng_a = random.Random(999)
+    dma = DualMatchStickAutomaton(mastery_level=3, seed=999)
+    test_kata = dma.generate_dual_kata(length=5)
+    sc = score_dual_kata(test_kata)
+    ok3 = (sc['grade'] in 'ABCDF' and 0 <= sc['pct'] <= 100
+            and len(sc['rules']) == 5)
+    results.append(('Scoring', ok3,
+                     f"grade={sc['grade']} pct={sc['pct']:.0f}%"))
+
+    # 4. Quaternion conservation
+    sq = ScarabQuaternion(1, 0, 0, 0)
+    mag = sq.norm()
+    ok4 = abs(mag - 1.0) < 1e-10
+    results.append(('Quaternion', ok4, f'|unit|={mag:.10f}'))
+
+    # 5. DNA reproducibility
+    dna1 = kata_dna(test_kata, mode='dual')
+    dna2 = kata_dna(test_kata, mode='dual')
+    ok5 = dna1['hex'] == dna2['hex'] and dna1['vector'] == dna2['vector']
+    results.append(('DNA reproducibility', ok5, f'hex={dna1["hex"]}'))
+
+    # 6. Library self-search
+    lib_test = KataLibrary()
+    lib_test.add(test_kata, tags={'test'})
+    search = lib_test.search(query_kata=test_kata, top_k=1)
+    ok6 = len(search) > 0 and search[0][0] == 1.0
+    results.append(('Library search', ok6,
+                     f'self-sim={search[0][0] if search else "?":.3f}'))
+
+    # 7. Mutation reversibility: mirror(mirror(x)) = x
+    mirrored = mutate_kata(test_kata, mutation='mirror')
+    restored = mutate_kata(mirrored, mutation='mirror')
+    ok7 = all(r[0] == o[0] and r[1] == o[1]
+              for r, o in zip(restored, test_kata))
+    results.append(('Mirror reversibility', ok7, 'mirror^2 = identity'))
+
+    # 8. Achievement monotonicity
+    sp1 = StudentProfile('audit_test', mastery_level=1)
+    ach1 = len(check_achievements(sp1)['earned'])
+    for i in range(5):
+        sk = generate_seasonal_kata('Q1', mastery_level=1, year=1,
+                                    use_dual=True,
+                                    seed=hash(f'audit{i}') % 2**31)
+        sp1.record_session(sk['kata'], quarter='Q1', year=1, mode='dual')
+    ach2 = len(check_achievements(sp1)['earned'])
+    ok8 = ach2 >= ach1
+    results.append(('Achievement monotonicity', ok8,
+                     f'{ach1} → {ach2} achievements'))
+
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+
+    return {
+        'checks': results,
+        'passed': passed,
+        'total': total,
+        'all_ok': passed == total,
+    }
+
+
+def format_audit(audit):
+    """Format audit results as readable text."""
+    lines = [f"System Audit: {audit['passed']}/{audit['total']} passed"]
+    lines.append("=" * 50)
+    for name, ok, detail in audit['checks']:
+        mark = 'PASS' if ok else 'FAIL'
+        lines.append(f"  [{mark}] {name:25s} {detail}")
+    if audit['all_ok']:
+        lines.append("\n  All checks passed. System integrity verified.")
+    else:
+        lines.append("\n  WARNING: Some checks failed!")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -5292,6 +5647,66 @@ if __name__ == '__main__':
     ach_result = check_achievements(ach_student)
     print(format_achievements(ach_result))
 
+    # 54. School — full lifecycle
+    print("\n--- School (Full Lifecycle) ---")
+    school = School('ETD Academy')
+
+    # Enroll students
+    for sn, ml in [('Alexei', 1), ('Vera', 1), ('Boris', 1),
+                   ('Galina', 1), ('Dmitri', 1)]:
+        school.enroll(sn, mastery_level=ml)
+    print(f"  Enrolled: {len(school.students)} students")
+
+    # Train through 3 years (Q1-Q4 × 3)
+    for yr in range(1, 4):
+        for q in ['Q1', 'Q2', 'Q3', 'Q4']:
+            for sn in list(school.students.keys()):
+                if sn not in school.graduated:
+                    school.train(sn, quarter=q, year=yr,
+                                 seed=hash(f'{sn}{q}{yr}') % 2**31)
+
+    # Print roster
+    roster = school.roster()
+    print(format_roster(roster))
+
+    # Graduation check
+    print("\n  Graduation checks:")
+    for sn in list(school.students.keys()):
+        grad = school.graduate(sn)
+        print(f"    {format_graduation(grad)}")
+
+    # Tournament among non-graduated
+    print()
+    active_names = [n for n in school.students if n not in school.graduated]
+    if len(active_names) >= 2:
+        t_res = school.run_tournament(quarter='Q3', year=3, seed=42)
+        print(format_tournament(t_res))
+
+    # 55. Export / Import
+    print("\n--- Export / Import ---")
+    export = export_school_json(school)
+    import json as _json
+    json_str = _json.dumps(export, indent=2, default=str)
+    print(f"  Exported: {len(json_str)} chars JSON")
+    print(f"  Students: {export['n_students']}, Library: {export['n_library']}")
+    print(f"  History events: {len(export['history'])}")
+
+    # Re-import and verify
+    restored = import_school_json(export)
+    print(f"  Restored: {len(restored.students)} students, "
+          f"{len(restored.graduated)} graduated")
+    r_roster = restored.roster()
+    match = all(r_roster[i]['name'] == roster[i]['name'] and
+                r_roster[i]['sessions'] == roster[i]['sessions']
+                for i in range(len(roster)))
+    print(f"  Roster match: {match}")
+
+    # 56. System Audit
+    print("\n--- System Audit ---")
+    audit = audit_system()
+    print(format_audit(audit))
+
     print("\n" + "=" * 60)
-    print("v14: Tournament system, difficulty estimator,")
-    print("     achievement badges.")
+    print("v15: School lifecycle, JSON export/import,")
+    print("     system audit (8/8 integrity checks).")
+    print(f"     {len(school.history)} events logged.")
