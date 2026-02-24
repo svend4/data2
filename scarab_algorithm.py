@@ -944,34 +944,50 @@ class DualMatchStickAutomaton:
         Like a mirror image rotated 180°.
 
         Rule 5 enforcement: if partner is complex (3-4), prefer simple (0-1) and vice versa.
+        Follow hand = defense = LESS complex than lead.
         """
         partner_complexity = symbol_complexity(partner_sym)
 
-        candidates = []
-        for s in self.left.available_symbols:
+        # Search both hands' available symbols for widest pool
+        all_available = set(self.left.available_symbols) | set(self.right.available_symbols)
+
+        # Tier 1: perfect complement (anti-symmetric + no zone conflict)
+        tier1 = []
+        # Tier 2: near complement (≥2 anti bits + no zone conflict)
+        tier2 = []
+        # Tier 3: no zone conflict only
+        tier3 = []
+
+        for s in all_available:
             if s == partner_sym:
                 continue
             if zones_conflict(s, partner_sym):
                 continue
             if is_anti_symmetric(s, partner_sym):
-                candidates.append(s)
+                tier1.append(s)
+            elif hamming_distance(s, ~partner_sym & 0x3F) <= 4:
+                tier2.append(s)
+            else:
+                tier3.append(s)
 
-        # If no perfect complement, relax to just no-conflict
-        if not candidates:
-            candidates = [s for s in self.left.available_symbols
-                          if not zones_conflict(s, partner_sym) and s != partner_sym]
+        # Use best available tier
+        if tier1:
+            candidates = tier1
+        elif tier2:
+            candidates = tier2
+        elif tier3:
+            candidates = tier3
+        else:
+            candidates = list(all_available) if all_available else self.left.available_symbols
 
-        if not candidates:
-            candidates = self.left.available_symbols
-
-        # Rule 5: Complexity conservation — prefer balanced pairs
+        # Rule 5: Complexity conservation — follow prefers LESS complex
         if enforce_conservation and len(candidates) > 1:
             target_c = max(0, self.target_complexity - partner_complexity)
             # Sort by closeness to target complexity
             balanced = sorted(candidates,
                               key=lambda s: abs(symbol_complexity(s) - target_c))
-            # Take top third (allow some variety)
-            cutoff = max(3, len(balanced) // 3)
+            # Take top half (wider pool for better variety)
+            cutoff = max(3, len(balanced) // 2)
             candidates = balanced[:cutoff]
 
         return candidates
@@ -993,10 +1009,19 @@ class DualMatchStickAutomaton:
         """
         # Alternate lead hand every 1-3 tacts (ODD!)
         self.lead_count += 1
-        switch_at = self.rng.choice([1, 3])
-        if self.lead_count >= switch_at:
+        # Pre-determined switch schedule: switch at odd intervals
+        if not hasattr(self, '_switch_schedule') or not self._switch_schedule:
+            # Generate schedule: alternate at intervals from {1, 3}
+            self._switch_schedule = []
+            for _ in range(10):
+                self._switch_schedule.append(self.rng.choice([1, 3]))
+            self._current_switch_target = self._switch_schedule.pop(0)
+        if self.lead_count >= self._current_switch_target:
             self.lead = 'right' if self.lead == 'left' else 'left'
             self.lead_count = 0
+            self._current_switch_target = (self._switch_schedule.pop(0)
+                                            if self._switch_schedule
+                                            else self.rng.choice([1, 3]))
             # Phase offset flips when lead switches
             self.phase_offset = -self.phase_offset
 
@@ -1025,7 +1050,14 @@ class DualMatchStickAutomaton:
         if not lead_candidates:
             lead_candidates = lead_msa.available_symbols
 
-        lead_next = self.rng.choice(lead_candidates)
+        # Lead hand prefers MORE complex symbols (attack/initiative)
+        if len(lead_candidates) > 1:
+            lead_candidates.sort(key=lambda s: symbol_complexity(s), reverse=True)
+            # Top half by complexity, then random from that subset
+            top = max(2, len(lead_candidates) // 2)
+            lead_next = self.rng.choice(lead_candidates[:top])
+        else:
+            lead_next = self.rng.choice(lead_candidates)
         lead_msa.transition(lead_next)
 
         # 2. Follow hand: must complement the lead (anti-symmetric, no zone clash)
@@ -1531,6 +1563,261 @@ def format_seasonal_kata(skata, use_mudras=False):
             dur = skata['beat_durations_s'][i] if i < len(skata['beat_durations_s']) else 0
             lines.append(f"    T{i}: {sym:06b} G{grp}/{group_names[grp]:4s} [{dur:.2f}s]")
 
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# KATA OPTIMIZER — regenerate until target grade
+# ═══════════════════════════════════════════════════════════
+
+def optimize_kata(length=7, mastery_level=3, target_grade='B',
+                  max_attempts=50, use_mudras=False, groups=None,
+                  base_seed=None):
+    """
+    Generate dual katas repeatedly until one meets the target grade.
+
+    Applies evolutionary strategy: keep the best kata seen so far,
+    and use its seed neighborhood for the next attempt.
+
+    Args:
+        length: kata length (1, 3, 5, or 7)
+        mastery_level: 1-5
+        target_grade: minimum grade ('A', 'B', 'C', 'D')
+        max_attempts: maximum generation attempts
+        use_mudras: use 8-mudra system
+        groups: restrict to these symbol groups (list of ints)
+        base_seed: starting seed
+
+    Returns:
+        dict with best kata, its score, attempts used
+    """
+    grade_order = {'A': 4, 'B': 3, 'C': 2, 'D': 1, 'F': 0}
+    target_val = grade_order.get(target_grade, 3)
+    rng = random.Random(base_seed)
+
+    best_kata = None
+    best_score = None
+    best_seed = None
+    best_val = -1
+
+    for attempt in range(max_attempts):
+        seed = rng.randint(0, 2**31)
+        dual = DualMatchStickAutomaton(
+            mastery_level=mastery_level, use_mudras=use_mudras, seed=seed)
+
+        if groups:
+            seasonal_syms = [s for s in range(64) if get_group(s) in groups]
+            dual.left.available_symbols = seasonal_syms
+            dual.right.available_symbols = seasonal_syms
+
+        kata = dual.generate_dual_kata(length=length)
+        score = score_dual_kata(kata)
+        val = grade_order.get(score['grade'], 0)
+
+        if val > best_val or (val == best_val and score['pct'] > best_score['pct']):
+            best_kata = kata
+            best_score = score
+            best_seed = seed
+            best_val = val
+
+        if val >= target_val:
+            return {
+                'kata': kata,
+                'score': score,
+                'seed': seed,
+                'attempts': attempt + 1,
+                'optimized': True,
+            }
+
+    return {
+        'kata': best_kata,
+        'score': best_score,
+        'seed': best_seed,
+        'attempts': max_attempts,
+        'optimized': best_val >= target_val,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# BATTLE KATA — structured attack/defense sequences
+# ═══════════════════════════════════════════════════════════
+
+# Battle phases: each phase has a role for lead and follow
+BATTLE_PHASES = {
+    'opening': {
+        'name': 'Открытие (Opening)',
+        'lead_groups': [1, 2],      # Simple probing moves
+        'follow_groups': [1, 2],    # Mirror guard
+        'tacts': 1,
+        'tempo_mult': 0.5,          # Slow, careful
+    },
+    'attack': {
+        'name': 'Атака (Attack)',
+        'lead_groups': [3, 4, 5],   # Complex strikes
+        'follow_groups': [1, 2],    # Simple defense
+        'tacts': 3,
+        'tempo_mult': 1.5,          # Fast
+    },
+    'counter': {
+        'name': 'Контратака (Counter)',
+        'lead_groups': [1, 2, 3],   # Recovery moves
+        'follow_groups': [3, 4, 5], # Follow strikes back
+        'tacts': 3,
+        'tempo_mult': 1.2,
+    },
+    'clinch': {
+        'name': 'Клинч (Clinch)',
+        'lead_groups': [5, 6],      # Close-range
+        'follow_groups': [5, 6],    # Close-range mirror
+        'tacts': 1,
+        'tempo_mult': 0.8,
+    },
+    'finish': {
+        'name': 'Завершение (Finish)',
+        'lead_groups': [6, 7],      # Maximum complexity
+        'follow_groups': [1, 2],    # Collapse to guard
+        'tacts': 1,
+        'tempo_mult': 2.0,          # Explosive
+    },
+}
+
+# Battle kata №1-4 (canonical sequences from Q4)
+BATTLE_FORMATS = {
+    1: ['opening', 'attack', 'clinch'],                      # 5 tacts (1+3+1)
+    2: ['opening', 'attack', 'counter'],                     # 7 tacts (1+3+3)
+    3: ['opening', 'attack', 'counter', 'finish'],           # 8→9 (odd!) (1+3+3+1+1pad)
+    4: ['opening', 'attack', 'clinch', 'counter', 'finish'], # 9 tacts (1+3+1+3+1)
+}
+
+
+def generate_battle_kata(battle_num=1, mastery_level=3, use_mudras=False,
+                          base_tempo=80.0, seed=None):
+    """
+    Generate a battle kata — structured attack/defense sequence.
+
+    Battle katas follow a dramatic arc:
+      Opening → Attack → Counter/Clinch → Finish
+
+    Each phase constrains which groups are available for lead/follow,
+    creating realistic combat flow.
+
+    Args:
+        battle_num: 1-4 (complexity increases)
+        mastery_level: 1-5
+        use_mudras: use 8-mudra system
+        base_tempo: base BPM
+        seed: random seed
+
+    Returns:
+        dict with phases, full kata, score, timing
+    """
+    rng = random.Random(seed)
+    fmt = BATTLE_FORMATS.get(battle_num, BATTLE_FORMATS[1])
+
+    all_tacts = []
+    phase_info = []
+    beat_durations = []
+
+    dual = DualMatchStickAutomaton(
+        mastery_level=mastery_level, use_mudras=use_mudras,
+        seed=rng.randint(0, 2**31))
+
+    for phase_name in fmt:
+        phase = BATTLE_PHASES[phase_name]
+        n_tacts = phase['tacts']
+        tempo = base_tempo * phase['tempo_mult']
+        beat_base = 60.0 / tempo
+
+        # Restrict available symbols to phase groups
+        lead_syms = [s for s in range(64) if get_group(s) in phase['lead_groups']]
+        follow_syms = [s for s in range(64) if get_group(s) in phase['follow_groups']]
+
+        phase_tacts = []
+        for t in range(n_tacts):
+            # Determine lead/follow assignment
+            if dual.lead == 'left':
+                dual.left.available_symbols = lead_syms
+                dual.right.available_symbols = follow_syms
+            else:
+                dual.left.available_symbols = follow_syms
+                dual.right.available_symbols = lead_syms
+
+            result = dual.step()
+            phase_tacts.append(result)
+            all_tacts.append(result)
+
+            # Rhythm: odd multipliers from Scarab series
+            odd_mult = [1, 3, 1][t % 3]
+            beat_durations.append(odd_mult * beat_base)
+
+        phase_info.append({
+            'name': phase['name'],
+            'phase': phase_name,
+            'tacts': phase_tacts,
+            'tempo': round(tempo, 1),
+        })
+
+    # Ensure total is odd (Scarab rule)
+    total_tacts = len(all_tacts)
+    if total_tacts % 2 == 0:
+        # Add one pad tact (return to guard)
+        dual.left.available_symbols = [s for s in range(64)
+                                        if get_group(s) in [1, 2]]
+        dual.right.available_symbols = dual.left.available_symbols
+        pad = dual.step()
+        all_tacts.append(pad)
+        beat_durations.append(60.0 / base_tempo)
+        phase_info.append({
+            'name': 'Возврат (Return)',
+            'phase': 'return',
+            'tacts': [pad],
+            'tempo': base_tempo,
+        })
+
+    score = score_dual_kata(all_tacts)
+
+    return {
+        'battle_num': battle_num,
+        'format': fmt,
+        'phases': phase_info,
+        'kata': all_tacts,
+        'score': score,
+        'total_tacts': len(all_tacts),
+        'beat_durations_s': [round(d, 2) for d in beat_durations],
+        'total_duration_s': round(sum(beat_durations), 2),
+    }
+
+
+def format_battle_kata(bkata, use_mudras=False):
+    """Format a battle kata as a human-readable string."""
+    group_names = {1: 'Soft', 2: 'Hard', 3: 'MVS', 4: 'Rot',
+                   5: 'Wpn', 6: 'Mstr', 7: 'Peak'}
+    chvs_names = MUDRA_NAMES if use_mudras else CHVS_NAMES
+
+    lines = []
+    lines.append(f"  Battle Kata №{bkata['battle_num']} "
+                 f"({bkata['total_tacts']} tacts, "
+                 f"{bkata['total_duration_s']}s)")
+    lines.append(f"  Format: {' → '.join(bkata['format'])}")
+
+    tact_idx = 0
+    for pi in bkata['phases']:
+        lines.append(f"    ── {pi['name']} ({pi['tempo']} BPM) ──")
+        for entry in pi['tacts']:
+            L, R = entry[0], entry[1]
+            cL, cR = entry[2], entry[3]
+            gL, gR = get_group(L), get_group(R)
+            cL_name = chvs_names.get(cL, '?')
+            cR_name = chvs_names.get(cR, '?')
+            dur = (bkata['beat_durations_s'][tact_idx]
+                   if tact_idx < len(bkata['beat_durations_s']) else 0)
+            lines.append(f"      T{tact_idx}: L={L:06b}(G{gL}/{group_names[gL]:4s},"
+                         f"{cL_name:5s}) "
+                         f"R={R:06b}(G{gR}/{group_names[gR]:4s},{cR_name:5s}) "
+                         f"[{dur:.2f}s]")
+            tact_idx += 1
+
+    lines.append(format_score_report(bkata['score']))
     return '\n'.join(lines)
 
 
@@ -2305,7 +2592,31 @@ if __name__ == '__main__':
                                     use_dual=True, use_mudras=True, seed=77)
     print(format_seasonal_kata(sk_q4, use_mudras=True))
 
-    # 21. Graph statistics (summary)
+    # 21. Kata optimizer
+    print("\n--- Kata Optimizer (target: A) ---")
+    opt = optimize_kata(length=7, mastery_level=4, target_grade='A',
+                        max_attempts=50, use_mudras=True, base_seed=42)
+    print(f"  Optimized: {opt['optimized']} (in {opt['attempts']} attempts)")
+    print(format_score_report(opt['score']))
+    for i, (L, R, mL, mR) in enumerate(opt['kata']):
+        gL, gR = get_group(L), get_group(R)
+        print(f"    T{i}: L={L:06b}(G{gL}) R={R:06b}(G{gR})")
+
+    # 22. Battle kata №1-4
+    print("\n--- Battle Katas (all 4 formats) ---")
+    for bn in [1, 2, 3, 4]:
+        bk = generate_battle_kata(battle_num=bn, mastery_level=3,
+                                   use_mudras=False, seed=42)
+        print(format_battle_kata(bk))
+        print()
+
+    # 23. Battle kata №4 with mudras (advanced)
+    print("--- Battle Kata №4 (Level 5, mudras) ---")
+    bk4 = generate_battle_kata(battle_num=4, mastery_level=5,
+                                use_mudras=True, base_tempo=100, seed=77)
+    print(format_battle_kata(bk4, use_mudras=True))
+
+    # 24. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
@@ -2329,5 +2640,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v6: Scoring system, seasonal kata generator,")
-    print("    hard zone enforcement, rhythm/tempo patterns.")
+    print("v7: Kata optimizer, battle katas №1-4,")
+    print("    improved lead alternation + anti-symmetry.")
