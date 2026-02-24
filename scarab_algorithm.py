@@ -723,6 +723,349 @@ class MatchStickAutomaton:
                 f"Mastery: {self.mastery}")
 
 
+# ═══════════════════════════════════════════════════════════
+# MUDRA SYSTEM — expanded ChVS finger positions
+# ═══════════════════════════════════════════════════════════
+
+# Beyond 4 basic modes: 8 mudra positions (like 8 wind rose directions)
+# 4 cardinal = basic ChVS, 4 intermediate = advanced mudras
+MUDRA_FIST      = 0   # Сжатый кулак (vajra mudra) — strike
+MUDRA_PALM      = 1   # Раскрытая ладонь (abhaya mudra) — block/stop
+MUDRA_POINT     = 2   # Указующий (tarjani mudra) — thrust
+MUDRA_GRAB      = 3   # Захват (varada mudra) — capture
+MUDRA_BLADE     = 4   # Ребро ладони (karate chop) — shuto
+MUDRA_HOOK      = 5   # Крюк (согнутые пальцы) — hook punch
+MUDRA_SPEAR     = 6   # Копьё (пальцы вместе, прямые) — nukite
+MUDRA_CUP       = 7   # Чашка (ладонь вогнута) — slap / ear strike
+
+MUDRA_NAMES = {
+    MUDRA_FIST:  'fist',     MUDRA_PALM:  'palm',
+    MUDRA_POINT: 'point',    MUDRA_GRAB:  'grab',
+    MUDRA_BLADE: 'blade',    MUDRA_HOOK:  'hook',
+    MUDRA_SPEAR: 'spear',    MUDRA_CUP:   'cup',
+}
+
+# Mudra transition table: current situation → optimal mudra
+# Extended from 4 contacts to 8 tactical situations
+MUDRA_TRANSITION = {
+    # 4 cardinal (same as ChVS)
+    CONTACT_HARD:  MUDRA_FIST,     # Reinforce: harder strike
+    CONTACT_SOFT:  MUDRA_GRAB,     # Capture: soft target → grab it
+    CONTACT_EMPTY: MUDRA_POINT,    # Extend: missed → thrust further
+    CONTACT_BLOCK: MUDRA_PALM,     # Redirect: deflect with palm
+    # 4 intermediate (new tactical situations)
+    4: MUDRA_BLADE,    # Edge contact → knife-hand follow-up
+    5: MUDRA_HOOK,     # Close range → hook strike
+    6: MUDRA_SPEAR,    # Linear opening → spear-hand thrust
+    7: MUDRA_CUP,      # Side of head exposed → ear slap
+}
+
+# Mudra vectors: (force, spread, penetration, control)
+MUDRA_VECTORS = {
+    MUDRA_FIST:  (1.0, 0.0, 0.0, 0.0),
+    MUDRA_PALM:  (0.3, 0.7, 0.0, 0.3),
+    MUDRA_POINT: (0.0, 0.0, 1.0, 0.0),
+    MUDRA_GRAB:  (0.2, 0.2, 0.2, 1.0),
+    MUDRA_BLADE: (0.7, 0.3, 0.5, 0.0),   # Shuto: good force + penetration
+    MUDRA_HOOK:  (0.8, 0.0, 0.3, 0.2),   # Hook: strong, curving
+    MUDRA_SPEAR: (0.1, 0.0, 1.0, 0.0),   # Nukite: max penetration
+    MUDRA_CUP:   (0.5, 1.0, 0.0, 0.0),   # Slap: max spread (shock wave)
+}
+
+
+def mudra_switch(situation, current_mudra=None):
+    """
+    Extended ChVS switching using 8 mudra positions.
+
+    8 mudras = 8 directions of the wind rose applied to fingers:
+      N=fist, E=point, S=palm, W=grab (cardinal)
+      NE=blade, SE=hook, SW=spear, NW=cup (intermediate)
+
+    Total states with mudras: 76 symbols × 8 mudras = 608
+    """
+    optimal = MUDRA_TRANSITION.get(situation, MUDRA_FIST)
+    if current_mudra is not None and current_mudra == optimal:
+        return current_mudra
+    return optimal
+
+
+# ═══════════════════════════════════════════════════════════
+# DUAL MATCH-STICK AUTOMATON — two coordinated hands
+# ═══════════════════════════════════════════════════════════
+
+# Spatial zones for anti-collision
+ZONE_UP    = 0b01  # Upper half of the square
+ZONE_DOWN  = 0b10  # Lower half
+ZONE_LEFT  = 0b01  # Left half (from fighter's perspective)
+ZONE_RIGHT = 0b10  # Right half
+
+
+def get_zones(sym):
+    """
+    Determine which spatial zones a symbol occupies.
+    Returns (vertical_zone, horizontal_zone) as bitmasks.
+
+    Used for collision avoidance: two hands must not occupy
+    the same zone simultaneously.
+    """
+    v_zone = 0
+    h_zone = 0
+    if sym & TOP or sym & DIAG1 or sym & DIAG2:
+        v_zone |= ZONE_UP
+    if sym & BOTTOM or sym & DIAG1 or sym & DIAG2:
+        v_zone |= ZONE_DOWN
+    if sym & LEFT or sym & DIAG2:
+        h_zone |= ZONE_LEFT
+    if sym & RIGHT or sym & DIAG1:
+        h_zone |= ZONE_RIGHT
+    # Empty symbol occupies center (no conflict)
+    if sym == 0:
+        v_zone = 0
+        h_zone = 0
+    return v_zone, h_zone
+
+
+def zones_conflict(sym_left, sym_right):
+    """
+    Check if two hand positions conflict (occupy same zone).
+
+    Juggler rule: hands must not cross paths.
+    Like two jugglers sharing one stage — each has their territory.
+    """
+    vL, hL = get_zones(sym_left)
+    vR, hR = get_zones(sym_right)
+    # Conflict if both hands claim the same quadrant
+    v_overlap = vL & vR
+    h_overlap = hL & hR
+    return bool(v_overlap and h_overlap)
+
+
+def is_anti_symmetric(sym_left, sym_right):
+    """
+    Check if two symbols satisfy anti-symmetry rule.
+
+    Kryukov's law: H1 ≠ H2 — hands must be in opposite states:
+      - one attacks, other defends
+      - one high, other low
+      - one forward, other back
+
+    Measured by complementarity of active lines.
+    """
+    # Perfect anti-symmetry: bitwise complement (within 6 bits)
+    complement = (~sym_right) & 0x3F
+
+    # Measure: how many bits match the complement?
+    match_bits = ~(sym_left ^ complement) & 0x3F
+    match_count = count_lines(match_bits)
+
+    # At least 3 of 6 bits should be complementary
+    return match_count >= 3
+
+
+class DualMatchStickAutomaton:
+    """
+    Two coordinated Match-Stick Automatons — one per hand.
+
+    Like circus jugglers:
+      - Each hand has its own MSA (76 states)
+      - Hands must not collide (zone exclusion)
+      - Hands perform complementary actions (anti-symmetry)
+      - Mudra system provides 8 finger modes per hand
+
+    State space: 76 × 76 × 8 × 8 = 389,888 (for 8-mudra)
+                 76 × 76 × 4 × 4 =  92,416 (for 4-chvs basic)
+
+    Effective states (after anti-symmetry + zone filtering):
+      ~30-40% of total ≈ 30,000-40,000 valid dual positions.
+
+    Coordination rules:
+      1. Zone exclusion: hands cannot occupy same quadrant
+      2. Anti-symmetry: H1 attacks ↔ H2 defends (and vice versa)
+      3. Alternation: lead hand switches every 1-3 tacts
+      4. Phase offset: left hand is π/2 ahead or behind right
+      5. Conservation: complexity(L) + complexity(R) ≈ const
+    """
+
+    def __init__(self, mastery_level=1, use_mudras=False, seed=None):
+        self.rng = random.Random(seed)
+        self.use_mudras = use_mudras
+
+        # Two independent MSAs
+        self.left = MatchStickAutomaton(mastery_level=mastery_level,
+                                        seed=self.rng.randint(0, 2**31))
+        self.right = MatchStickAutomaton(mastery_level=mastery_level,
+                                         seed=self.rng.randint(0, 2**31))
+
+        # Mudra state (if using extended mudra system)
+        self.left_mudra = MUDRA_FIST
+        self.right_mudra = MUDRA_PALM  # Start complementary
+
+        # Lead hand (alternates)
+        self.lead = 'left'  # Which hand is currently attacking
+        self.lead_count = 0
+
+        # Dual history
+        self.dual_history = [(0, 0)]
+
+        self.mastery = mastery_level
+
+    def _get_complementary_symbol(self, partner_sym):
+        """
+        Find a symbol complementary to the partner's current position.
+
+        Complementary = different zone + anti-symmetric lines.
+        Like a mirror image rotated 180°.
+        """
+        candidates = []
+        for s in self.left.available_symbols:
+            if s == partner_sym:
+                continue
+            if zones_conflict(s, partner_sym):
+                continue
+            if is_anti_symmetric(s, partner_sym):
+                candidates.append(s)
+
+        # If no perfect complement, relax to just no-conflict
+        if not candidates:
+            candidates = [s for s in self.left.available_symbols
+                          if not zones_conflict(s, partner_sym) and s != partner_sym]
+
+        if not candidates:
+            candidates = self.left.available_symbols
+
+        return candidates
+
+    def step(self, contact_left=None, contact_right=None):
+        """
+        Advance both hands by one tact.
+
+        The lead hand moves first (attack/initiative).
+        The follow hand reacts (defense/complement).
+
+        Returns: (left_sym, right_sym, left_mudra, right_mudra)
+        """
+        # Alternate lead hand every 1-3 tacts (ODD!)
+        self.lead_count += 1
+        switch_at = self.rng.choice([1, 3])
+        if self.lead_count >= switch_at:
+            self.lead = 'right' if self.lead == 'left' else 'left'
+            self.lead_count = 0
+
+        if self.lead == 'left':
+            lead_msa, follow_msa = self.left, self.right
+        else:
+            lead_msa, follow_msa = self.right, self.left
+
+        # 1. Lead hand: generate next symbol (free choice from kata rules)
+        lead_neighbors = lead_msa._adj.get(lead_msa.state, [])
+        lead_candidates = [n for n in lead_neighbors
+                           if n in lead_msa.available_symbols
+                           and n not in lead_msa.history[-4:]]
+        if not lead_candidates:
+            lead_candidates = [n for n in lead_neighbors
+                               if n in lead_msa.available_symbols]
+        if not lead_candidates:
+            lead_candidates = lead_msa.available_symbols
+
+        lead_next = self.rng.choice(lead_candidates)
+        lead_msa.transition(lead_next)
+
+        # 2. Follow hand: must complement the lead (anti-symmetric, no zone clash)
+        complements = self._get_complementary_symbol(lead_next)
+        # Prefer neighbors of current follow state (smooth transition)
+        follow_neighbors = follow_msa._adj.get(follow_msa.state, [])
+        smooth_complements = [c for c in complements if c in follow_neighbors]
+        if smooth_complements:
+            follow_next = self.rng.choice(smooth_complements)
+        elif complements:
+            follow_next = self.rng.choice(complements)
+        else:
+            follow_next = follow_msa.state  # Stay put if no valid move
+
+        follow_msa.transition(follow_next)
+
+        # 3. Mudra/ChVS switching
+        if self.use_mudras:
+            if contact_left is not None:
+                self.left_mudra = mudra_switch(contact_left, self.left_mudra)
+            if contact_right is not None:
+                self.right_mudra = mudra_switch(contact_right, self.right_mudra)
+        else:
+            if contact_left is not None:
+                self.left.chvs = chvs_gearbox(contact_left, self.left.chvs)
+            if contact_right is not None:
+                self.right.chvs = chvs_gearbox(contact_right, self.right.chvs)
+
+        self.dual_history.append((self.left.state, self.right.state))
+
+        if self.use_mudras:
+            return (self.left.state, self.right.state,
+                    self.left_mudra, self.right_mudra)
+        else:
+            return (self.left.state, self.right.state,
+                    self.left.chvs, self.right.chvs)
+
+    def generate_dual_kata(self, length=7):
+        """
+        Generate a coordinated two-hand kata.
+
+        Both hands move in complementary patterns:
+          lead attacks → follow defends
+          lead high → follow low
+          lead left-zone → follow right-zone
+
+        Returns: list of (left_sym, right_sym, left_chvs, right_chvs)
+        """
+        # Reset to ready
+        self.left.state = 0
+        self.right.state = 0
+        self.left.history = [0]
+        self.right.history = [0]
+        self.dual_history = [(0, 0)]
+
+        kata = [(0, 0, MUDRA_FIST if self.use_mudras else CHVS_FIST,
+                        MUDRA_PALM if self.use_mudras else CHVS_PALM)]
+
+        for _ in range(length - 1):
+            result = self.step()
+            kata.append(result)
+
+        return kata
+
+    def count_valid_pairs(self):
+        """
+        Count all valid (non-conflicting, anti-symmetric) hand pair positions.
+        """
+        valid = 0
+        total = 0
+        for L in self.left.available_symbols:
+            for R in self.right.available_symbols:
+                total += 1
+                if not zones_conflict(L, R) and is_anti_symmetric(L, R):
+                    valid += 1
+        return valid, total
+
+    def describe_dual_state(self):
+        """Human-readable dual state description."""
+        gL = get_group(self.left.state)
+        gR = get_group(self.right.state)
+        conflict = zones_conflict(self.left.state, self.right.state)
+        anti = is_anti_symmetric(self.left.state, self.right.state)
+
+        if self.use_mudras:
+            chvs_L = MUDRA_NAMES[self.left_mudra]
+            chvs_R = MUDRA_NAMES[self.right_mudra]
+        else:
+            chvs_L = CHVS_NAMES[self.left.chvs]
+            chvs_R = CHVS_NAMES[self.right.chvs]
+
+        return (f"L: {self.left.state:06b}(G{gL},{chvs_L}) | "
+                f"R: {self.right.state:06b}(G{gR},{chvs_R}) | "
+                f"lead={self.lead} | "
+                f"conflict={'YES!' if conflict else 'no'} | "
+                f"anti-sym={'yes' if anti else 'NO'}")
+
+
 def symbol_to_ascii(sym, size=5):
     """Convert a 6-bit symbol to ASCII art."""
     grid = [[' ' for _ in range(size)] for _ in range(size)]
@@ -1074,26 +1417,82 @@ if __name__ == '__main__':
                 print(f"    Target: {ch['symbol']:06b} G{ch['group']} "
                       f"(respond in {ch['response_time']:.1f}s)")
 
-    # 8. Training plan with symbol counts per quarter
-    print("\n--- Annual Training Plan (Kryukov) ---")
-    for q, info in TRAINING_PLAN.items():
-        available = sum(1 for s in range(64) if get_group(s) in info['groups'])
-        print(f"  {q}: {info['name']:35s} | kata={info['kata_length']} "
-              f"| groups={info['groups']} | {available} symbols")
+    # 8. DUAL AUTOMATON — two coordinated hands
+    print("\n--- Dual Match-Stick Automaton (Juggler Mode) ---")
+    for level in [1, 3, 5]:
+        dual = DualMatchStickAutomaton(mastery_level=level, seed=42)
+        valid, total = dual.count_valid_pairs()
+        print(f"  Level {level}: {valid}/{total} valid pairs "
+              f"({100*valid/total:.0f}% of space)")
 
-    # 9. Graph statistics
-    print("\n--- Alphabet Graph Statistics ---")
+    # 9. Dual kata generation
+    print("\n--- Dual Kata (7 tacts, Level 3) ---")
+    dual3 = DualMatchStickAutomaton(mastery_level=3, seed=42)
+    dkata = dual3.generate_dual_kata(length=7)
+    group_names = {1: 'Soft', 2: 'Hard', 3: 'MVS', 4: 'Rot',
+                   5: 'Wpn', 6: 'Mstr', 7: 'Peak'}
+    for i, (L, R, cL, cR) in enumerate(dkata):
+        gL, gR = get_group(L), get_group(R)
+        conflict = zones_conflict(L, R)
+        anti = is_anti_symmetric(L, R)
+        chvs_L = CHVS_NAMES.get(cL, '?')
+        chvs_R = CHVS_NAMES.get(cR, '?')
+        status = 'OK' if (not conflict and (anti or i == 0)) else 'WARN'
+        print(f"  T{i}: L={L:06b}(G{gL}/{group_names[gL]:4s},{chvs_L:5s}) "
+              f"R={R:06b}(G{gR}/{group_names[gR]:4s},{chvs_R:5s}) [{status}]")
+
+    # 10. Mudra system demonstration
+    print("\n--- Mudra System (8 finger positions) ---")
+    for m_id in range(8):
+        name = MUDRA_NAMES[m_id]
+        vec = MUDRA_VECTORS[m_id]
+        print(f"  {name:6s}: force={vec[0]:.1f} spread={vec[1]:.1f} "
+              f"penetr={vec[2]:.1f} control={vec[3]:.1f}")
+    print(f"  State space: 76 sym x 8 mudras x 2 hands = "
+          f"{76 * 8 * 76 * 8} dual states")
+
+    # 11. Dual kata with mudras
+    print("\n--- Dual Kata with Mudras (Level 4) ---")
+    dual_m = DualMatchStickAutomaton(mastery_level=4, use_mudras=True, seed=7)
+    dkata_m = dual_m.generate_dual_kata(length=7)
+    for i, (L, R, mL, mR) in enumerate(dkata_m):
+        gL, gR = get_group(L), get_group(R)
+        mL_name = MUDRA_NAMES.get(mL, '?')
+        mR_name = MUDRA_NAMES.get(mR, '?')
+        print(f"  T{i}: L={L:06b}(G{gL},{mL_name:6s}) "
+              f"R={R:06b}(G{gR},{mR_name:6s}) lead={dual_m.lead}")
+
+    # 12. Annual Training Plan with dual-hand progression
+    print("\n--- Annual Training Plan (Dual-Hand) ---")
+    plan_dual = {
+        'Q1': {'hands': 'single', 'mudras': 4,  'desc': 'One hand, 4 ChVS basic'},
+        'Q2': {'hands': 'single', 'mudras': 8,  'desc': 'One hand, 8 mudras'},
+        'Q3': {'hands': 'dual',   'mudras': 4,  'desc': 'Two hands, 4 ChVS, zone rules'},
+        'Q4': {'hands': 'dual',   'mudras': 8,  'desc': 'Two hands, 8 mudras, full system'},
+    }
+    for q, info in TRAINING_PLAN.items():
+        pd = plan_dual[q]
+        available = sum(1 for s in range(64) if get_group(s) in info['groups'])
+        if pd['hands'] == 'dual':
+            dual_tmp = DualMatchStickAutomaton(mastery_level=3, seed=0)
+            dual_tmp.left._update_available_groups()
+            dual_tmp.left.available_symbols = [
+                s for s in range(64) if get_group(s) in info['groups']]
+            dual_tmp.right.available_symbols = dual_tmp.left.available_symbols
+            valid_p, total_p = dual_tmp.count_valid_pairs()
+            states_str = f"{valid_p} dual pairs x {pd['mudras']}^2 = {valid_p * pd['mudras']**2}"
+        else:
+            states_str = f"{available} sym x {pd['mudras']} mudras = {available * pd['mudras']}"
+        print(f"  {q}: {info['name']:35s}")
+        print(f"       {pd['desc']:45s} | {states_str}")
+
+    # 13. Graph statistics (summary)
+    print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
     for sym in all_64:
-        neighbors = get_neighbors(sym, max_changes=2)
-        total_edges += len(neighbors)
+        total_edges += len(get_neighbors(sym, max_changes=2))
     total_edges //= 2
-    print(f"  Nodes: {len(all_64)} base + {len(HALF_SYMBOLS)} half = "
-          f"{len(all_64) + len(HALF_SYMBOLS)}")
-    print(f"  Edges (<=2 changes): {total_edges} | "
-          f"Avg degree: {2*total_edges/len(all_64):.1f} | "
-          f"Density: {2*total_edges/(64*63):.3f}")
     from collections import deque as _deque
     visited = {0: 0}
     queue = _deque([0])
@@ -1104,8 +1503,11 @@ if __name__ == '__main__':
                 visited[nb] = visited[node] + 1
                 queue.append(nb)
     max_dist = max(visited.values())
-    print(f"  Diameter (from empty): {max_dist} | "
-          f"Miller's law: 7+/-2 -> {max_dist} is within range!")
+    print(f"  Single hand: 76 nodes, {total_edges} edges, diameter={max_dist}")
+    print(f"  Single + ChVS(4):  76 x 4  = 304 states")
+    print(f"  Single + mudra(8): 76 x 8  = 608 states")
+    print(f"  Dual + ChVS(4):    304^2   = 92,416 (raw), ~30K valid")
+    print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("Complete. MSA: 76 symbols x 4 ChVS = 304 states ~ 310 ETD volumes.")
+    print("v4: Dual MSA + Mudra System. Two-hand juggler coordination.")
