@@ -4980,6 +4980,365 @@ def format_audit(audit):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# PROGRESS CHART — ASCII sparkline visualization (v16)
+# ═══════════════════════════════════════════════════════════
+
+def progress_chart(student, metric='grade', width=40):
+    """
+    Generate an ASCII sparkline chart of student progress over sessions.
+
+    Metrics:
+      'grade':     score percentage per session
+      'resonance': resonance score per session
+      'lci':       LCI average per session
+
+    Returns:
+        dict with 'chart' (ASCII string), 'data', 'trend'
+    """
+    if not student.sessions:
+        return {'chart': '(no data)', 'data': [], 'trend': 0}
+
+    if metric == 'grade':
+        data = [s['pct'] for s in student.sessions]
+        label = 'Grade %'
+        vmin, vmax = 0, 100
+    elif metric == 'resonance':
+        data = [s['resonance'] for s in student.sessions]
+        label = 'Resonance'
+        vmin, vmax = 0, 1
+    elif metric == 'lci':
+        data = [s['lci_avg'] for s in student.sessions]
+        label = 'LCI'
+        vmin, vmax = 0, math.pi * 2
+    else:
+        data = [s['pct'] for s in student.sessions]
+        label = metric
+        vmin, vmax = 0, 100
+
+    # Sparkline characters (8 levels)
+    sparks = '▁▂▃▄▅▆▇█'
+    n_levels = len(sparks)
+
+    # Normalize and build sparkline
+    span = vmax - vmin if vmax > vmin else 1
+    sparkline = ''
+    for v in data:
+        level = int((v - vmin) / span * (n_levels - 1))
+        level = max(0, min(n_levels - 1, level))
+        sparkline += sparks[level]
+
+    # Pad or truncate to width
+    if len(sparkline) > width:
+        # Sample evenly
+        step = len(sparkline) / width
+        sparkline = ''.join(sparkline[int(i * step)]
+                            for i in range(width))
+    elif len(sparkline) < width:
+        sparkline = sparkline.ljust(width, ' ')
+
+    # Trend: linear regression slope (simplified)
+    n = len(data)
+    if n >= 2:
+        x_mean = (n - 1) / 2
+        y_mean = sum(data) / n
+        num = sum((i - x_mean) * (data[i] - y_mean) for i in range(n))
+        den = sum((i - x_mean)**2 for i in range(n))
+        slope = num / den if den > 0 else 0
+    else:
+        slope = 0
+
+    trend_sym = '↑' if slope > 0.5 else ('↓' if slope < -0.5 else '→')
+
+    # Build chart
+    chart_lines = []
+    chart_lines.append(f"{label} [{student.name}] {trend_sym}")
+    chart_lines.append(f"  {vmax:>6.1f} ┤")
+    chart_lines.append(f"        │ {sparkline}")
+    chart_lines.append(f"  {vmin:>6.1f} ┤")
+    chart_lines.append(f"         {'1':>{1}} "
+                       f"{'→':^{max(1,len(sparkline)-2)}} "
+                       f"{n}")
+
+    return {
+        'chart': '\n'.join(chart_lines),
+        'data': data,
+        'trend': round(slope, 4),
+        'trend_symbol': trend_sym,
+        'current': data[-1] if data else 0,
+        'best': max(data) if data else 0,
+        'avg': sum(data) / len(data) if data else 0,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# DASHBOARD — comprehensive statistics panel (v16)
+# ═══════════════════════════════════════════════════════════
+
+def dashboard(school):
+    """
+    Generate a comprehensive statistics dashboard for a school.
+
+    Sections:
+    1. Overview (students, sessions, library size)
+    2. Grade distribution across all sessions
+    3. Top performers (by avg grade)
+    4. Library composition (tags, DNA clusters)
+    5. Achievement leaderboard
+    """
+    all_sessions = []
+    for name, sp in school.students.items():
+        for sess in sp.sessions:
+            all_sessions.append({**sess, 'student': name})
+
+    # 1. Overview
+    total_sessions = len(all_sessions)
+    total_tacts = sum(s['n_tacts'] for s in all_sessions)
+    avg_grade = (sum(s['pct'] for s in all_sessions)
+                 / total_sessions) if total_sessions else 0
+
+    # 2. Grade distribution
+    grade_dist = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
+    for s in all_sessions:
+        g = s.get('grade', 'F')
+        grade_dist[g] = grade_dist.get(g, 0) + 1
+
+    # 3. Top performers
+    performers = []
+    for name, sp in school.students.items():
+        if sp.sessions:
+            avg = sum(s['pct'] for s in sp.sessions) / len(sp.sessions)
+            performers.append((name, avg, sp.mastery_level,
+                               len(sp.sessions)))
+    performers.sort(key=lambda x: -x[1])
+
+    # 4. Library stats
+    lib_stats = school.library.stats()
+
+    # 5. Achievement leaderboard
+    ach_board = []
+    for name, sp in school.students.items():
+        ach = check_achievements(sp)
+        ach_board.append((name, len(ach['earned']), ach['progress']))
+    ach_board.sort(key=lambda x: -x[1])
+
+    return {
+        'overview': {
+            'students': len(school.students),
+            'graduated': len(school.graduated),
+            'total_sessions': total_sessions,
+            'total_tacts': total_tacts,
+            'avg_grade': round(avg_grade, 1),
+            'library_size': lib_stats['total'],
+        },
+        'grade_distribution': grade_dist,
+        'top_performers': performers[:5],
+        'library': lib_stats,
+        'achievement_board': ach_board,
+    }
+
+
+def format_dashboard(db):
+    """Format dashboard as a readable panel."""
+    o = db['overview']
+    lines = []
+    lines.append("╔══════════════════════════════════════════╗")
+    lines.append("║         SCARAB SCHOOL DASHBOARD          ║")
+    lines.append("╠══════════════════════════════════════════╣")
+    lines.append(f"║  Students: {o['students']:3d}  "
+                 f"Graduated: {o['graduated']:3d}          ║")
+    lines.append(f"║  Sessions: {o['total_sessions']:3d}  "
+                 f"Tacts: {o['total_tacts']:5d}             ║")
+    lines.append(f"║  Avg grade: {o['avg_grade']:5.1f}%  "
+                 f"Library: {o['library_size']:3d} kata     ║")
+    lines.append("╠══════════════════════════════════════════╣")
+
+    # Grade distribution bar
+    gd = db['grade_distribution']
+    total = sum(gd.values()) or 1
+    lines.append("║  Grade distribution:                     ║")
+    for g in ['A', 'B', 'C', 'D', 'F']:
+        count = gd.get(g, 0)
+        pct = count / total * 100
+        bar_len = int(pct / 5)
+        bar = '#' * bar_len
+        lines.append(f"║    {g}: {bar:<20s} {count:3d} ({pct:4.0f}%) ║")
+
+    lines.append("╠══════════════════════════════════════════╣")
+    lines.append("║  Top performers:                         ║")
+    for name, avg, ml, ns in db['top_performers']:
+        lines.append(f"║    {name:10s} L{ml} avg={avg:5.1f}% "
+                     f"({ns} sess)    ║")
+
+    lines.append("╠══════════════════════════════════════════╣")
+    lines.append("║  Achievement leaderboard:                ║")
+    for name, earned, pct in db['achievement_board'][:5]:
+        lines.append(f"║    {name:10s} {earned:2d}/10 "
+                     f"({pct:4.0f}%)                ║")
+
+    lines.append("╚══════════════════════════════════════════╝")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN CATALOG — classify movement patterns (v16)
+# ═══════════════════════════════════════════════════════════
+
+# Named patterns: common structural motifs in kata
+PATTERN_CATALOG = {
+    'ascent': {
+        'name': 'Ascent',
+        'desc': 'Monotonically increasing complexity',
+        'detect': lambda syms: all(
+            symbol_complexity(syms[i]) <= symbol_complexity(syms[i+1])
+            for i in range(len(syms)-1)) if len(syms) >= 2 else False,
+    },
+    'descent': {
+        'name': 'Descent',
+        'desc': 'Monotonically decreasing complexity',
+        'detect': lambda syms: all(
+            symbol_complexity(syms[i]) >= symbol_complexity(syms[i+1])
+            for i in range(len(syms)-1)) if len(syms) >= 2 else False,
+    },
+    'arch': {
+        'name': 'Arch',
+        'desc': 'Rise then fall (peak in middle)',
+        'detect': lambda syms: _detect_arch(syms),
+    },
+    'valley': {
+        'name': 'Valley',
+        'desc': 'Fall then rise (trough in middle)',
+        'detect': lambda syms: _detect_valley(syms),
+    },
+    'plateau': {
+        'name': 'Plateau',
+        'desc': 'Constant complexity (all same group)',
+        'detect': lambda syms: len(set(get_group(s) for s in syms)) == 1
+                  if syms else False,
+    },
+    'zigzag': {
+        'name': 'Zigzag',
+        'desc': 'Alternating high/low complexity',
+        'detect': lambda syms: _detect_zigzag(syms),
+    },
+    'cascade': {
+        'name': 'Cascade',
+        'desc': 'Stepwise descent with recoveries',
+        'detect': lambda syms: _detect_cascade(syms),
+    },
+    'mirror_sym': {
+        'name': 'Mirror',
+        'desc': 'Palindromic group sequence',
+        'detect': lambda syms: _detect_mirror(syms),
+    },
+}
+
+
+def _detect_arch(syms):
+    """Peak complexity in the middle third."""
+    if len(syms) < 3:
+        return False
+    cs = [symbol_complexity(s) for s in syms]
+    n = len(cs)
+    peak_idx = cs.index(max(cs))
+    return n // 3 <= peak_idx <= 2 * n // 3
+
+
+def _detect_valley(syms):
+    """Trough complexity in the middle third."""
+    if len(syms) < 3:
+        return False
+    cs = [symbol_complexity(s) for s in syms]
+    n = len(cs)
+    trough_idx = cs.index(min(cs))
+    return n // 3 <= trough_idx <= 2 * n // 3
+
+
+def _detect_zigzag(syms):
+    """Alternating direction changes in complexity."""
+    if len(syms) < 3:
+        return False
+    cs = [symbol_complexity(s) for s in syms]
+    changes = 0
+    for i in range(1, len(cs) - 1):
+        if (cs[i] > cs[i-1] and cs[i] > cs[i+1]) or \
+           (cs[i] < cs[i-1] and cs[i] < cs[i+1]):
+            changes += 1
+    return changes >= len(cs) // 2
+
+
+def _detect_cascade(syms):
+    """Overall downward trend but not monotonic."""
+    if len(syms) < 3:
+        return False
+    cs = [symbol_complexity(s) for s in syms]
+    overall_down = cs[0] > cs[-1]
+    monotonic = all(cs[i] >= cs[i+1] for i in range(len(cs)-1))
+    has_recovery = any(cs[i] < cs[i+1] for i in range(len(cs)-1))
+    return overall_down and not monotonic and has_recovery
+
+
+def _detect_mirror(syms):
+    """Palindromic group sequence."""
+    if len(syms) < 3:
+        return False
+    groups = [get_group(s) for s in syms]
+    n = len(groups)
+    return all(groups[i] == groups[n-1-i] for i in range(n // 2))
+
+
+def classify_kata_patterns(kata, mode='dual'):
+    """
+    Classify a kata by detecting all matching patterns.
+
+    Returns:
+        dict with patterns found for L hand, R hand, and combined
+    """
+    if mode == 'dual':
+        syms_L = [e[0] for e in kata]
+        syms_R = [e[1] for e in kata]
+    else:
+        syms_L = list(kata)
+        syms_R = []
+
+    results = {'L': [], 'R': [], 'combined': []}
+
+    for key, pat in PATTERN_CATALOG.items():
+        if pat['detect'](syms_L):
+            results['L'].append({'key': key, 'name': pat['name'],
+                                 'desc': pat['desc']})
+        if syms_R and pat['detect'](syms_R):
+            results['R'].append({'key': key, 'name': pat['name'],
+                                 'desc': pat['desc']})
+        # Combined: interleave L and R
+        if syms_R:
+            combined = []
+            for i in range(len(syms_L)):
+                combined.append(syms_L[i])
+                if i < len(syms_R):
+                    combined.append(syms_R[i])
+            if pat['detect'](combined):
+                results['combined'].append({'key': key, 'name': pat['name'],
+                                            'desc': pat['desc']})
+
+    results['total'] = (len(results['L']) + len(results['R']) +
+                        len(results['combined']))
+    return results
+
+
+def format_patterns(pat_result):
+    """Format pattern classification as readable text."""
+    lines = [f"Patterns detected: {pat_result['total']}"]
+    for hand, label in [('L', 'Left'), ('R', 'Right'),
+                        ('combined', 'Combined')]:
+        if pat_result[hand]:
+            names = ', '.join(p['name'] for p in pat_result[hand])
+            lines.append(f"  {label}: {names}")
+    if pat_result['total'] == 0:
+        lines.append("  (no named patterns detected)")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -5706,7 +6065,44 @@ if __name__ == '__main__':
     audit = audit_system()
     print(format_audit(audit))
 
+    # 57. Progress Chart
+    print("\n--- Progress Chart ---")
+    # Use school's first student for chart demo
+    chart_student = list(school.students.values())[0]
+    for metric in ['grade', 'resonance', 'lci']:
+        pc = progress_chart(chart_student, metric=metric)
+        print(pc['chart'])
+        print(f"  avg={pc['avg']:.2f} best={pc['best']:.2f} "
+              f"trend={pc['trend_symbol']}({pc['trend']:+.3f})")
+        print()
+
+    # 58. Dashboard
+    print("--- Dashboard ---")
+    db = dashboard(school)
+    print(format_dashboard(db))
+
+    # 59. Pattern Catalog
+    print("\n--- Pattern Catalog ---")
+    # Classify several kata
+    pattern_katas = [
+        ('Optimized', opt_kata['kata']),
+        ('Battle', bk['kata']),
+        ('Resonance', rk['kata']),
+    ]
+    # Also generate a known arch: low → high → low
+    arch_dma = DualMatchStickAutomaton(mastery_level=3, seed=777)
+    arch_kata = arch_dma.generate_dual_kata(length=7)
+    pattern_katas.append(('Random L3', arch_kata))
+
+    for label, pk in pattern_katas:
+        pats = classify_kata_patterns(pk, mode='dual')
+        print(f"  {label:12s} → {format_patterns(pats)}")
+
+    # Show catalog
+    print(f"\n  Catalog: {len(PATTERN_CATALOG)} named patterns")
+    for key, pat in PATTERN_CATALOG.items():
+        print(f"    {pat['name']:12s} — {pat['desc']}")
+
     print("\n" + "=" * 60)
-    print("v15: School lifecycle, JSON export/import,")
-    print("     system audit (8/8 integrity checks).")
-    print(f"     {len(school.history)} events logged.")
+    print("v16: Progress charts, school dashboard,")
+    print("     pattern catalog (8 named motifs).")
