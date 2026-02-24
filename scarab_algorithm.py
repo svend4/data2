@@ -28970,6 +28970,1335 @@ def version_history_v75():
     return '\n'.join(lines)
 
 
+# ============================================================
+# v76: Serializer, Compressor, Checksum
+# ============================================================
+
+class Serializer:
+    """Multi-format serialization engine."""
+
+    def __init__(self):
+        self.formats = {}
+        self.register_format('json', self._to_json, self._from_json)
+        self.register_format('csv', self._to_csv, self._from_csv)
+        self.register_format('ini', self._to_ini, self._from_ini)
+        self.history = []
+
+    def register_format(self, name, serialize_fn, deserialize_fn):
+        self.formats[name] = {'serialize': serialize_fn, 'deserialize': deserialize_fn}
+
+    def serialize(self, data, fmt='json'):
+        if fmt not in self.formats:
+            raise ValueError(f"Unknown format: {fmt}")
+        result = self.formats[fmt]['serialize'](data)
+        self.history.append(('serialize', fmt, len(str(result))))
+        return result
+
+    def deserialize(self, raw, fmt='json'):
+        if fmt not in self.formats:
+            raise ValueError(f"Unknown format: {fmt}")
+        result = self.formats[fmt]['deserialize'](raw)
+        self.history.append(('deserialize', fmt, len(str(raw))))
+        return result
+
+    def _to_json(self, data):
+        import json
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    def _from_json(self, raw):
+        import json
+        return json.loads(raw)
+
+    def _to_csv(self, data):
+        if not data:
+            return ""
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            headers = list(data[0].keys())
+            lines = [','.join(headers)]
+            for row in data:
+                lines.append(','.join(str(row.get(h, '')) for h in headers))
+            return '\n'.join(lines)
+        return str(data)
+
+    def _from_csv(self, raw):
+        lines = raw.strip().split('\n')
+        if len(lines) < 2:
+            return []
+        headers = lines[0].split(',')
+        result = []
+        for line in lines[1:]:
+            vals = line.split(',')
+            row = {}
+            for i, h in enumerate(headers):
+                row[h] = vals[i] if i < len(vals) else ''
+            result.append(row)
+        return result
+
+    def _to_ini(self, data):
+        lines = []
+        for section, vals in data.items():
+            lines.append(f"[{section}]")
+            if isinstance(vals, dict):
+                for k, v in vals.items():
+                    lines.append(f"{k} = {v}")
+            lines.append("")
+        return '\n'.join(lines)
+
+    def _from_ini(self, raw):
+        result = {}
+        current = None
+        for line in raw.strip().split('\n'):
+            line = line.strip()
+            if line.startswith('[') and line.endswith(']'):
+                current = line[1:-1]
+                result[current] = {}
+            elif '=' in line and current:
+                k, v = line.split('=', 1)
+                result[current][k.strip()] = v.strip()
+        return result
+
+    def get_supported_formats(self):
+        return list(self.formats.keys())
+
+    def get_stats(self):
+        total_ops = len(self.history)
+        by_fmt = {}
+        for op, fmt, sz in self.history:
+            by_fmt.setdefault(fmt, 0)
+            by_fmt[fmt] += 1
+        return {'total_ops': total_ops, 'by_format': by_fmt}
+
+
+class Compressor:
+    """Run-length and dictionary-based compression."""
+
+    def __init__(self):
+        self.stats = {'compressed': 0, 'decompressed': 0, 'total_ratio': 0.0}
+
+    def rle_compress(self, data):
+        if not data:
+            return []
+        result = []
+        current = data[0]
+        count = 1
+        for item in data[1:]:
+            if item == current:
+                count += 1
+            else:
+                result.append((current, count))
+                current = item
+                count = 1
+        result.append((current, count))
+        self.stats['compressed'] += 1
+        original = len(data)
+        compressed = len(result) * 2
+        if original > 0:
+            self.stats['total_ratio'] += compressed / original
+        return result
+
+    def rle_decompress(self, compressed):
+        result = []
+        for item, count in compressed:
+            result.extend([item] * count)
+        self.stats['decompressed'] += 1
+        return result
+
+    def dict_compress(self, text):
+        dictionary = {}
+        next_code = 256
+        result = []
+        w = ""
+        for ch in text:
+            wc = w + ch
+            if wc in dictionary:
+                w = wc
+            else:
+                if w:
+                    result.append(dictionary.get(w, ord(w[0]) if len(w) == 1 else dictionary[w]))
+                dictionary[wc] = next_code
+                next_code += 1
+                w = ch
+        if w:
+            result.append(dictionary.get(w, ord(w[0]) if len(w) == 1 else dictionary[w]))
+        self.stats['compressed'] += 1
+        return result, dictionary
+
+    def dict_decompress(self, codes, dictionary):
+        reverse_dict = {}
+        for k, v in dictionary.items():
+            if len(k) == 1:
+                reverse_dict[ord(k)] = k
+            else:
+                reverse_dict[v] = k
+        result = []
+        for code in codes:
+            if code in reverse_dict:
+                result.append(reverse_dict[code])
+            elif code < 256:
+                result.append(chr(code))
+            else:
+                result.append(f"[{code}]")
+        self.stats['decompressed'] += 1
+        return ''.join(result)
+
+    def get_compression_ratio(self, original_size, compressed_size):
+        if original_size == 0:
+            return 0.0
+        return 1.0 - (compressed_size / original_size)
+
+    def get_stats(self):
+        return dict(self.stats)
+
+
+class Checksum:
+    """Hash and checksum calculator."""
+
+    def __init__(self):
+        self.history = []
+
+    def crc32(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        crc = 0xFFFFFFFF
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 1:
+                    crc = (crc >> 1) ^ 0xEDB88320
+                else:
+                    crc >>= 1
+        result = crc ^ 0xFFFFFFFF
+        self.history.append(('crc32', result))
+        return result
+
+    def adler32(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        a = 1
+        b = 0
+        MOD = 65521
+        for byte in data:
+            a = (a + byte) % MOD
+            b = (b + a) % MOD
+        result = (b << 16) | a
+        self.history.append(('adler32', result))
+        return result
+
+    def fnv1a(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        h = 0x811c9dc5
+        for byte in data:
+            h ^= byte
+            h = (h * 0x01000193) & 0xFFFFFFFF
+        self.history.append(('fnv1a', h))
+        return h
+
+    def djb2(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        h = 5381
+        for byte in data:
+            h = ((h << 5) + h + byte) & 0xFFFFFFFF
+        self.history.append(('djb2', h))
+        return h
+
+    def verify(self, data, expected, algorithm='crc32'):
+        fn = getattr(self, algorithm, None)
+        if fn is None:
+            raise ValueError(f"Unknown algorithm: {algorithm}")
+        actual = fn(data)
+        return actual == expected
+
+    def checksum_file_sim(self, lines):
+        combined = '\n'.join(lines)
+        return {
+            'crc32': self.crc32(combined),
+            'adler32': self.adler32(combined),
+            'fnv1a': self.fnv1a(combined),
+            'djb2': self.djb2(combined),
+            'size': len(combined)
+        }
+
+    def get_algorithms(self):
+        return ['crc32', 'adler32', 'fnv1a', 'djb2']
+
+
+def format_serializer(ser):
+    stats = ser.get_stats()
+    lines = ["=== Serializer ==="]
+    lines.append(f"  Formats: {', '.join(ser.get_supported_formats())}")
+    lines.append(f"  Total ops: {stats['total_ops']}")
+    for fmt, cnt in stats['by_format'].items():
+        lines.append(f"    {fmt}: {cnt} ops")
+    return '\n'.join(lines)
+
+
+def format_compressor(comp):
+    stats = comp.get_stats()
+    lines = ["=== Compressor ==="]
+    lines.append(f"  Compressed: {stats['compressed']} times")
+    lines.append(f"  Decompressed: {stats['decompressed']} times")
+    avg = stats['total_ratio'] / max(stats['compressed'], 1)
+    lines.append(f"  Avg ratio: {avg:.2%}")
+    return '\n'.join(lines)
+
+
+def format_checksum(cs):
+    lines = ["=== Checksum ==="]
+    lines.append(f"  Algorithms: {', '.join(cs.get_algorithms())}")
+    lines.append(f"  Computations: {len(cs.history)}")
+    if cs.history:
+        last_alg, last_val = cs.history[-1]
+        lines.append(f"  Last: {last_alg} = 0x{last_val:08X}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v77: VirtualFS, FileWatcher, PathResolver
+# ============================================================
+
+class VirtualFS:
+    """In-memory virtual file system."""
+
+    def __init__(self):
+        self.files = {}
+        self.dirs = {'/'}
+        self.metadata = {}
+
+    def mkdir(self, path):
+        path = self._normalize(path)
+        parts = path.strip('/').split('/')
+        current = ''
+        for part in parts:
+            current += '/' + part
+            self.dirs.add(current)
+        return True
+
+    def write_file(self, path, content):
+        path = self._normalize(path)
+        parent = '/'.join(path.rsplit('/', 1)[:-1]) or '/'
+        if parent != '/' and parent not in self.dirs:
+            self.mkdir(parent)
+        self.files[path] = content
+        import time
+        self.metadata[path] = {
+            'size': len(content),
+            'created': time.time(),
+            'modified': time.time()
+        }
+
+    def read_file(self, path):
+        path = self._normalize(path)
+        if path not in self.files:
+            raise FileNotFoundError(f"File not found: {path}")
+        return self.files[path]
+
+    def delete_file(self, path):
+        path = self._normalize(path)
+        if path in self.files:
+            del self.files[path]
+            if path in self.metadata:
+                del self.metadata[path]
+            return True
+        return False
+
+    def exists(self, path):
+        path = self._normalize(path)
+        return path in self.files or path in self.dirs
+
+    def list_dir(self, path='/'):
+        path = self._normalize(path)
+        if path != '/' and path not in self.dirs:
+            return []
+        prefix = path if path == '/' else path + '/'
+        items = set()
+        for f in self.files:
+            if f.startswith(prefix):
+                rest = f[len(prefix):]
+                if '/' in rest:
+                    items.add(rest.split('/')[0] + '/')
+                else:
+                    items.add(rest)
+        for d in self.dirs:
+            if d.startswith(prefix) and d != path:
+                rest = d[len(prefix):]
+                if '/' not in rest:
+                    items.add(rest + '/')
+        return sorted(items)
+
+    def get_size(self, path):
+        path = self._normalize(path)
+        if path in self.metadata:
+            return self.metadata[path]['size']
+        return 0
+
+    def tree(self, path='/', depth=0):
+        items = self.list_dir(path)
+        lines = []
+        for item in items:
+            lines.append('  ' * depth + item)
+            if item.endswith('/'):
+                sub = path + ('/' if not path.endswith('/') else '') + item.rstrip('/')
+                lines.extend(self.tree(sub, depth + 1))
+        return lines
+
+    def _normalize(self, path):
+        if not path.startswith('/'):
+            path = '/' + path
+        while '//' in path:
+            path = path.replace('//', '/')
+        if path != '/' and path.endswith('/'):
+            path = path.rstrip('/')
+        return path
+
+
+class FileWatcher:
+    """Watch files for changes."""
+
+    def __init__(self):
+        self.watches = {}
+        self.snapshots = {}
+        self.events = []
+
+    def watch(self, path, callback):
+        wid = f"w_{len(self.watches)}"
+        self.watches[wid] = {'path': path, 'callback': callback, 'active': True}
+        return wid
+
+    def unwatch(self, wid):
+        if wid in self.watches:
+            self.watches[wid]['active'] = False
+            return True
+        return False
+
+    def snapshot(self, vfs):
+        snap = {}
+        for path, content in vfs.files.items():
+            snap[path] = hash(content)
+        self.snapshots = snap
+        return len(snap)
+
+    def check_changes(self, vfs):
+        changes = []
+        current = {}
+        for path, content in vfs.files.items():
+            current[path] = hash(content)
+        for path, h in current.items():
+            if path not in self.snapshots:
+                changes.append({'type': 'created', 'path': path})
+            elif self.snapshots[path] != h:
+                changes.append({'type': 'modified', 'path': path})
+        for path in self.snapshots:
+            if path not in current:
+                changes.append({'type': 'deleted', 'path': path})
+        self.events.extend(changes)
+        self._notify(changes)
+        self.snapshots = current
+        return changes
+
+    def _notify(self, changes):
+        for change in changes:
+            for wid, w in self.watches.items():
+                if w['active'] and change['path'].startswith(w['path']):
+                    w['callback'](change)
+
+    def get_events(self):
+        return list(self.events)
+
+
+class PathResolver:
+    """Resolve and manipulate file paths."""
+
+    def __init__(self, root='/'):
+        self.root = root
+        self.aliases = {}
+        self.cwd = root
+
+    def resolve(self, path):
+        if path.startswith('~'):
+            for alias, target in self.aliases.items():
+                if path.startswith(alias):
+                    path = target + path[len(alias):]
+                    break
+        if not path.startswith('/'):
+            path = self.cwd + '/' + path
+        parts = []
+        for part in path.split('/'):
+            if part == '..':
+                if parts:
+                    parts.pop()
+            elif part and part != '.':
+                parts.append(part)
+        return '/' + '/'.join(parts)
+
+    def add_alias(self, alias, target):
+        self.aliases[alias] = target
+
+    def join(self, *parts):
+        return '/'.join(p.strip('/') for p in parts if p)
+
+    def dirname(self, path):
+        if '/' not in path or path == '/':
+            return '/'
+        return path.rsplit('/', 1)[0] or '/'
+
+    def basename(self, path):
+        return path.rsplit('/', 1)[-1]
+
+    def extension(self, path):
+        name = self.basename(path)
+        if '.' in name:
+            return name.rsplit('.', 1)[-1]
+        return ''
+
+    def cd(self, path):
+        self.cwd = self.resolve(path)
+        return self.cwd
+
+    def split(self, path):
+        return [p for p in path.split('/') if p]
+
+    def is_absolute(self, path):
+        return path.startswith('/')
+
+
+def format_vfs(vfs):
+    lines = ["=== VirtualFS ==="]
+    lines.append(f"  Files: {len(vfs.files)}")
+    lines.append(f"  Dirs: {len(vfs.dirs)}")
+    total_size = sum(m['size'] for m in vfs.metadata.values())
+    lines.append(f"  Total size: {total_size} bytes")
+    return '\n'.join(lines)
+
+
+def format_file_watcher(fw):
+    lines = ["=== FileWatcher ==="]
+    active = sum(1 for w in fw.watches.values() if w['active'])
+    lines.append(f"  Active watches: {active}/{len(fw.watches)}")
+    lines.append(f"  Events recorded: {len(fw.events)}")
+    return '\n'.join(lines)
+
+
+def format_path_resolver(pr):
+    lines = ["=== PathResolver ==="]
+    lines.append(f"  Root: {pr.root}")
+    lines.append(f"  CWD: {pr.cwd}")
+    lines.append(f"  Aliases: {len(pr.aliases)}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v78: HTTPRouter, RequestParser, ResponseBuilder
+# ============================================================
+
+class HTTPRouter:
+    """URL routing with pattern matching."""
+
+    def __init__(self):
+        self.routes = []
+        self.middleware = []
+        self.not_found_handler = lambda req: {'status': 404, 'body': 'Not Found'}
+
+    def add_route(self, method, pattern, handler):
+        parts = pattern.strip('/').split('/')
+        params = []
+        for part in parts:
+            if part.startswith(':'):
+                params.append(part[1:])
+        self.routes.append({
+            'method': method.upper(),
+            'pattern': pattern,
+            'parts': parts,
+            'params': params,
+            'handler': handler
+        })
+
+    def get(self, pattern, handler):
+        self.add_route('GET', pattern, handler)
+
+    def post(self, pattern, handler):
+        self.add_route('POST', pattern, handler)
+
+    def put(self, pattern, handler):
+        self.add_route('PUT', pattern, handler)
+
+    def delete(self, pattern, handler):
+        self.add_route('DELETE', pattern, handler)
+
+    def use(self, middleware_fn):
+        self.middleware.append(middleware_fn)
+
+    def match(self, method, path):
+        path_parts = path.strip('/').split('/')
+        for route in self.routes:
+            if route['method'] != method.upper():
+                continue
+            if len(route['parts']) != len(path_parts):
+                continue
+            params = {}
+            matched = True
+            for rp, pp in zip(route['parts'], path_parts):
+                if rp.startswith(':'):
+                    params[rp[1:]] = pp
+                elif rp != pp:
+                    matched = False
+                    break
+            if matched:
+                return route['handler'], params
+        return None, {}
+
+    def dispatch(self, method, path, body=None):
+        request = {'method': method, 'path': path, 'body': body, 'params': {}}
+        for mw in self.middleware:
+            request = mw(request)
+            if request is None:
+                return {'status': 403, 'body': 'Blocked by middleware'}
+        handler, params = self.match(method, path)
+        if handler:
+            request['params'] = params
+            return handler(request)
+        return self.not_found_handler(request)
+
+    def get_routes(self):
+        return [{'method': r['method'], 'pattern': r['pattern']} for r in self.routes]
+
+
+class RequestParser:
+    """Parse HTTP-like request strings."""
+
+    def __init__(self):
+        self.parsed_count = 0
+
+    def parse(self, raw):
+        lines = raw.strip().split('\n')
+        if not lines:
+            return None
+        first_line = lines[0].split(' ')
+        method = first_line[0] if len(first_line) > 0 else 'GET'
+        path = first_line[1] if len(first_line) > 1 else '/'
+        version = first_line[2] if len(first_line) > 2 else 'HTTP/1.1'
+        headers = {}
+        body = ''
+        in_body = False
+        for line in lines[1:]:
+            if in_body:
+                body += line + '\n'
+            elif line.strip() == '':
+                in_body = True
+            elif ':' in line:
+                key, val = line.split(':', 1)
+                headers[key.strip()] = val.strip()
+        self.parsed_count += 1
+        return {
+            'method': method,
+            'path': path,
+            'version': version,
+            'headers': headers,
+            'body': body.strip()
+        }
+
+    def parse_query_string(self, qs):
+        params = {}
+        if '?' in qs:
+            qs = qs.split('?', 1)[1]
+        for pair in qs.split('&'):
+            if '=' in pair:
+                k, v = pair.split('=', 1)
+                params[k] = v
+        return params
+
+    def parse_url(self, url):
+        path = url.split('?')[0]
+        query = self.parse_query_string(url) if '?' in url else {}
+        fragment = ''
+        if '#' in url:
+            fragment = url.split('#', 1)[1]
+        return {'path': path, 'query': query, 'fragment': fragment}
+
+
+class ResponseBuilder:
+    """Build HTTP-like responses."""
+
+    STATUS_TEXTS = {
+        200: 'OK', 201: 'Created', 204: 'No Content',
+        301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
+        400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
+        404: 'Not Found', 405: 'Method Not Allowed',
+        500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable'
+    }
+
+    def __init__(self):
+        self.status_code = 200
+        self.headers = {'Content-Type': 'text/plain'}
+        self.body = ''
+        self.cookies = []
+
+    def status(self, code):
+        self.status_code = code
+        return self
+
+    def header(self, key, value):
+        self.headers[key] = value
+        return self
+
+    def content_type(self, ct):
+        self.headers['Content-Type'] = ct
+        return self
+
+    def json(self, data):
+        import json
+        self.headers['Content-Type'] = 'application/json'
+        self.body = json.dumps(data)
+        return self
+
+    def text(self, txt):
+        self.headers['Content-Type'] = 'text/plain'
+        self.body = txt
+        return self
+
+    def html(self, content):
+        self.headers['Content-Type'] = 'text/html'
+        self.body = content
+        return self
+
+    def cookie(self, name, value, max_age=3600):
+        self.cookies.append(f"{name}={value}; Max-Age={max_age}; Path=/")
+        return self
+
+    def redirect(self, url, permanent=False):
+        self.status_code = 301 if permanent else 302
+        self.headers['Location'] = url
+        return self
+
+    def build(self):
+        status_text = self.STATUS_TEXTS.get(self.status_code, 'Unknown')
+        lines = [f"HTTP/1.1 {self.status_code} {status_text}"]
+        for k, v in self.headers.items():
+            lines.append(f"{k}: {v}")
+        for c in self.cookies:
+            lines.append(f"Set-Cookie: {c}")
+        lines.append(f"Content-Length: {len(self.body)}")
+        lines.append('')
+        lines.append(self.body)
+        return '\n'.join(lines)
+
+
+def format_http_router(router):
+    lines = ["=== HTTPRouter ==="]
+    routes = router.get_routes()
+    lines.append(f"  Routes: {len(routes)}")
+    lines.append(f"  Middleware: {len(router.middleware)}")
+    for r in routes[:5]:
+        lines.append(f"    {r['method']} {r['pattern']}")
+    return '\n'.join(lines)
+
+
+def format_request_parser(rp):
+    lines = ["=== RequestParser ==="]
+    lines.append(f"  Parsed requests: {rp.parsed_count}")
+    return '\n'.join(lines)
+
+
+def format_response_builder(rb):
+    lines = ["=== ResponseBuilder ==="]
+    lines.append(f"  Status: {rb.status_code}")
+    lines.append(f"  Headers: {len(rb.headers)}")
+    lines.append(f"  Cookies: {len(rb.cookies)}")
+    lines.append(f"  Body length: {len(rb.body)}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v79: StateMachine, FSMValidator, TransitionLog
+# ============================================================
+
+class StateMachine:
+    """Finite state machine with guards and actions."""
+
+    def __init__(self, initial_state):
+        self.current_state = initial_state
+        self.initial_state = initial_state
+        self.states = {initial_state}
+        self.transitions = {}
+        self.on_enter = {}
+        self.on_exit = {}
+        self.history = [initial_state]
+
+    def add_state(self, name, on_enter=None, on_exit=None):
+        self.states.add(name)
+        if on_enter:
+            self.on_enter[name] = on_enter
+        if on_exit:
+            self.on_exit[name] = on_exit
+
+    def add_transition(self, from_state, event, to_state, guard=None, action=None):
+        key = (from_state, event)
+        self.transitions[key] = {
+            'to': to_state,
+            'guard': guard,
+            'action': action
+        }
+        self.states.add(from_state)
+        self.states.add(to_state)
+
+    def trigger(self, event, context=None):
+        key = (self.current_state, event)
+        if key not in self.transitions:
+            return False
+        trans = self.transitions[key]
+        if trans['guard'] and not trans['guard'](context):
+            return False
+        old_state = self.current_state
+        if old_state in self.on_exit:
+            self.on_exit[old_state](context)
+        if trans['action']:
+            trans['action'](context)
+        self.current_state = trans['to']
+        if self.current_state in self.on_enter:
+            self.on_enter[self.current_state](context)
+        self.history.append(self.current_state)
+        return True
+
+    def can_trigger(self, event, context=None):
+        key = (self.current_state, event)
+        if key not in self.transitions:
+            return False
+        trans = self.transitions[key]
+        if trans['guard'] and not trans['guard'](context):
+            return False
+        return True
+
+    def reset(self):
+        self.current_state = self.initial_state
+        self.history = [self.initial_state]
+
+    def get_available_events(self):
+        events = []
+        for (state, event) in self.transitions:
+            if state == self.current_state:
+                events.append(event)
+        return events
+
+    def get_all_events(self):
+        return list(set(e for _, e in self.transitions.keys()))
+
+    def get_state_graph(self):
+        graph = {}
+        for (from_s, event), trans in self.transitions.items():
+            graph.setdefault(from_s, [])
+            graph[from_s].append({'event': event, 'to': trans['to']})
+        return graph
+
+
+class FSMValidator:
+    """Validate finite state machine definitions."""
+
+    def __init__(self):
+        self.errors = []
+        self.warnings = []
+
+    def validate(self, fsm):
+        self.errors = []
+        self.warnings = []
+        self._check_initial_state(fsm)
+        self._check_unreachable_states(fsm)
+        self._check_dead_states(fsm)
+        self._check_determinism(fsm)
+        return len(self.errors) == 0
+
+    def _check_initial_state(self, fsm):
+        if fsm.initial_state not in fsm.states:
+            self.errors.append(f"Initial state '{fsm.initial_state}' not in states")
+
+    def _check_unreachable_states(self, fsm):
+        reachable = {fsm.initial_state}
+        queue = [fsm.initial_state]
+        while queue:
+            state = queue.pop(0)
+            for (from_s, _), trans in fsm.transitions.items():
+                if from_s == state and trans['to'] not in reachable:
+                    reachable.add(trans['to'])
+                    queue.append(trans['to'])
+        unreachable = fsm.states - reachable
+        for s in unreachable:
+            self.warnings.append(f"State '{s}' is unreachable")
+
+    def _check_dead_states(self, fsm):
+        has_outgoing = set()
+        for (from_s, _) in fsm.transitions:
+            has_outgoing.add(from_s)
+        for s in fsm.states:
+            if s not in has_outgoing and s != fsm.current_state:
+                self.warnings.append(f"State '{s}' is a dead-end (no outgoing transitions)")
+
+    def _check_determinism(self, fsm):
+        seen = {}
+        for (from_s, event) in fsm.transitions:
+            key = (from_s, event)
+            if key in seen:
+                self.errors.append(f"Non-deterministic: ({from_s}, {event}) has multiple transitions")
+            seen[key] = True
+
+    def get_report(self):
+        lines = ["FSM Validation Report"]
+        lines.append(f"  Errors: {len(self.errors)}")
+        for e in self.errors:
+            lines.append(f"    ERROR: {e}")
+        lines.append(f"  Warnings: {len(self.warnings)}")
+        for w in self.warnings:
+            lines.append(f"    WARN: {w}")
+        return '\n'.join(lines)
+
+
+class TransitionLog:
+    """Log and analyze state transitions."""
+
+    def __init__(self):
+        self.entries = []
+        self.counters = {}
+
+    def log(self, from_state, event, to_state, context=None):
+        import time
+        entry = {
+            'from': from_state,
+            'event': event,
+            'to': to_state,
+            'timestamp': time.time(),
+            'context': context
+        }
+        self.entries.append(entry)
+        key = (from_state, event, to_state)
+        self.counters[key] = self.counters.get(key, 0) + 1
+
+    def get_transitions_from(self, state):
+        return [e for e in self.entries if e['from'] == state]
+
+    def get_transitions_to(self, state):
+        return [e for e in self.entries if e['to'] == state]
+
+    def get_most_frequent(self, top_n=5):
+        sorted_items = sorted(self.counters.items(), key=lambda x: -x[1])
+        return sorted_items[:top_n]
+
+    def get_sequence(self):
+        if not self.entries:
+            return []
+        seq = [self.entries[0]['from']]
+        for e in self.entries:
+            seq.append(e['to'])
+        return seq
+
+    def get_unique_states(self):
+        states = set()
+        for e in self.entries:
+            states.add(e['from'])
+            states.add(e['to'])
+        return states
+
+    def get_stats(self):
+        return {
+            'total_transitions': len(self.entries),
+            'unique_states': len(self.get_unique_states()),
+            'unique_events': len(set(e['event'] for e in self.entries)),
+            'unique_paths': len(self.counters)
+        }
+
+
+def format_state_machine(sm):
+    lines = ["=== StateMachine ==="]
+    lines.append(f"  Current: {sm.current_state}")
+    lines.append(f"  States: {len(sm.states)}")
+    lines.append(f"  Transitions: {len(sm.transitions)}")
+    lines.append(f"  Available events: {', '.join(sm.get_available_events())}")
+    lines.append(f"  History length: {len(sm.history)}")
+    return '\n'.join(lines)
+
+
+def format_fsm_validator(fv):
+    lines = ["=== FSMValidator ==="]
+    lines.append(f"  Errors: {len(fv.errors)}")
+    lines.append(f"  Warnings: {len(fv.warnings)}")
+    return '\n'.join(lines)
+
+
+def format_transition_log(tl):
+    stats = tl.get_stats()
+    lines = ["=== TransitionLog ==="]
+    lines.append(f"  Transitions: {stats['total_transitions']}")
+    lines.append(f"  Unique states: {stats['unique_states']}")
+    lines.append(f"  Unique events: {stats['unique_events']}")
+    lines.append(f"  Unique paths: {stats['unique_paths']}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v80: MemoryAllocator, GarbageCollector, ObjectStore,
+#      RefCounter, WeakRefRegistry + 55K milestone
+# ============================================================
+
+class MemoryAllocator:
+    """Simulated memory allocator with first-fit and best-fit."""
+
+    def __init__(self, total_size=1024):
+        self.total_size = total_size
+        self.blocks = [{'start': 0, 'size': total_size, 'free': True, 'owner': None}]
+        self.allocations = {}
+
+    def alloc(self, size, owner='default', strategy='first_fit'):
+        if strategy == 'best_fit':
+            return self._best_fit(size, owner)
+        return self._first_fit(size, owner)
+
+    def _first_fit(self, size, owner):
+        for i, block in enumerate(self.blocks):
+            if block['free'] and block['size'] >= size:
+                return self._split_and_alloc(i, size, owner)
+        return None
+
+    def _best_fit(self, size, owner):
+        best_idx = -1
+        best_size = float('inf')
+        for i, block in enumerate(self.blocks):
+            if block['free'] and block['size'] >= size and block['size'] < best_size:
+                best_idx = i
+                best_size = block['size']
+        if best_idx >= 0:
+            return self._split_and_alloc(best_idx, size, owner)
+        return None
+
+    def _split_and_alloc(self, idx, size, owner):
+        block = self.blocks[idx]
+        remaining = block['size'] - size
+        block['size'] = size
+        block['free'] = False
+        block['owner'] = owner
+        if remaining > 0:
+            new_block = {'start': block['start'] + size, 'size': remaining, 'free': True, 'owner': None}
+            self.blocks.insert(idx + 1, new_block)
+        addr = block['start']
+        self.allocations[addr] = {'size': size, 'owner': owner}
+        return addr
+
+    def free(self, addr):
+        for block in self.blocks:
+            if block['start'] == addr and not block['free']:
+                block['free'] = True
+                block['owner'] = None
+                if addr in self.allocations:
+                    del self.allocations[addr]
+                self._coalesce()
+                return True
+        return False
+
+    def _coalesce(self):
+        i = 0
+        while i < len(self.blocks) - 1:
+            if self.blocks[i]['free'] and self.blocks[i + 1]['free']:
+                self.blocks[i]['size'] += self.blocks[i + 1]['size']
+                self.blocks.pop(i + 1)
+            else:
+                i += 1
+
+    def get_free_memory(self):
+        return sum(b['size'] for b in self.blocks if b['free'])
+
+    def get_used_memory(self):
+        return self.total_size - self.get_free_memory()
+
+    def get_fragmentation(self):
+        free_blocks = [b for b in self.blocks if b['free']]
+        if not free_blocks:
+            return 0.0
+        largest = max(b['size'] for b in free_blocks)
+        total_free = sum(b['size'] for b in free_blocks)
+        if total_free == 0:
+            return 0.0
+        return 1.0 - (largest / total_free)
+
+    def get_map(self):
+        return [{'start': b['start'], 'size': b['size'],
+                 'free': b['free'], 'owner': b['owner']} for b in self.blocks]
+
+
+class GarbageCollector:
+    """Mark-and-sweep garbage collector simulation."""
+
+    def __init__(self):
+        self.objects = {}
+        self.roots = set()
+        self.gc_runs = 0
+        self.total_collected = 0
+
+    def add_object(self, oid, refs=None):
+        self.objects[oid] = {'refs': set(refs or []), 'marked': False}
+
+    def add_root(self, oid):
+        self.roots.add(oid)
+
+    def remove_root(self, oid):
+        self.roots.discard(oid)
+
+    def add_ref(self, from_oid, to_oid):
+        if from_oid in self.objects:
+            self.objects[from_oid]['refs'].add(to_oid)
+
+    def remove_ref(self, from_oid, to_oid):
+        if from_oid in self.objects:
+            self.objects[from_oid]['refs'].discard(to_oid)
+
+    def collect(self):
+        for obj in self.objects.values():
+            obj['marked'] = False
+        for root in self.roots:
+            self._mark(root)
+        garbage = [oid for oid, obj in self.objects.items() if not obj['marked']]
+        for oid in garbage:
+            del self.objects[oid]
+        self.gc_runs += 1
+        self.total_collected += len(garbage)
+        return garbage
+
+    def _mark(self, oid):
+        if oid not in self.objects or self.objects[oid]['marked']:
+            return
+        self.objects[oid]['marked'] = True
+        for ref in self.objects[oid]['refs']:
+            self._mark(ref)
+
+    def get_stats(self):
+        return {
+            'objects': len(self.objects),
+            'roots': len(self.roots),
+            'gc_runs': self.gc_runs,
+            'total_collected': self.total_collected
+        }
+
+
+class ObjectStore:
+    """Typed object storage with versioning."""
+
+    def __init__(self):
+        self.store = {}
+        self.versions = {}
+        self.type_index = {}
+
+    def put(self, key, value, obj_type='generic'):
+        if key in self.store:
+            self.versions.setdefault(key, [])
+            self.versions[key].append(self.store[key])
+        self.store[key] = {'value': value, 'type': obj_type}
+        self.type_index.setdefault(obj_type, set())
+        self.type_index[obj_type].add(key)
+
+    def get(self, key):
+        if key in self.store:
+            return self.store[key]['value']
+        return None
+
+    def get_version(self, key, version):
+        if key in self.versions and 0 <= version < len(self.versions[key]):
+            return self.versions[key][version]['value']
+        return None
+
+    def delete(self, key):
+        if key in self.store:
+            obj_type = self.store[key]['type']
+            del self.store[key]
+            if obj_type in self.type_index:
+                self.type_index[obj_type].discard(key)
+            return True
+        return False
+
+    def find_by_type(self, obj_type):
+        keys = self.type_index.get(obj_type, set())
+        return {k: self.store[k]['value'] for k in keys if k in self.store}
+
+    def get_version_count(self, key):
+        return len(self.versions.get(key, [])) + (1 if key in self.store else 0)
+
+    def get_all_types(self):
+        return list(self.type_index.keys())
+
+    def count(self):
+        return len(self.store)
+
+
+class RefCounter:
+    """Reference counting for objects."""
+
+    def __init__(self):
+        self.counts = {}
+        self.release_callbacks = {}
+
+    def acquire(self, key):
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    def release(self, key):
+        if key not in self.counts:
+            return 0
+        self.counts[key] -= 1
+        if self.counts[key] <= 0:
+            count = 0
+            del self.counts[key]
+            if key in self.release_callbacks:
+                self.release_callbacks[key](key)
+                del self.release_callbacks[key]
+        else:
+            count = self.counts[key]
+        return count
+
+    def get_count(self, key):
+        return self.counts.get(key, 0)
+
+    def on_release(self, key, callback):
+        self.release_callbacks[key] = callback
+
+    def get_all(self):
+        return dict(self.counts)
+
+    def get_active(self):
+        return {k: v for k, v in self.counts.items() if v > 0}
+
+
+class WeakRefRegistry:
+    """Weak reference simulation with expiration."""
+
+    def __init__(self):
+        self.refs = {}
+        self.alive = {}
+
+    def register(self, key, obj, weak=True):
+        self.refs[key] = {'obj': obj, 'weak': weak}
+        self.alive[key] = True
+
+    def get(self, key):
+        if key in self.refs and self.alive.get(key, False):
+            return self.refs[key]['obj']
+        return None
+
+    def invalidate(self, key):
+        if key in self.alive:
+            self.alive[key] = False
+            if key in self.refs and self.refs[key]['weak']:
+                del self.refs[key]
+            return True
+        return False
+
+    def is_alive(self, key):
+        return self.alive.get(key, False)
+
+    def get_weak_refs(self):
+        return [k for k, v in self.refs.items() if v['weak'] and self.alive.get(k, False)]
+
+    def get_strong_refs(self):
+        return [k for k, v in self.refs.items() if not v['weak'] and self.alive.get(k, False)]
+
+    def cleanup(self):
+        dead = [k for k, alive in self.alive.items() if not alive]
+        for k in dead:
+            if k in self.refs:
+                del self.refs[k]
+            del self.alive[k]
+        return len(dead)
+
+    def count(self):
+        return sum(1 for alive in self.alive.values() if alive)
+
+
+def format_memory_allocator(ma):
+    lines = ["=== MemoryAllocator ==="]
+    lines.append(f"  Total: {ma.total_size}")
+    lines.append(f"  Used: {ma.get_used_memory()}")
+    lines.append(f"  Free: {ma.get_free_memory()}")
+    lines.append(f"  Fragmentation: {ma.get_fragmentation():.1%}")
+    lines.append(f"  Blocks: {len(ma.blocks)}")
+    return '\n'.join(lines)
+
+
+def format_gc(gc):
+    stats = gc.get_stats()
+    lines = ["=== GarbageCollector ==="]
+    lines.append(f"  Objects: {stats['objects']}")
+    lines.append(f"  Roots: {stats['roots']}")
+    lines.append(f"  GC runs: {stats['gc_runs']}")
+    lines.append(f"  Collected: {stats['total_collected']}")
+    return '\n'.join(lines)
+
+
+def format_object_store(os_store):
+    lines = ["=== ObjectStore ==="]
+    lines.append(f"  Objects: {os_store.count()}")
+    lines.append(f"  Types: {', '.join(os_store.get_all_types())}")
+    return '\n'.join(lines)
+
+
+def format_ref_counter(rc):
+    lines = ["=== RefCounter ==="]
+    active = rc.get_active()
+    lines.append(f"  Active refs: {len(active)}")
+    for k, v in list(active.items())[:5]:
+        lines.append(f"    {k}: {v}")
+    return '\n'.join(lines)
+
+
+def format_weak_ref_registry(wrr):
+    lines = ["=== WeakRefRegistry ==="]
+    lines.append(f"  Alive: {wrr.count()}")
+    lines.append(f"  Weak: {len(wrr.get_weak_refs())}")
+    lines.append(f"  Strong: {len(wrr.get_strong_refs())}")
+    return '\n'.join(lines)
+
+
+def milestone_dashboard_55k():
+    return """
+╔══════════════════════════════════════════════════════════════╗
+║              SCARAB ALGORITHM — 55K MILESTONE               ║
+╠══════════════════════════════════════════════════════════════╣
+║  Versions:     80 (v1-v80)                                  ║
+║  Components:   210+                                         ║
+║  Demos:        275                                          ║
+║  Total lines:  55,000 (Python + Docs)                       ║
+║  Architecture: 10 layers                                    ║
+║  Patterns:     30+                                          ║
+╠══════════════════════════════════════════════════════════════╣
+║  v76: Serializer, Compressor, Checksum                      ║
+║  v77: VirtualFS, FileWatcher, PathResolver                  ║
+║  v78: HTTPRouter, RequestParser, ResponseBuilder            ║
+║  v79: StateMachine, FSMValidator, TransitionLog             ║
+║  v80: MemoryAllocator, GarbageCollector, ObjectStore,       ║
+║       RefCounter, WeakRefRegistry                           ║
+╠══════════════════════════════════════════════════════════════╣
+║  MILESTONES: 35K★ 40K★★ 45K★★★ 50K★★★★ 55K★★★★★           ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
+
+def version_history_v80():
+    history = {
+        'v1-v10': 'Core algorithm, symbols, groups, zones',
+        'v11-v20': 'Training, sessions, mastery tracking',
+        'v21-v30': 'Analytics, statistics, predictions',
+        'v31-v40': 'Advanced analytics, clustering, NLP',
+        'v41-v50': 'Architecture, patterns, facades',
+        'v51-v60': 'Dashboard, widgets, 35K milestone',
+        'v61-v65': 'CQRS, caching, templates, API, monitoring',
+        'v66-v70': 'I18n, GraphDB, tests, DI, workflows',
+        'v71-v75': 'L2 cache, ORM, AST, reactive, consensus',
+        'v76': 'Serializer, compressor, checksum',
+        'v77': 'VirtualFS, file watcher, path resolver',
+        'v78': 'HTTP router, request parser, response builder',
+        'v79': 'State machine, FSM validator, transition log',
+        'v80': 'Memory allocator, GC, object store, 55K milestone',
+    }
+    lines = ["=== Version History (v1-v80) ==="]
+    for ver, desc in history.items():
+        lines.append(f"  {ver}: {desc}")
+    lines.append(f"\nTotal: 80 versions, 210+ components")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -33525,3 +34854,351 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v75: Distributed lock, consensus, 50K milestone.")
+
+    # ── Demo 261: Serializer ──
+    print("\n" + "=" * 60)
+    print("Demo 261: Serializer")
+    print("=" * 60)
+    ser = Serializer()
+    test_data = [
+        {'name': 'Alice', 'score': 95},
+        {'name': 'Bob', 'score': 87},
+        {'name': 'Carol', 'score': 92}
+    ]
+    json_str = ser.serialize(test_data, 'json')
+    print(f"JSON output length: {len(json_str)}")
+    restored = ser.deserialize(json_str, 'json')
+    print(f"Restored {len(restored)} records")
+    csv_str = ser.serialize(test_data, 'csv')
+    print(f"CSV:\n{csv_str}")
+    csv_restored = ser.deserialize(csv_str, 'csv')
+    print(f"CSV restored: {len(csv_restored)} records")
+    ini_data = {'database': {'host': 'localhost', 'port': '5432'},
+                'app': {'debug': 'true', 'name': 'scarab'}}
+    ini_str = ser.serialize(ini_data, 'ini')
+    print(f"INI:\n{ini_str}")
+    ini_restored = ser.deserialize(ini_str, 'ini')
+    print(f"INI sections: {list(ini_restored.keys())}")
+    print(f"Formats: {ser.get_supported_formats()}")
+    print(format_serializer(ser))
+
+    # ── Demo 262: Compressor ──
+    print("\n" + "=" * 60)
+    print("Demo 262: Compressor")
+    print("=" * 60)
+    comp = Compressor()
+    rle_data = [1, 1, 1, 2, 2, 3, 3, 3, 3, 4, 1, 1]
+    rle_compressed = comp.rle_compress(rle_data)
+    print(f"RLE input:  {rle_data}")
+    print(f"RLE compressed: {rle_compressed}")
+    rle_decompressed = comp.rle_decompress(rle_compressed)
+    print(f"RLE match: {rle_data == rle_decompressed}")
+    dict_text = "ABABABABCABABABABC"
+    dict_codes, dict_dict = comp.dict_compress(dict_text)
+    print(f"Dict compress '{dict_text}': {len(dict_codes)} codes")
+    ratio = comp.get_compression_ratio(len(dict_text), len(dict_codes))
+    print(f"Compression ratio: {ratio:.1%}")
+    print(format_compressor(comp))
+
+    # ── Demo 263: Checksum ──
+    print("\n" + "=" * 60)
+    print("Demo 263: Checksum")
+    print("=" * 60)
+    cs = Checksum()
+    test_str = "Scarab Algorithm v80"
+    crc = cs.crc32(test_str)
+    print(f"CRC32('{test_str}'): 0x{crc:08X}")
+    adler = cs.adler32(test_str)
+    print(f"Adler32: 0x{adler:08X}")
+    fnv = cs.fnv1a(test_str)
+    print(f"FNV-1a: 0x{fnv:08X}")
+    djb = cs.djb2(test_str)
+    print(f"DJB2: 0x{djb:08X}")
+    verified = cs.verify(test_str, crc, 'crc32')
+    print(f"CRC32 verify: {verified}")
+    file_cs = cs.checksum_file_sim(["line1", "line2", "line3"])
+    print(f"File checksums: {len(file_cs)} values")
+    print(f"Algorithms: {cs.get_algorithms()}")
+    print(format_checksum(cs))
+
+    # ── Demo 264: VirtualFS ──
+    print("\n" + "=" * 60)
+    print("Demo 264: VirtualFS")
+    print("=" * 60)
+    vfs = VirtualFS()
+    vfs.mkdir("/home/user")
+    vfs.mkdir("/home/user/docs")
+    vfs.write_file("/home/user/readme.txt", "Hello World")
+    vfs.write_file("/home/user/docs/guide.md", "# Guide\nContent here")
+    vfs.write_file("/etc/config.ini", "key=value")
+    print(f"Read: {vfs.read_file('/home/user/readme.txt')}")
+    print(f"Exists /home: {vfs.exists('/home')}")
+    print(f"List /home/user: {vfs.list_dir('/home/user')}")
+    print(f"Size readme: {vfs.get_size('/home/user/readme.txt')}")
+    tree = vfs.tree()
+    print(f"Tree ({len(tree)} items):")
+    for t in tree[:6]:
+        print(f"  {t}")
+    vfs.delete_file("/etc/config.ini")
+    print(f"After delete, exists: {vfs.exists('/etc/config.ini')}")
+    print(format_vfs(vfs))
+
+    # ── Demo 265: FileWatcher ──
+    print("\n" + "=" * 60)
+    print("Demo 265: FileWatcher")
+    print("=" * 60)
+    fw = FileWatcher()
+    watch_log = []
+    fw.watch("/home", lambda c: watch_log.append(c))
+    fw.snapshot(vfs)
+    vfs.write_file("/home/user/new.txt", "New file")
+    vfs.write_file("/home/user/readme.txt", "Updated content")
+    changes = fw.check_changes(vfs)
+    print(f"Changes detected: {len(changes)}")
+    for ch in changes:
+        print(f"  {ch['type']}: {ch['path']}")
+    print(f"Watch log: {len(watch_log)} events")
+    print(f"Total events: {len(fw.get_events())}")
+    print(format_file_watcher(fw))
+
+    # ── Demo 266: PathResolver ──
+    print("\n" + "=" * 60)
+    print("Demo 266: PathResolver")
+    print("=" * 60)
+    pr = PathResolver()
+    pr.add_alias("~home", "/home/user")
+    pr.cd("/home/user/docs")
+    print(f"CWD: {pr.cwd}")
+    print(f"Resolve '../readme.txt': {pr.resolve('../readme.txt')}")
+    print(f"Resolve '~home/docs': {pr.resolve('~home/docs')}")
+    print(f"Join: {pr.join('/home', 'user', 'docs')}")
+    print(f"Dirname: {pr.dirname('/home/user/file.txt')}")
+    print(f"Basename: {pr.basename('/home/user/file.txt')}")
+    print(f"Extension: {pr.extension('/home/user/file.txt')}")
+    print(f"Split: {pr.split('/home/user/docs')}")
+    print(f"Is absolute '/x': {pr.is_absolute('/x')}")
+    print(f"Is absolute 'x': {pr.is_absolute('x')}")
+    print(format_path_resolver(pr))
+
+    # ── Demo 267: HTTPRouter ──
+    print("\n" + "=" * 60)
+    print("Demo 267: HTTPRouter")
+    print("=" * 60)
+    router = HTTPRouter()
+    router.get("/users", lambda req: {'status': 200, 'body': 'User list'})
+    router.get("/users/:id", lambda req: {
+        'status': 200, 'body': f"User {req['params']['id']}"})
+    router.post("/users", lambda req: {'status': 201, 'body': 'Created'})
+    router.put("/users/:id", lambda req: {
+        'status': 200, 'body': f"Updated {req['params']['id']}"})
+    router.delete("/users/:id", lambda req: {'status': 204, 'body': ''})
+    router.use(lambda req: req)
+    resp1 = router.dispatch('GET', '/users')
+    print(f"GET /users: {resp1}")
+    resp2 = router.dispatch('GET', '/users/42')
+    print(f"GET /users/42: {resp2}")
+    resp3 = router.dispatch('POST', '/users')
+    print(f"POST /users: {resp3}")
+    resp4 = router.dispatch('GET', '/unknown')
+    print(f"GET /unknown: {resp4}")
+    print(f"Routes: {len(router.get_routes())}")
+    print(format_http_router(router))
+
+    # ── Demo 268: RequestParser ──
+    print("\n" + "=" * 60)
+    print("Demo 268: RequestParser")
+    print("=" * 60)
+    rparser = RequestParser()
+    raw_req = "GET /api/users?page=1&limit=10 HTTP/1.1\nHost: localhost\nContent-Type: application/json\n\n{\"key\": \"value\"}"
+    parsed = rparser.parse(raw_req)
+    print(f"Method: {parsed['method']}")
+    print(f"Path: {parsed['path']}")
+    print(f"Version: {parsed['version']}")
+    print(f"Headers: {parsed['headers']}")
+    print(f"Body: {parsed['body']}")
+    qs = rparser.parse_query_string("/api?page=1&limit=10")
+    print(f"Query params: {qs}")
+    url_parts = rparser.parse_url("/api/data?q=test#section1")
+    print(f"URL parts: {url_parts}")
+    print(format_request_parser(rparser))
+
+    # ── Demo 269: ResponseBuilder ──
+    print("\n" + "=" * 60)
+    print("Demo 269: ResponseBuilder")
+    print("=" * 60)
+    rb = ResponseBuilder()
+    resp = (rb.status(200)
+              .json({"users": [{"id": 1, "name": "Alice"}]})
+              .header("X-Request-Id", "abc-123")
+              .cookie("session", "xyz789")
+              .build())
+    print(f"Response ({len(resp)} chars):")
+    for line in resp.split('\n')[:5]:
+        print(f"  {line}")
+    rb2 = ResponseBuilder()
+    redirect = rb2.redirect("/login").build()
+    print(f"Redirect status: {rb2.status_code}")
+    rb3 = ResponseBuilder()
+    rb3.status(404).text("Not Found")
+    print(format_response_builder(rb3))
+
+    # ── Demo 270: StateMachine ──
+    print("\n" + "=" * 60)
+    print("Demo 270: StateMachine")
+    print("=" * 60)
+    sm = StateMachine('idle')
+    sm.add_state('idle')
+    sm.add_state('running')
+    sm.add_state('paused')
+    sm.add_state('stopped')
+    sm.add_transition('idle', 'start', 'running')
+    sm.add_transition('running', 'pause', 'paused')
+    sm.add_transition('paused', 'resume', 'running')
+    sm.add_transition('running', 'stop', 'stopped')
+    sm.add_transition('paused', 'stop', 'stopped')
+    sm.add_transition('stopped', 'reset', 'idle')
+    print(f"State: {sm.current_state}")
+    print(f"Available: {sm.get_available_events()}")
+    sm.trigger('start')
+    print(f"After start: {sm.current_state}")
+    sm.trigger('pause')
+    print(f"After pause: {sm.current_state}")
+    sm.trigger('resume')
+    print(f"After resume: {sm.current_state}")
+    sm.trigger('stop')
+    print(f"After stop: {sm.current_state}")
+    print(f"History: {sm.history}")
+    print(f"All events: {sm.get_all_events()}")
+    graph = sm.get_state_graph()
+    print(f"Graph nodes: {len(graph)}")
+    print(format_state_machine(sm))
+
+    # ── Demo 271: FSMValidator ──
+    print("\n" + "=" * 60)
+    print("Demo 271: FSMValidator")
+    print("=" * 60)
+    fsm_val = FSMValidator()
+    valid = fsm_val.validate(sm)
+    print(f"FSM valid: {valid}")
+    print(fsm_val.get_report())
+    sm2 = StateMachine('a')
+    sm2.add_state('a')
+    sm2.add_state('b')
+    sm2.add_state('c')
+    sm2.add_state('orphan')
+    sm2.add_transition('a', 'go', 'b')
+    sm2.add_transition('b', 'go', 'c')
+    valid2 = fsm_val.validate(sm2)
+    print(f"FSM2 valid: {valid2}")
+    print(fsm_val.get_report())
+    print(format_fsm_validator(fsm_val))
+
+    # ── Demo 272: TransitionLog ──
+    print("\n" + "=" * 60)
+    print("Demo 272: TransitionLog")
+    print("=" * 60)
+    tlog = TransitionLog()
+    tlog.log('idle', 'start', 'running')
+    tlog.log('running', 'pause', 'paused')
+    tlog.log('paused', 'resume', 'running')
+    tlog.log('running', 'stop', 'stopped')
+    tlog.log('stopped', 'reset', 'idle')
+    tlog.log('idle', 'start', 'running')
+    print(f"Sequence: {tlog.get_sequence()}")
+    print(f"From idle: {len(tlog.get_transitions_from('idle'))}")
+    print(f"To running: {len(tlog.get_transitions_to('running'))}")
+    most_freq = tlog.get_most_frequent(3)
+    print(f"Most frequent: {most_freq}")
+    print(f"Unique states: {tlog.get_unique_states()}")
+    print(format_transition_log(tlog))
+
+    # ── Demo 273: MemoryAllocator ──
+    print("\n" + "=" * 60)
+    print("Demo 273: MemoryAllocator")
+    print("=" * 60)
+    ma = MemoryAllocator(1024)
+    a1 = ma.alloc(256, 'process_A')
+    a2 = ma.alloc(128, 'process_B')
+    a3 = ma.alloc(64, 'process_C')
+    print(f"Alloc A @{a1}, B @{a2}, C @{a3}")
+    print(f"Used: {ma.get_used_memory()}, Free: {ma.get_free_memory()}")
+    ma.free(a2)
+    print(f"After free B: frag={ma.get_fragmentation():.1%}")
+    a4 = ma.alloc(64, 'process_D', strategy='best_fit')
+    print(f"Best-fit alloc D @{a4}")
+    mem_map = ma.get_map()
+    print(f"Memory blocks: {len(mem_map)}")
+    for b in mem_map:
+        status = 'FREE' if b['free'] else b['owner']
+        print(f"  @{b['start']}  size={b['size']}  {status}")
+    print(format_memory_allocator(ma))
+
+    # ── Demo 274: GarbageCollector ──
+    print("\n" + "=" * 60)
+    print("Demo 274: GarbageCollector")
+    print("=" * 60)
+    gc_sim = GarbageCollector()
+    gc_sim.add_object('A', refs=['B', 'C'])
+    gc_sim.add_object('B', refs=['D'])
+    gc_sim.add_object('C')
+    gc_sim.add_object('D')
+    gc_sim.add_object('E', refs=['F'])
+    gc_sim.add_object('F')
+    gc_sim.add_object('G')
+    gc_sim.add_root('A')
+    print(f"Objects before GC: {gc_sim.get_stats()['objects']}")
+    garbage = gc_sim.collect()
+    print(f"Collected: {garbage}")
+    print(f"Objects after GC: {gc_sim.get_stats()['objects']}")
+    gc_sim.remove_root('A')
+    garbage2 = gc_sim.collect()
+    print(f"After removing root, collected: {len(garbage2)}")
+    print(format_gc(gc_sim))
+
+    # ── Demo 275: ObjectStore + RefCounter + WeakRefRegistry ──
+    print("\n" + "=" * 60)
+    print("Demo 275: ObjectStore + RefCounter + WeakRefRegistry")
+    print("=" * 60)
+    os_store = ObjectStore()
+    os_store.put('user:1', {'name': 'Alice'}, 'user')
+    os_store.put('user:2', {'name': 'Bob'}, 'user')
+    os_store.put('config:db', {'host': 'localhost'}, 'config')
+    os_store.put('user:1', {'name': 'Alice', 'age': 30}, 'user')
+    print(f"Store: {os_store.count()} objects")
+    print(f"User:1 current: {os_store.get('user:1')}")
+    print(f"User:1 v0: {os_store.get_version('user:1', 0)}")
+    print(f"Versions of user:1: {os_store.get_version_count('user:1')}")
+    print(f"Types: {os_store.get_all_types()}")
+    users = os_store.find_by_type('user')
+    print(f"Users: {len(users)}")
+    print(format_object_store(os_store))
+    rc = RefCounter()
+    released = []
+    rc.on_release('conn_1', lambda k: released.append(k))
+    rc.acquire('conn_1')
+    rc.acquire('conn_1')
+    rc.acquire('conn_2')
+    print(f"conn_1 count: {rc.get_count('conn_1')}")
+    rc.release('conn_1')
+    print(f"conn_1 after release: {rc.get_count('conn_1')}")
+    rc.release('conn_1')
+    print(f"conn_1 released callback: {released}")
+    print(format_ref_counter(rc))
+    wrr = WeakRefRegistry()
+    wrr.register('cache_1', {'data': [1, 2, 3]}, weak=True)
+    wrr.register('cache_2', {'data': [4, 5, 6]}, weak=True)
+    wrr.register('permanent', {'data': 'keep'}, weak=False)
+    print(f"Alive: {wrr.count()}")
+    print(f"Weak refs: {wrr.get_weak_refs()}")
+    print(f"Strong refs: {wrr.get_strong_refs()}")
+    wrr.invalidate('cache_1')
+    print(f"After invalidate: alive={wrr.count()}")
+    cleaned = wrr.cleanup()
+    print(f"Cleaned up: {cleaned}")
+    print(format_weak_ref_registry(wrr))
+
+    print("\n" + milestone_dashboard_55k())
+    print("\n" + version_history_v80())
+
+    print("\n" + "=" * 60)
+    print("v80: Memory allocator, GC, object store, 55K milestone.")
