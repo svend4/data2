@@ -2005,3 +2005,149 @@ LCI оптимальный = π/4              compute_lci()
 
 Всё реализовано. Мост continuous ↔ discrete замкнут.
 ```
+
+---
+
+## Часть 25: Прогрессия, экзамен, резонанс — полная тренировочная система
+
+### 25.1 Симулятор прогрессии (5-летний цикл)
+
+```python
+simulate_progression(n_years=5, sessions_per_quarter=12, seed=42)
+```
+
+Моделирует полный цикл тренировок: 5 лет × 4 квартала × 12 сессий = 240 сессий.
+
+```
+Прогрессия ученика (выдержка):
+
+Год  Кв  Оценка   LCI    Групп  Режим
+──────────────────────────────────────
+ 1   Q1  A(100%)  0.000  1/7    single    ← только основы
+ 1   Q3  D(50%)   1.270  1/7    dual      ← первый dual = сложно
+ 2   Q4  C(68%)   1.197  5/7    dual      ← рост групп
+ 3   Q4  C(66%)   1.188  3/7    dual+M    ← добавлены мудры
+ 5   Q2  A(100%)  0.852  5/7    single    ← полный охват
+ 5   Q4  C(64%)   1.201  4/7    D+M       ← стабилизация
+
+Общая динамика (Год 1 → Год 5):
+  Группы: 1 → 5 из 7 (расширение словаря)
+  LCI: 0.878 → 0.840 (стабилизация)
+  Dual оценки: D(50%) → C(72%) (медленный рост)
+```
+
+Наблюдения:
+- Single-hand ката всегда A (100%) — проще
+- Dual-hand начинается с D, растёт до C за 5 лет
+- Мудры (Year 3+) временно снижают оценку
+- Группы 6-7 (Master, Peak) появляются только в Q4 Year 4+
+
+### 25.2 Система экзаменов
+
+```python
+# Генерация экзамена
+exam = generate_exam(quarter='Q3', mastery_level=3, year=2)
+
+# Экзамен содержит:
+exam['reference']           # эталонная ката (Grade A)
+exam['reference_score']     # оценка эталона
+exam['reference_notation']  # "D5/w:A0A.K0F.L0E.a0H.Q0l"
+exam['pass_threshold']      # 70% для сдачи
+exam['honor_threshold']     # 90% для отличия
+
+# Оценка студента
+ev = evaluate_exam(exam, student_kata)
+ev['result']        # 'HONORS' / 'PASS' / 'FAIL'
+ev['score']         # полная оценка (5 правил)
+ev['similarity_pct'] # % совпадения с эталоном
+ev['feedback']      # конкретные рекомендации
+```
+
+Пример обратной связи:
+```
+Результат: PASS (85%)
+Похожесть с эталоном: 60%
+Рекомендации:
+  → Improve Rule 2 (anti-symmetry): 4/5
+  → Improve Rule 3 (lead alternation): 0/1
+  → Improve Rule 5 (complexity conservation): 4/5
+```
+
+### 25.3 Детекция резонанса
+
+```python
+detect_resonance(kata, mode='dual') → {
+    'resonance_score': 0.97,    # 0-1 (1 = идеальный резонанс)
+    'patterns': [...],           # обнаруженные паттерны
+    'lci_stability': 0.90,       # стабильность LCI (низкая дисперсия)
+    'phase_coherence': 1.00,     # когерентность фаз (dual)
+    'is_palindrome': True,       # палиндромная структура
+}
+```
+
+5 типов резонанса:
+
+```
+1. Периодичность:    повторение групп с периодом 2 или 3
+2. Палиндром:        группы = обратная последовательность
+3. LCI стабильность: дисперсия < 30% от среднего
+4. Фазовая когерентность: одна рука всегда ведёт (dual)
+5. Арка сложности:   crescendo → decrescendo
+
+Примеры обнаруженных паттернов:
+  Оптимизированная ката (0.97):
+    - Period-2 group repetition (60%)
+    - Palindrome (group sequence)
+    - LCI stable (90%)
+    - Perfect phase coherence
+
+  Боевая ката №4 (0.81):
+    - Period-3 group repetition (67%)
+    - LCI stable (91%)
+    - Falling decrescendo
+```
+
+Связь с теорией Крюкова:
+- Резонанс = ω_БВС = ω_СВС = ω_МВС = ω_ЧВС (Level 5)
+- Палиндром = возврат в исходную позицию (замкнутый цикл)
+- Фазовая когерентность = правильная координация рук
+- LCI стабильность = закон сохранения |A| = const
+
+### 25.4 Полная система (v10) — итоги
+
+```
+Компоненты SCARAB v10:
+
+УРОВЕНЬ ТЕОРИИ:
+  ScarabQuaternion     A = a + bi + cj + dk
+  verify_conservation  |A| = π при мастерстве
+  compute_lci          LCI = √(Σ сфер²)
+  detect_resonance     5 типов резонанса
+
+УРОВЕНЬ ГЕНЕРАЦИИ:
+  MatchStickAutomaton       1 рука, 76 символов, граф переходов
+  DualMatchStickAutomaton   2 руки, 5 правил координации
+  trajectory_kata(k)        деформированная 8-ка → символы
+  generate_battle_kata      4 боевых формата
+  optimize_kata             генетический поиск Grade A
+
+УРОВЕНЬ ТРЕНИРОВКИ:
+  generate_seasonal_kata    4 квартала × ритм × темп
+  generate_training_session одиночная/двуручная сессия (45 мин)
+  simulate_progression      5-летний цикл (240 сессий)
+  generate_exam             экзамен + эталонная ката
+  evaluate_exam             оценка + рекомендации
+
+УРОВЕНЬ ПРЕДСТАВЛЕНИЯ:
+  symbol_to_ascii           ASCII-арт символов
+  stick_figure_frame        палочная фигура
+  dual_stick_figure         двуручная визуализация
+  animate_dual_kata         покадровая анимация
+  plot_trajectory_ascii     ASCII траектория 8-ки
+  kata_to_notation          компактная нотация
+  analyze_kata              статистика качества
+  export_training_session   текстовый файл сессии
+
+ИТОГО: 38 демо-секций, 24 части документации,
+       ~3700 строк кода, полный мост теория↔практика
+```

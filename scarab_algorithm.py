@@ -3005,6 +3005,329 @@ TRAINING_PLAN = {
 
 
 # ═══════════════════════════════════════════════════════════
+# TRAINING PROGRESSION SIMULATOR
+# ═══════════════════════════════════════════════════════════
+
+def simulate_progression(n_years=5, sessions_per_quarter=12, seed=None):
+    """
+    Simulate a student's progression through the full training cycle.
+
+    Tracks: mastery level, kata grades, LCI, group coverage
+    over 5 years × 4 quarters × 12 sessions = 240 sessions.
+
+    Returns:
+        dict with per-quarter stats and overall progression curve
+    """
+    rng = random.Random(seed)
+    results = []
+
+    for year in range(1, n_years + 1):
+        for qi, quarter in enumerate(['Q1', 'Q2', 'Q3', 'Q4']):
+            mastery = min(5, year)
+            use_dual = (qi >= 2)  # Q3+ = dual
+            use_mudras = (year >= 3 and qi >= 3)  # Year 3+ Q4 = mudras
+
+            quarter_grades = []
+            quarter_lcis = []
+            quarter_groups = set()
+
+            for session in range(sessions_per_quarter):
+                sk = generate_seasonal_kata(
+                    quarter, mastery_level=mastery, year=year,
+                    use_dual=use_dual, use_mudras=use_mudras,
+                    seed=rng.randint(0, 2**31))
+
+                if use_dual and 'score' in sk:
+                    quarter_grades.append(sk['score']['pct'])
+                    lci = compute_lci(sk['kata'], mode='dual')
+                    quarter_lcis.append(lci['avg'])
+                elif not use_dual:
+                    quarter_grades.append(100.0)  # Single is always "correct"
+                    lci = compute_lci(sk['kata'], mode='single')
+                    quarter_lcis.append(lci['avg'])
+
+                for entry in sk['kata']:
+                    if isinstance(entry, tuple):
+                        quarter_groups.add(get_group(entry[0]))
+                        quarter_groups.add(get_group(entry[1]))
+                    else:
+                        quarter_groups.add(get_group(entry))
+
+            avg_grade = sum(quarter_grades) / len(quarter_grades) if quarter_grades else 0
+            avg_lci = sum(quarter_lcis) / len(quarter_lcis) if quarter_lcis else 0
+
+            results.append({
+                'year': year,
+                'quarter': quarter,
+                'mastery': mastery,
+                'avg_grade': round(avg_grade, 1),
+                'avg_lci': round(avg_lci, 4),
+                'groups_covered': sorted(quarter_groups),
+                'n_groups': len(quarter_groups),
+                'dual': use_dual,
+                'mudras': use_mudras,
+            })
+
+    return results
+
+
+def format_progression(results):
+    """Format progression results as human-readable summary."""
+    lines = []
+    current_year = 0
+    for r in results:
+        if r['year'] != current_year:
+            current_year = r['year']
+            lines.append(f"  Year {current_year} (mastery={r['mastery']}):")
+        mode = 'D+M' if r['mudras'] else ('dual' if r['dual'] else 'sing')
+        grade_letter = ('A' if r['avg_grade'] >= 90 else
+                        'B' if r['avg_grade'] >= 75 else
+                        'C' if r['avg_grade'] >= 60 else 'D')
+        lines.append(f"    {r['quarter']}: grade={grade_letter}({r['avg_grade']:.0f}%) "
+                     f"LCI={r['avg_lci']:.3f} "
+                     f"groups={r['n_groups']}/7 mode={mode}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# EXAM SYSTEM — evaluate student against ideal
+# ═══════════════════════════════════════════════════════════
+
+def generate_exam(quarter='Q4', mastery_level=3, year=3, seed=None):
+    """
+    Generate an exam: ideal kata + evaluation criteria.
+
+    The exam consists of:
+    1. An optimized reference kata (Grade A target)
+    2. Evaluation rubric per tact
+    3. Pass/fail thresholds
+
+    Returns:
+        dict with reference kata, criteria, and evaluation function
+    """
+    rng = random.Random(seed)
+
+    # Generate an optimized reference
+    ref = optimize_kata(
+        length=TRAINING_PLAN[quarter]['kata_length'],
+        mastery_level=min(5, mastery_level + (year - 1)),
+        target_grade='A',
+        max_attempts=30,
+        groups=TRAINING_PLAN[quarter]['groups'],
+        base_seed=rng.randint(0, 2**31))
+
+    return {
+        'quarter': quarter,
+        'year': year,
+        'mastery': mastery_level,
+        'reference': ref['kata'],
+        'reference_score': ref['score'],
+        'reference_notation': kata_to_notation(ref['kata'], mode='dual'),
+        'pass_threshold': 70.0,  # Minimum % for pass
+        'honor_threshold': 90.0,  # % for honors
+    }
+
+
+def evaluate_exam(exam, student_kata):
+    """
+    Evaluate a student's kata against the exam reference.
+
+    Comparison metrics:
+    1. Score: student kata graded independently
+    2. Similarity: how close to reference (per-tact Hamming)
+    3. Rule compliance: all 5 rules checked
+    4. LCI deviation from target
+
+    Returns:
+        dict with evaluation results, pass/fail, feedback
+    """
+    # Score the student kata
+    student_score = score_dual_kata(student_kata)
+
+    # Similarity to reference
+    ref = exam['reference']
+    n = min(len(ref), len(student_kata))
+    similarity_L = []
+    similarity_R = []
+    for i in range(n):
+        dL = hamming_distance(ref[i][0], student_kata[i][0])
+        dR = hamming_distance(ref[i][1], student_kata[i][1])
+        similarity_L.append(max(0, 1 - dL / 6.0))
+        similarity_R.append(max(0, 1 - dR / 6.0))
+
+    avg_sim = ((sum(similarity_L) + sum(similarity_R)) /
+               (2 * n) * 100) if n > 0 else 0
+
+    # LCI
+    student_lci = compute_lci(student_kata, mode='dual')
+
+    # Feedback
+    feedback = []
+    if student_score['pct'] < exam['pass_threshold']:
+        feedback.append('FAIL: Score below pass threshold')
+    if student_lci['deviation_pct'] > 70:
+        feedback.append('LCI too far from target (work on complexity balance)')
+
+    # Per-rule feedback
+    for r in range(1, 6):
+        rule_str = student_score['rules'][r]
+        num, den = rule_str.split('/')
+        if int(num) < int(den):
+            names = {1: 'zone exclusion', 2: 'anti-symmetry',
+                     3: 'lead alternation', 4: 'smoothness',
+                     5: 'complexity conservation'}
+            feedback.append(f'Improve Rule {r} ({names[r]}): {rule_str}')
+
+    passed = student_score['pct'] >= exam['pass_threshold']
+    honors = student_score['pct'] >= exam['honor_threshold']
+
+    return {
+        'score': student_score,
+        'similarity_pct': round(avg_sim, 1),
+        'lci': student_lci,
+        'passed': passed,
+        'honors': honors,
+        'result': 'HONORS' if honors else ('PASS' if passed else 'FAIL'),
+        'feedback': feedback,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# RESONANCE DETECTION
+# ═══════════════════════════════════════════════════════════
+
+def detect_resonance(kata, mode='dual'):
+    """
+    Detect harmonic/resonant patterns in a kata.
+
+    Resonance occurs when:
+    1. Periodic repetition of symbols or groups
+    2. Symmetric structure (palindrome-like)
+    3. LCI stability (low variance)
+    4. Phase coherence between hands (for dual)
+
+    Returns:
+        dict with resonance metrics and detected patterns
+    """
+    if mode == 'dual':
+        syms_L = [entry[0] for entry in kata]
+        syms_R = [entry[1] for entry in kata]
+    else:
+        syms_L = list(kata)
+        syms_R = []
+
+    n = len(syms_L)
+    if n < 3:
+        return {'resonance_score': 0.0, 'patterns': []}
+
+    patterns = []
+
+    # 1. Periodicity: check for repeating subsequences
+    groups_L = [get_group(s) for s in syms_L]
+    groups_R = [get_group(s) for s in syms_R] if syms_R else []
+
+    # Check period-2 and period-3 repetition in groups
+    for period in [2, 3]:
+        if n >= period * 2:
+            match_count = 0
+            total_checks = 0
+            for i in range(n - period):
+                if groups_L[i] == groups_L[i + period]:
+                    match_count += 1
+                total_checks += 1
+            if total_checks > 0:
+                periodicity = match_count / total_checks
+                if periodicity > 0.5:
+                    patterns.append(f'Period-{period} group repetition '
+                                    f'({periodicity:.0%})')
+
+    # 2. Palindrome detection (group level)
+    is_palindrome = (groups_L == groups_L[::-1])
+    if is_palindrome:
+        patterns.append('Palindrome (group sequence)')
+
+    # Near-palindrome: allow 1 mismatch
+    if not is_palindrome and n >= 5:
+        mismatches = sum(1 for i in range(n // 2)
+                         if groups_L[i] != groups_L[n - 1 - i])
+        if mismatches <= 1:
+            patterns.append(f'Near-palindrome ({mismatches} mismatch)')
+
+    # 3. LCI stability
+    lcis = []
+    if mode == 'dual':
+        for entry in kata:
+            q = ScarabQuaternion.from_symbol_pair(entry[0], entry[1],
+                                                    entry[2] if len(entry) > 2 else 0,
+                                                    entry[3] if len(entry) > 3 else 0)
+            lcis.append(q.lci())
+    else:
+        for sym in kata:
+            x, y = symbol_to_xy(sym)
+            q = ScarabQuaternion(math.sqrt(x**2 + y**2), 0,
+                                  symbol_complexity(sym) / 4.0, 0)
+            lcis.append(q.lci())
+
+    if lcis:
+        lci_mean = sum(lcis) / len(lcis)
+        lci_var = sum((l - lci_mean)**2 for l in lcis) / len(lcis)
+        lci_stability = max(0, 1 - lci_var / (lci_mean**2 + 0.01))
+        if lci_stability > 0.7:
+            patterns.append(f'LCI stable ({lci_stability:.0%})')
+    else:
+        lci_stability = 0
+
+    # 4. Phase coherence (dual only)
+    phase_coherence = 0
+    if syms_R:
+        # Measure consistent complexity relationship
+        c_diffs = [symbol_complexity(syms_L[i]) - symbol_complexity(syms_R[i])
+                    for i in range(n)]
+        # Check if sign is consistent
+        if all(d >= 0 for d in c_diffs) or all(d <= 0 for d in c_diffs):
+            phase_coherence = 1.0
+            patterns.append('Perfect phase coherence (one hand always leads)')
+        else:
+            pos = sum(1 for d in c_diffs if d >= 0)
+            phase_coherence = max(pos, n - pos) / n
+            if phase_coherence > 0.7:
+                patterns.append(f'Strong phase coherence ({phase_coherence:.0%})')
+
+    # 5. Complexity arc (crescendo/decrescendo)
+    complexities = [symbol_complexity(s) for s in syms_L]
+    if n >= 5:
+        mid = n // 2
+        rising = all(complexities[i] <= complexities[i+1]
+                      for i in range(mid))
+        falling = all(complexities[i] >= complexities[i+1]
+                       for i in range(mid, n-1))
+        if rising and falling:
+            patterns.append('Crescendo-decrescendo arc')
+        elif rising:
+            patterns.append('Rising crescendo')
+        elif falling:
+            patterns.append('Falling decrescendo')
+
+    # Compute overall resonance score (0-1)
+    score_components = [
+        lci_stability * 0.3,
+        phase_coherence * 0.3 if syms_R else 0,
+        (1.0 if is_palindrome else 0.5 if patterns else 0) * 0.2,
+        min(len(patterns) / 4, 1.0) * 0.2,
+    ]
+    resonance_score = sum(score_components)
+
+    return {
+        'resonance_score': round(resonance_score, 3),
+        'patterns': patterns,
+        'lci_stability': round(lci_stability, 3),
+        'phase_coherence': round(phase_coherence, 3) if syms_R else None,
+        'is_palindrome': is_palindrome,
+        'lci_values': [round(l, 3) for l in lcis],
+    }
+
+
+# ═══════════════════════════════════════════════════════════
 # DEMO / MAIN
 # ═══════════════════════════════════════════════════════════
 
@@ -3410,7 +3733,51 @@ if __name__ == '__main__':
         for line in plot:
             print(f"  {line}")
 
-    # 35. Graph statistics (summary)
+    # 35. Resonance detection
+    print("\n--- Resonance Detection ---")
+    # Optimized kata (likely more resonant)
+    res_opt = detect_resonance(opt['kata'], mode='dual')
+    print(f"  Optimized kata: resonance={res_opt['resonance_score']:.2f}")
+    print(f"    LCI stability={res_opt['lci_stability']:.2f}, "
+          f"phase={res_opt['phase_coherence']:.2f}")
+    for p in res_opt['patterns']:
+        print(f"    - {p}")
+    # Battle kata (structured)
+    res_bk = detect_resonance(bk4['kata'], mode='dual')
+    print(f"  Battle kata №4: resonance={res_bk['resonance_score']:.2f}")
+    for p in res_bk['patterns']:
+        print(f"    - {p}")
+
+    # 36. Exam system
+    print("\n--- Exam System ---")
+    exam = generate_exam(quarter='Q3', mastery_level=3, year=2, seed=42)
+    print(f"  Exam: {exam['quarter']} Year {exam['year']}, "
+          f"ref grade={exam['reference_score']['grade']}")
+    print(f"  Notation: {exam['reference_notation']}")
+    # Simulate student: generate a non-optimized kata
+    student_dual = DualMatchStickAutomaton(mastery_level=3, seed=99)
+    student_kata = student_dual.generate_dual_kata(length=5)
+    ev = evaluate_exam(exam, student_kata)
+    print(f"  Student: {ev['result']} (score={ev['score']['pct']:.0f}%, "
+          f"similarity={ev['similarity_pct']:.0f}%)")
+    for fb in ev['feedback'][:3]:
+        print(f"    -> {fb}")
+
+    # 37. Training progression (5-year simulation)
+    print("\n--- 5-Year Progression Simulation ---")
+    prog = simulate_progression(n_years=5, sessions_per_quarter=3, seed=42)
+    print(format_progression(prog))
+    # Summary: first vs last year
+    y1 = [r for r in prog if r['year'] == 1]
+    y5 = [r for r in prog if r['year'] == 5]
+    avg_lci_1 = sum(r['avg_lci'] for r in y1) / len(y1)
+    avg_lci_5 = sum(r['avg_lci'] for r in y5) / len(y5)
+    max_groups_1 = max(r['n_groups'] for r in y1)
+    max_groups_5 = max(r['n_groups'] for r in y5)
+    print(f"\n  Year 1→5: LCI {avg_lci_1:.3f}→{avg_lci_5:.3f}, "
+          f"groups {max_groups_1}→{max_groups_5}/7")
+
+    # 38. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
@@ -3434,5 +3801,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v9: Quaternion state, LCI, conservation law,")
-    print("    ASCII trajectory plots, complete theory bridge.")
+    print("v10: Progression simulator, exam system,")
+    print("     resonance detection, complete training pipeline.")
