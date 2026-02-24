@@ -10658,6 +10658,413 @@ class CustomRuleEngine:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# GOAL TRACKING SYSTEM (v31)
+# ═══════════════════════════════════════════════════════════
+
+class Goal:
+    """
+    A trackable training goal with deadline and progress.
+
+    Types:
+    - score: reach a target average score
+    - sessions: complete N sessions
+    - streak: maintain a winning streak of N
+    - mastery: reach mastery level N
+    - badge: earn a specific badge
+    """
+
+    def __init__(self, goal_id, goal_type, target, description='',
+                 deadline_sessions=None):
+        self.goal_id = goal_id
+        self.goal_type = goal_type
+        self.target = target
+        self.description = description or f"{goal_type} goal: {target}"
+        self.deadline_sessions = deadline_sessions  # sessions left to achieve
+        self.created_at_session = 0
+        self.completed = False
+        self.progress = 0.0  # 0-100%
+
+    def evaluate(self, student):
+        """Evaluate progress toward this goal. Returns progress 0-100."""
+        sessions = student.sessions
+        scores = [s['pct'] for s in sessions]
+        n = len(sessions)
+
+        if self.goal_type == 'score':
+            if not scores:
+                self.progress = 0
+            else:
+                recent = scores[-5:] if len(scores) >= 5 else scores
+                avg = sum(recent) / len(recent)
+                self.progress = min(round(avg / self.target * 100, 1), 100)
+                if avg >= self.target:
+                    self.completed = True
+
+        elif self.goal_type == 'sessions':
+            self.progress = min(round(n / self.target * 100, 1), 100)
+            if n >= self.target:
+                self.completed = True
+
+        elif self.goal_type == 'streak':
+            threshold = 70
+            streak = 0
+            for s in reversed(scores):
+                if s >= threshold:
+                    streak += 1
+                else:
+                    break
+            self.progress = min(round(streak / self.target * 100, 1), 100)
+            if streak >= self.target:
+                self.completed = True
+
+        elif self.goal_type == 'mastery':
+            ml = student.mastery_level
+            self.progress = min(round(ml / self.target * 100, 1), 100)
+            if ml >= self.target:
+                self.completed = True
+
+        elif self.goal_type == 'badge':
+            badges = check_badges(student)
+            if self.target in badges:
+                self.progress = 100
+                self.completed = True
+            else:
+                # Rough estimate based on badge count
+                self.progress = min(round(len(badges) / 12 * 100, 1), 99)
+
+        return self.progress
+
+    def is_expired(self, current_session):
+        """Check if deadline has passed."""
+        if self.deadline_sessions is None:
+            return False
+        return (current_session - self.created_at_session) > self.deadline_sessions
+
+
+class GoalTracker:
+    """
+    Manages a set of goals for a student.
+    """
+
+    def __init__(self, student):
+        self.student = student
+        self.goals = []
+        self._next_id = 1
+
+    def add_goal(self, goal_type, target, description='',
+                 deadline_sessions=None):
+        """Add a new goal. Returns the goal."""
+        g = Goal(f'G{self._next_id}', goal_type, target,
+                 description, deadline_sessions)
+        g.created_at_session = len(self.student.sessions)
+        self.goals.append(g)
+        self._next_id += 1
+        return g
+
+    def evaluate_all(self):
+        """Evaluate all active goals. Returns list of (goal, progress)."""
+        results = []
+        for g in self.goals:
+            if not g.completed:
+                g.evaluate(self.student)
+            results.append((g, g.progress))
+        return results
+
+    def completed_goals(self):
+        """Return completed goals."""
+        return [g for g in self.goals if g.completed]
+
+    def active_goals(self):
+        """Return active (incomplete) goals."""
+        return [g for g in self.goals if not g.completed]
+
+    def remove_goal(self, goal_id):
+        """Remove a goal by ID."""
+        self.goals = [g for g in self.goals if g.goal_id != goal_id]
+
+    def suggest_goals(self):
+        """Auto-suggest goals based on student state."""
+        suggestions = []
+        sessions = self.student.sessions
+        scores = [s['pct'] for s in sessions]
+        n = len(scores)
+        ml = self.student.mastery_level
+
+        if n < 10:
+            suggestions.append(('sessions', 10, 'Complete 10 sessions'))
+        elif n < 25:
+            suggestions.append(('sessions', 25, 'Complete 25 sessions'))
+        elif n < 50:
+            suggestions.append(('sessions', 50, 'Reach 50 sessions'))
+
+        if scores:
+            avg = sum(scores[-5:]) / min(len(scores), 5)
+            if avg < 70:
+                suggestions.append(('score', 70, 'Reach 70% average'))
+            elif avg < 85:
+                suggestions.append(('score', 85, 'Reach 85% average'))
+            elif avg < 95:
+                suggestions.append(('score', 95, 'Reach 95% average'))
+
+        if ml < 3:
+            suggestions.append(('mastery', 3, 'Reach mastery level 3'))
+        elif ml < 5:
+            suggestions.append(('mastery', 5, 'Reach mastery level 5'))
+        elif ml < 7:
+            suggestions.append(('mastery', 7, 'Reach peak mastery'))
+
+        suggestions.append(('streak', 5, 'Win streak of 5'))
+
+        return suggestions
+
+    def format_goals(self):
+        """Format goals as text display."""
+        self.evaluate_all()
+        lines = [f"Goals for {self.student.name}"]
+        lines.append("═" * 50)
+
+        active = self.active_goals()
+        done = self.completed_goals()
+
+        if active:
+            lines.append(f"  Active ({len(active)}):")
+            for g in active:
+                bar_len = int(g.progress / 5)
+                bar = '▓' * bar_len + '░' * (20 - bar_len)
+                lines.append(f"    [{bar}] {g.progress:5.1f}%  {g.description}")
+        else:
+            lines.append("  No active goals.")
+
+        if done:
+            lines.append(f"  Completed ({len(done)}):")
+            for g in done:
+                lines.append(f"    ✓ {g.description}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PEER COMPARISON ENGINE (v31)
+# ═══════════════════════════════════════════════════════════
+
+def peer_compare(student_a, student_b):
+    """
+    Compare two students across multiple dimensions.
+
+    Returns structured comparison with winner per dimension.
+    """
+    def stats(st):
+        scores = [s['pct'] for s in st.sessions]
+        recent = scores[-5:] if len(scores) >= 5 else scores
+        return {
+            'name': st.name,
+            'sessions': len(scores),
+            'avg': round(sum(scores) / len(scores), 1) if scores else 0,
+            'recent': round(sum(recent) / len(recent), 1) if recent else 0,
+            'best': round(max(scores), 1) if scores else 0,
+            'mastery': st.mastery_level,
+            'elo': getattr(st, 'elo', 1200),
+            'badges': len(check_badges(st)),
+        }
+
+    sa = stats(student_a)
+    sb = stats(student_b)
+
+    dimensions = ['avg', 'recent', 'best', 'mastery', 'elo', 'badges', 'sessions']
+    comparison = []
+
+    for dim in dimensions:
+        va, vb = sa[dim], sb[dim]
+        if va > vb:
+            winner = sa['name']
+        elif vb > va:
+            winner = sb['name']
+        else:
+            winner = 'tie'
+        comparison.append({
+            'dimension': dim,
+            'a_value': va,
+            'b_value': vb,
+            'winner': winner,
+        })
+
+    wins_a = sum(1 for c in comparison if c['winner'] == sa['name'])
+    wins_b = sum(1 for c in comparison if c['winner'] == sb['name'])
+    overall = sa['name'] if wins_a > wins_b else (
+        sb['name'] if wins_b > wins_a else 'tie')
+
+    return {
+        'student_a': sa,
+        'student_b': sb,
+        'comparison': comparison,
+        'wins_a': wins_a,
+        'wins_b': wins_b,
+        'overall': overall,
+    }
+
+
+def format_peer_compare(result):
+    """Format peer comparison as text."""
+    sa = result['student_a']
+    sb = result['student_b']
+    lines = []
+    lines.append(f"  {sa['name']:>15s}  vs  {sb['name']:<15s}")
+    lines.append("  " + "─" * 45)
+
+    dim_labels = {
+        'avg': 'Average', 'recent': 'Recent Avg', 'best': 'Best Score',
+        'mastery': 'Mastery', 'elo': 'ELO', 'badges': 'Badges',
+        'sessions': 'Sessions',
+    }
+
+    for c in result['comparison']:
+        label = dim_labels.get(c['dimension'], c['dimension'])
+        va, vb = c['a_value'], c['b_value']
+        if c['winner'] == sa['name']:
+            marker = '◀'
+        elif c['winner'] == sb['name']:
+            marker = '▶'
+        else:
+            marker = '='
+        lines.append(f"  {va:>10}  {marker} {label:<12s} {vb:<10}")
+
+    lines.append("  " + "─" * 45)
+    wa, wb = result['wins_a'], result['wins_b']
+    lines.append(f"  Score: {sa['name']} {wa} — {wb} {sb['name']}  "
+                 f"│ Overall: {result['overall']}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION PLAYBACK SYSTEM (v31)
+# ═══════════════════════════════════════════════════════════
+
+class SessionPlayback:
+    """
+    Step-by-step playback of a training session.
+
+    Records each tact as a frame and allows replay with analysis.
+    """
+
+    def __init__(self, student_name, session_index=None):
+        self.student_name = student_name
+        self.session_index = session_index
+        self.frames = []
+        self.markers = {}   # frame_idx → marker text
+        self.speed = 1.0
+
+    def record_frame(self, tact_data):
+        """Record one tact as a frame."""
+        frame = {
+            'idx': len(self.frames),
+            'sym': tact_data.get('sym', 0),
+            'group': get_group(tact_data.get('sym', 0)),
+            'score': tact_data.get('score', 0),
+            'violations': tact_data.get('violations', []),
+            'cumulative_score': 0,
+        }
+        self.frames.append(frame)
+
+        # Update cumulative
+        scores_so_far = [f['score'] for f in self.frames if f['score'] > 0]
+        if scores_so_far:
+            frame['cumulative_score'] = round(
+                sum(scores_so_far) / len(scores_so_far), 1)
+
+        return frame
+
+    def add_marker(self, frame_idx, text):
+        """Add a named marker at a specific frame."""
+        self.markers[frame_idx] = text
+
+    def get_frame(self, idx):
+        """Get a specific frame."""
+        if 0 <= idx < len(self.frames):
+            return self.frames[idx]
+        return None
+
+    def slice_frames(self, start, end):
+        """Get a slice of frames."""
+        return self.frames[max(0, start):min(end, len(self.frames))]
+
+    def find_violations(self):
+        """Find all frames with violations."""
+        return [f for f in self.frames if f['violations']]
+
+    def find_peaks(self, top_n=3):
+        """Find top-scoring frames."""
+        scored = [f for f in self.frames if f['score'] > 0]
+        scored.sort(key=lambda f: f['score'], reverse=True)
+        return scored[:top_n]
+
+    def compute_momentum(self, window=5):
+        """
+        Compute momentum curve: rolling average of scores.
+
+        Returns list of (frame_idx, momentum) tuples.
+        """
+        momentum = []
+        scores = [f['score'] for f in self.frames]
+        for i in range(len(scores)):
+            start = max(0, i - window + 1)
+            chunk = scores[start:i + 1]
+            avg = sum(chunk) / len(chunk) if chunk else 0
+            momentum.append((i, round(avg, 1)))
+        return momentum
+
+    def format_playback(self, start=0, count=10):
+        """Format a section of the playback."""
+        end = min(start + count, len(self.frames))
+        lines = [f"Playback: {self.student_name} "
+                 f"(frames {start}-{end - 1} of {len(self.frames)})"]
+        lines.append("─" * 55)
+
+        for i in range(start, end):
+            f = self.frames[i]
+            sym_str = f"S{f['sym']:02d}"
+            grp_str = f"G{f['group']}"
+            score_str = f"{f['score']:5.1f}"
+            cum_str = f"avg={f['cumulative_score']:5.1f}"
+            viol_mark = '!' if f['violations'] else ' '
+            marker = ''
+            if i in self.markers:
+                marker = f"  ◆ {self.markers[i]}"
+
+            lines.append(f"  [{i:03d}] {sym_str} {grp_str} "
+                         f"score={score_str} {cum_str} "
+                         f"{viol_mark}{marker}")
+
+        # Momentum mini-chart at the end
+        momentum = self.compute_momentum()
+        if momentum and end > start:
+            lines.append("")
+            lines.append("  Momentum:")
+            relevant = momentum[start:end]
+            for idx, mom in relevant:
+                bar_len = int(mom / 5)
+                bar = '▪' * bar_len
+                lines.append(f"    [{idx:03d}] {bar} {mom}")
+
+        return '\n'.join(lines)
+
+    def summary(self):
+        """Brief summary of the playback."""
+        n = len(self.frames)
+        if n == 0:
+            return f"Playback: {self.student_name} — empty"
+
+        scores = [f['score'] for f in self.frames if f['score'] > 0]
+        avg = round(sum(scores) / len(scores), 1) if scores else 0
+        viols = sum(1 for f in self.frames if f['violations'])
+        peaks = self.find_peaks(1)
+        best = peaks[0]['score'] if peaks else 0
+
+        return (f"Playback: {self.student_name} — {n} frames, "
+                f"avg={avg}, best={best}, violations={viols}, "
+                f"markers={len(self.markers)}")
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -11860,3 +12267,53 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v30: Training scheduler, analytics dashboard, custom rules.")
+
+    # 102. Goal Tracking
+    print("\n--- Goal Tracking ---")
+    gt = GoalTracker(sim_school.students['Anna'])
+    gt.add_goal('score', 90, 'Reach 90% average')
+    gt.add_goal('sessions', 20, 'Complete 20 sessions')
+    gt.add_goal('streak', 10, 'Win streak of 10')
+    gt.add_goal('mastery', 7, 'Reach peak mastery')
+
+    # Show suggestions too
+    suggestions = gt.suggest_goals()
+    print(f"  Auto-suggested goals: {len(suggestions)}")
+    for s_type, s_target, s_desc in suggestions:
+        print(f"    → {s_desc} ({s_type}: {s_target})")
+
+    print(gt.format_goals())
+
+    # 103. Peer Comparison
+    print("\n--- Peer Comparison ---")
+    cmp_result = peer_compare(sim_school.students['Anna'],
+                               sim_school.students['Ivan'])
+    print(format_peer_compare(cmp_result))
+
+    cmp2 = peer_compare(sim_school.students['Lena'],
+                         sim_school.students['Max'])
+    print(format_peer_compare(cmp2))
+
+    # 104. Session Playback
+    print("\n--- Session Playback ---")
+    pb = SessionPlayback('Anna', session_index=0)
+    import random as _rnd_pb
+    _rnd_pb.seed(777)
+    for t_idx in range(20):
+        sym = _rnd_pb.randint(0, 63)
+        score = _rnd_pb.uniform(50, 100)
+        viols = [] if _rnd_pb.random() > 0.3 else [{'rule': 'R1_Zone'}]
+        pb.record_frame({'sym': sym, 'score': round(score, 1),
+                         'violations': viols})
+    pb.add_marker(0, 'Session start')
+    pb.add_marker(9, 'Midpoint')
+    pb.add_marker(19, 'Finish')
+
+    print(pb.summary())
+    print(pb.format_playback(start=0, count=10))
+    print(f"\n  Violations: {len(pb.find_violations())} frames")
+    peaks = pb.find_peaks(3)
+    print(f"  Top peaks: {[p['score'] for p in peaks]}")
+
+    print("\n" + "=" * 60)
+    print("v31: Goal tracking, peer comparison, session playback.")

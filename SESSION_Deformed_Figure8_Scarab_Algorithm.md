@@ -4314,4 +4314,76 @@ viols = engine.validate_sequence(tacts)
 
 `CustomRuleEngine.validate_sequence(tacts)` проверяет все такты против всех правил.
 
+---
+
+## Часть 46: Цели, peer-сравнение, плейбек (v31)
+
+### 46.1 Система целей (GoalTracker)
+
+```python
+gt = GoalTracker(student)
+gt.add_goal('score', 90, 'Reach 90% average')
+gt.add_goal('sessions', 20, 'Complete 20 sessions')
+gt.add_goal('streak', 10, 'Win streak of 10')
+gt.add_goal('mastery', 7, 'Reach peak mastery')
+gt.add_goal('badge', 'centurion', 'Earn Centurion badge')
+
+gt.evaluate_all()
+print(gt.format_goals())
+suggestions = gt.suggest_goals()  # авто-рекомендации
+```
+
+Типы целей:
+```
+score    — целевой средний балл (recent 5)
+sessions — N сессий
+streak   — серия побед (>70%)
+mastery  — уровень мастерства
+badge    — конкретный бейдж
+```
+
+Прогресс-бар: `[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░] 50.0%`
+
+### 46.2 Peer-сравнение
+
+```python
+result = peer_compare(student_a, student_b)
+print(format_peer_compare(result))
+```
+
+7 измерений: avg, recent, best, mastery, ELO, badges, sessions.
+```
+         Anna  vs  Ivan
+  ──────────────────────────────
+      75.7  ◀ Average    74.9
+      88.6  ◀ Recent     87.9
+  ──────────────────────────────
+  Score: Anna 5 — 0 Ivan  │ Overall: Anna
+```
+
+### 46.3 Плейбек сессий (SessionPlayback)
+
+```python
+pb = SessionPlayback('Anna', session_index=0)
+pb.record_frame({'sym': 29, 'score': 72.3, 'violations': []})
+pb.add_marker(0, 'Session start')
+
+print(pb.format_playback(start=0, count=10))
+print(pb.summary())
+
+momentum = pb.compute_momentum(window=5)
+violations = pb.find_violations()
+peaks = pb.find_peaks(top_n=3)
+```
+
+Вывод: покадровый анализ + momentum-кривая:
+```
+[000] S29 G6 score=72.3 avg=72.3   ◆ Session start
+[001] S34 G3 score=91.6 avg=81.9
+
+Momentum:
+  [000] ▪▪▪▪▪▪▪▪▪▪▪▪▪▪ 72.3
+  [001] ▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪ 81.9
+```
+
 Структура возврата: `{title, profile, history, skill_tree, badges, diagnostic, ranking}`
