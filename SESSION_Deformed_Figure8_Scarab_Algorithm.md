@@ -5025,3 +5025,36 @@ print(smm.format_map())
 ```
 
 Тиры: unseen (·), seen (░), familiar (▒), practiced (▓), proficient (█), mastered (★).
+
+---
+
+## Часть 62: Batch, validator, zones (v47)
+
+### 62.1 BatchProcessor
+
+```python
+bp = BatchProcessor(school)
+results = bp.batch_analyze()
+bp.map_students(fn)
+bp.filter_students(lambda st: st.mastery_level >= 5)
+bp.reduce_students(lambda acc, st: acc + len(st.sessions))
+```
+
+### 62.2 RuleValidator
+
+```python
+rv = RuleValidator()
+violations = rv.validate(kata_sequence)
+print(rv.format_validation(violations))
+```
+
+R3: repetition, R4: coverage (≥3 groups), R5: balance (<50% dominance).
+
+### 62.3 Performance Zones
+
+```python
+pz = compute_performance_zones(student)
+print(format_performance_zones(pz))
+```
+
+🔴 red (<60%), 🟡 yellow (60-75%), 🟢 green (75-85%), 🔵 blue (85-95%), 🏆 gold (95%+).

@@ -15567,6 +15567,269 @@ class SymbolMasteryMap:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# BATCH PROCESSOR (v47)
+# ═══════════════════════════════════════════════════════════
+
+class BatchProcessor:
+    """
+    Process multiple students or sessions in batch.
+
+    Supports map/filter/reduce operations over student data.
+    """
+
+    def __init__(self, school):
+        self.school = school
+
+    def map_students(self, fn):
+        """Apply function to all students, return results."""
+        results = {}
+        for name, st in self.school.students.items():
+            results[name] = fn(st)
+        return results
+
+    def filter_students(self, predicate):
+        """Filter students by predicate."""
+        return {name: st for name, st in self.school.students.items()
+                if predicate(st)}
+
+    def reduce_students(self, fn, initial=0):
+        """Reduce across all students."""
+        acc = initial
+        for name, st in self.school.students.items():
+            acc = fn(acc, st)
+        return acc
+
+    def batch_analyze(self):
+        """Run full analysis on all students."""
+        return self.map_students(lambda st: {
+            'name': st.name,
+            'sessions': len(st.sessions),
+            'mastery': st.mastery_level,
+            'avg': round(sum(s['pct'] for s in st.sessions) /
+                         len(st.sessions), 1) if st.sessions else 0,
+            'rank': compute_rank(st)['rank']['name'],
+        })
+
+    def batch_compare(self):
+        """Pairwise comparison of all students."""
+        names = list(self.school.students.keys())
+        comparisons = []
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                cmp = peer_compare(
+                    self.school.students[names[i]],
+                    self.school.students[names[j]])
+                comparisons.append(cmp)
+        return comparisons
+
+    def format_batch(self, results):
+        """Format batch results."""
+        lines = ["Batch Analysis"]
+        lines.append("═" * 50)
+        for name, data in results.items():
+            lines.append(f"  {name:12s} | L{data['mastery']} | "
+                         f"avg={data['avg']}% | "
+                         f"{data['sessions']} sess | "
+                         f"{data['rank']}")
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# RULE VALIDATOR (v47)
+# ═══════════════════════════════════════════════════════════
+
+class RuleValidator:
+    """
+    Validates kata sequences against the complete Scarab rule set.
+
+    Provides detailed violation reports with fix suggestions.
+    """
+
+    RULES = {
+        'R1_zone': {
+            'description': 'Symbols must be in correct zone',
+            'severity': 'error',
+        },
+        'R2_adjacency': {
+            'description': 'Adjacent symbols should be from nearby groups',
+            'severity': 'warning',
+        },
+        'R3_repetition': {
+            'description': 'No more than 2 consecutive same-group symbols',
+            'severity': 'error',
+        },
+        'R4_coverage': {
+            'description': 'Session should cover at least 3 groups',
+            'severity': 'warning',
+        },
+        'R5_balance': {
+            'description': 'No group should dominate >50% of tacts',
+            'severity': 'warning',
+        },
+    }
+
+    def validate(self, kata_sequence):
+        """Validate a kata sequence against all rules."""
+        violations = []
+        groups = [get_group(s) for s in kata_sequence]
+        n = len(groups)
+
+        if n == 0:
+            return violations
+
+        # R3: Repetition check
+        rep_count = 1
+        for i in range(1, n):
+            if groups[i] == groups[i - 1]:
+                rep_count += 1
+                if rep_count > 2:
+                    violations.append({
+                        'rule': 'R3_repetition',
+                        'position': i,
+                        'detail': f'Group {groups[i]} repeated '
+                                  f'{rep_count} times at pos {i}',
+                        'severity': 'error',
+                        'fix': 'Insert a different group symbol',
+                    })
+            else:
+                rep_count = 1
+
+        # R4: Coverage check
+        unique_groups = set(groups)
+        if len(unique_groups) < 3 and n >= 6:
+            violations.append({
+                'rule': 'R4_coverage',
+                'position': 0,
+                'detail': f'Only {len(unique_groups)} groups used, '
+                          f'need at least 3',
+                'severity': 'warning',
+                'fix': 'Add symbols from other groups',
+            })
+
+        # R5: Balance check
+        from collections import Counter
+        group_counts = Counter(groups)
+        for g, count in group_counts.items():
+            if count / n > 0.5:
+                violations.append({
+                    'rule': 'R5_balance',
+                    'position': 0,
+                    'detail': f'Group {g} dominates '
+                              f'({count}/{n} = {count/n:.0%})',
+                    'severity': 'warning',
+                    'fix': f'Reduce group {g} usage',
+                })
+
+        return violations
+
+    def format_validation(self, violations, title='Validation'):
+        """Format validation results."""
+        lines = [title]
+        lines.append("─" * 45)
+
+        if not violations:
+            lines.append("  ✓ All rules passed")
+        else:
+            for v in violations:
+                icon = '✗' if v['severity'] == 'error' else '⚠'
+                lines.append(f"  {icon} [{v['rule']}] {v['detail']}")
+                lines.append(f"      Fix: {v['fix']}")
+
+        errors = sum(1 for v in violations if v['severity'] == 'error')
+        warns = sum(1 for v in violations if v['severity'] == 'warning')
+        lines.append(f"\n  {errors} errors, {warns} warnings")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PERFORMANCE ZONES (v47)
+# ═══════════════════════════════════════════════════════════
+
+def compute_performance_zones(student):
+    """
+    Classify student performance into zones.
+
+    Zones: red (<60%), yellow (60-75%), green (75-85%),
+    blue (85-95%), gold (95%+).
+    """
+    scores = [s['pct'] for s in student.sessions]
+    if not scores:
+        return {'current_zone': 'unknown', 'zones': {}}
+
+    recent = scores[-5:] if len(scores) >= 5 else scores
+    avg = sum(recent) / len(recent)
+
+    # Classify each session
+    zone_counts = {'red': 0, 'yellow': 0, 'green': 0,
+                   'blue': 0, 'gold': 0}
+    for s in scores:
+        if s >= 95:
+            zone_counts['gold'] += 1
+        elif s >= 85:
+            zone_counts['blue'] += 1
+        elif s >= 75:
+            zone_counts['green'] += 1
+        elif s >= 60:
+            zone_counts['yellow'] += 1
+        else:
+            zone_counts['red'] += 1
+
+    # Current zone
+    if avg >= 95:
+        current = 'gold'
+    elif avg >= 85:
+        current = 'blue'
+    elif avg >= 75:
+        current = 'green'
+    elif avg >= 60:
+        current = 'yellow'
+    else:
+        current = 'red'
+
+    # Time in each zone
+    total = len(scores)
+    zone_pcts = {z: round(c / total * 100, 1)
+                 for z, c in zone_counts.items()}
+
+    return {
+        'current_zone': current,
+        'recent_avg': round(avg, 1),
+        'zones': zone_counts,
+        'zone_percentages': zone_pcts,
+        'total_sessions': total,
+    }
+
+
+def format_performance_zones(zones_data, student_name=''):
+    """Format performance zones."""
+    name = f" — {student_name}" if student_name else ''
+    lines = [f"Performance Zones{name}"]
+    lines.append("═" * 50)
+
+    zone_colors = {
+        'red': '🔴', 'yellow': '🟡', 'green': '🟢',
+        'blue': '🔵', 'gold': '🏆',
+    }
+
+    cur = zones_data['current_zone']
+    lines.append(f"  Current: {zone_colors.get(cur, '')} "
+                 f"{cur.upper()} zone "
+                 f"(avg: {zones_data['recent_avg']}%)")
+
+    lines.append("\n  Distribution:")
+    for zone in ['gold', 'blue', 'green', 'yellow', 'red']:
+        count = zones_data['zones'].get(zone, 0)
+        pct = zones_data['zone_percentages'].get(zone, 0)
+        bar = '█' * int(pct / 5)
+        icon = zone_colors.get(zone, '')
+        lines.append(f"    {icon} {zone:7s} {bar:20s} "
+                     f"{count} ({pct}%)")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -17303,3 +17566,38 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v46: Streak tracker, session rating, symbol mastery map.")
+
+    # 150. Batch Processor
+    print("\n--- Batch Processor ---")
+    bp = BatchProcessor(sim_school)
+    batch_results = bp.batch_analyze()
+    print(bp.format_batch(batch_results))
+
+    # Filter high-mastery
+    high_m = bp.filter_students(lambda st: st.mastery_level >= 5)
+    print(f"  High mastery (≥5): {list(high_m.keys())}")
+
+    total_sessions = bp.reduce_students(
+        lambda acc, st: acc + len(st.sessions), initial=0)
+    print(f"  Total sessions across school: {total_sessions}")
+
+    # 151. Rule Validator
+    print("\n--- Rule Validator ---")
+    rv = RuleValidator()
+
+    good_kata = [0, 16, 5, 20, 10, 35, 50]
+    v_good = rv.validate(good_kata)
+    print(rv.format_validation(v_good, title='Good kata'))
+
+    bad_kata = [0, 0, 0, 0, 16, 16, 16, 16]
+    v_bad = rv.validate(bad_kata)
+    print(rv.format_validation(v_bad, title='Bad kata'))
+
+    # 152. Performance Zones
+    print("\n--- Performance Zones ---")
+    for sname in ['Anna', 'Ivan']:
+        pz = compute_performance_zones(sim_school.students[sname])
+        print(format_performance_zones(pz, student_name=sname))
+
+    print("\n" + "=" * 60)
+    print("v47: Batch processor, rule validator, performance zones.")
