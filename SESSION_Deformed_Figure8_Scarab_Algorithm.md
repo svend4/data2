@@ -3644,3 +3644,101 @@ R5: conservation   (|C_L - C_R| ≤ 3)
 ✓ = passed, ✗ = failed
 Running score — кумулятивный счёт
 ```
+
+---
+
+## Часть 38: Прогнозирование, аномалии, планирование (v23)
+
+### 38.1 Прогнозирование трендов
+
+Линейная регрессия `y = a + b·x` с коэффициентом детерминации R²:
+
+```python
+tr = predict_trend(student, horizon=5)
+print(format_trend(tr))
+```
+
+Результат:
+```
+Score trend: improving (slope=+4.15/session, R²=0.807)
+Forecast next 5 sessions: [100, 100, 100, 100, 100]
+Mastery: L5 → L6 (est. 0 sessions)
+Rule trends:
+  R1: → stable  (slope=+0.00)
+  R2: ↑ improving (slope=+8.51)
+  R3: ↓ declining (slope=-3.50)
+  R5: ↑ improving (slope=+8.51)
+```
+
+Направления:
+```
+slope > +0.5  → improving ↑
+slope < -0.5  → declining ↓
+иначе         → stable →
+```
+
+Проекция мастерства: сколько сессий до порога 80% для перехода на следующий уровень.
+
+### 38.2 Обнаружение аномалий
+
+Z-score анализ сессий (порог z > 1.5σ):
+
+```python
+ad = detect_anomalies(student, z_threshold=1.5)
+print(format_anomalies(ad))
+```
+
+Типы аномалий:
+```
+⬆ score_spike    — необычно высокий результат
+⬇ score_drop     — необычно низкий результат
+⚠ rule_anomaly   — резкое отклонение по правилу (z > 1.8σ)
+⚡ complexity_jump — скачок > 25% между сессиями
+```
+
+Пример:
+```
+Anomaly Detection (12 sessions, z>1.5)
+  Found 3 anomalies:
+    ⬇ Session 0: 50.0% (z=-1.54)
+    ⬇ Session 1: 50.0% (z=-1.54)
+    ⬇ Session 2: 50.0% (z=-1.54)
+```
+
+### 38.3 Генератор тренировочного плана
+
+```python
+tp = generate_training_plan(student, weeks=4, sessions_per_week=3)
+print(format_training_plan(tp))
+```
+
+Структура плана:
+```
+Week × Day → Session
+  Focus: ротация по циклу 3
+    1 → слабое правило (R с мин. avg)
+    2 → слабая группа (G с мин. частотой)
+    3 → свободная практика
+
+  Length: base(4 + ML) + (week - 1) тактов
+  Structure: Warmup → Main → Cooldown
+  Target: 60% + week*5 + ML*3
+```
+
+Пример (Anna, L5, 4 недели):
+```
+Weak rules: R3(40%), R2(83%)
+Weak groups: G3(6%), G4(0%)
+
+Week 1: Maintain >60% avg
+  #1 Focus: R2-Anti-sym      Warmup(3) → Main(9) → Cooldown(2)
+  #2 Focus: G5-Triple(8%)    Warmup(3) → Main(9) → Cooldown(2)
+  #3 Focus: Free practice    Warmup(3) → Main(9) → Cooldown(2)
+...
+Week 4: Achieve >85% avg
+  #10 Focus: R3-Alternation  Warmup(4) → Main(12) → Cooldown(3)
+  #11 Focus: G4-Parallel     Warmup(4) → Main(12) → Cooldown(3)
+  #12 Focus: Free practice   Warmup(4) → Main(12) → Cooldown(3)
+
+Total: 12 sessions over 4 weeks
+```

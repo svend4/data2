@@ -7526,6 +7526,405 @@ def format_replay(rp):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# TREND PREDICTION — linear regression forecast (v23)
+# ═══════════════════════════════════════════════════════════
+
+def _linear_regression(xs, ys):
+    """Simple linear regression: y = a + b*x. Returns (a, b, r²)."""
+    n = len(xs)
+    if n < 2:
+        return 0, 0, 0
+
+    sum_x = sum(xs)
+    sum_y = sum(ys)
+    sum_xy = sum(xs[i] * ys[i] for i in range(n))
+    sum_x2 = sum(x * x for x in xs)
+    sum_y2 = sum(y * y for y in ys)
+
+    denom = n * sum_x2 - sum_x * sum_x
+    if denom == 0:
+        return sum_y / n, 0, 0
+
+    b = (n * sum_xy - sum_x * sum_y) / denom
+    a = (sum_y - b * sum_x) / n
+
+    # R² (coefficient of determination)
+    ss_tot = sum_y2 - sum_y * sum_y / n
+    ss_res = sum((ys[i] - (a + b * xs[i])) ** 2 for i in range(n))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+    return a, b, r2
+
+
+def predict_trend(student, horizon=5):
+    """
+    Predict student performance trend using linear regression.
+
+    Analyzes:
+    - Score trend (pct over sessions)
+    - Mastery trend (projected mastery level)
+    - Per-rule trends (which rules improving/declining)
+    - Confidence (R² of fit)
+
+    horizon: how many sessions ahead to forecast.
+    """
+    sessions = student.sessions
+    if len(sessions) < 3:
+        return {'sufficient_data': False, 'reason': f'need 3+ sessions, have {len(sessions)}'}
+
+    # Score trend
+    xs = list(range(len(sessions)))
+    ys = [s['pct'] for s in sessions]
+    a_score, b_score, r2_score = _linear_regression(xs, ys)
+
+    # Per-rule trends
+    rule_trends = {}
+    for r in range(1, 6):
+        rh = student.rule_history.get(r, [])
+        if len(rh) >= 3:
+            rxs = list(range(len(rh)))
+            ra, rb, rr2 = _linear_regression(rxs, rh)
+            rule_trends[r] = {
+                'slope': round(rb, 2),
+                'r2': round(rr2, 3),
+                'direction': 'improving' if rb > 0.5 else
+                             'declining' if rb < -0.5 else 'stable',
+                'current': rh[-1] if rh else 0,
+                'predicted': round(ra + rb * (len(rh) + horizon - 1), 1),
+            }
+
+    # Forecast
+    n = len(sessions)
+    forecasts = []
+    for h in range(1, horizon + 1):
+        pred = a_score + b_score * (n + h - 1)
+        pred = max(0, min(100, pred))
+        forecasts.append(round(pred, 1))
+
+    # Mastery projection
+    current_ml = student.mastery_level
+    # Estimate sessions to next mastery based on score slope
+    if b_score > 0:
+        # How many sessions until avg score > threshold for next level
+        threshold = 80  # assumed promotion threshold
+        current_pred = a_score + b_score * (n - 1)
+        if current_pred < threshold:
+            sessions_to_next = int((threshold - current_pred) / b_score) + 1
+        else:
+            sessions_to_next = 0  # already above threshold
+    else:
+        sessions_to_next = -1  # not improving
+
+    return {
+        'sufficient_data': True,
+        'score_trend': {
+            'intercept': round(a_score, 2),
+            'slope': round(b_score, 2),
+            'r2': round(r2_score, 3),
+            'direction': 'improving' if b_score > 0.5 else
+                         'declining' if b_score < -0.5 else 'stable',
+        },
+        'forecast': forecasts,
+        'rule_trends': rule_trends,
+        'mastery_projection': {
+            'current': current_ml,
+            'sessions_to_next': sessions_to_next,
+            'projected_ml': min(7, current_ml + 1)
+                            if sessions_to_next >= 0 else current_ml,
+        },
+        'n_sessions': n,
+    }
+
+
+def format_trend(tr):
+    """Format trend prediction as text."""
+    if not tr.get('sufficient_data'):
+        return f"Trend: insufficient data ({tr.get('reason', '')})"
+
+    st = tr['score_trend']
+    mp = tr['mastery_projection']
+
+    lines = ["Trend Prediction"]
+    lines.append("─" * 50)
+    lines.append(f"  Score trend: {st['direction']} "
+                 f"(slope={st['slope']:+.2f}/session, R²={st['r2']:.3f})")
+    lines.append(f"  Forecast next {len(tr['forecast'])} sessions: "
+                 f"{tr['forecast']}")
+    lines.append(f"  Mastery: L{mp['current']} → L{mp['projected_ml']} "
+                 f"(est. {mp['sessions_to_next']} sessions)")
+
+    lines.append("  Rule trends:")
+    for r, rt in sorted(tr['rule_trends'].items()):
+        arrow = '↑' if rt['direction'] == 'improving' else \
+                '↓' if rt['direction'] == 'declining' else '→'
+        lines.append(f"    R{r}: {arrow} {rt['direction']} "
+                     f"(slope={rt['slope']:+.2f}, "
+                     f"now={rt['current']:.0f}, "
+                     f"pred={rt['predicted']:.0f})")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# ANOMALY DETECTION — outlier sessions (v23)
+# ═══════════════════════════════════════════════════════════
+
+def detect_anomalies(student, z_threshold=1.5):
+    """
+    Detect anomalous sessions based on z-score analysis.
+
+    Types of anomalies:
+    - score_spike: unusually high score
+    - score_drop: unusually low score
+    - rule_anomaly: one rule dramatically different from pattern
+    - complexity_jump: sudden complexity increase
+
+    z_threshold: standard deviations from mean to flag.
+    """
+    sessions = student.sessions
+    if len(sessions) < 4:
+        return {'anomalies': [], 'sufficient_data': False}
+
+    def z_scores(values):
+        n = len(values)
+        mean = sum(values) / n
+        if n < 2:
+            return [0] * n
+        var = sum((v - mean) ** 2 for v in values) / (n - 1)
+        std = var ** 0.5 if var > 0 else 1
+        return [(v - mean) / std for v in values]
+
+    anomalies = []
+
+    # 1. Score anomalies
+    scores = [s['pct'] for s in sessions]
+    s_zs = z_scores(scores)
+    for i, z in enumerate(s_zs):
+        if z > z_threshold:
+            anomalies.append({
+                'session': i,
+                'type': 'score_spike',
+                'value': scores[i],
+                'z_score': round(z, 2),
+                'detail': f'Session {i}: {scores[i]:.1f}% (z={z:.2f})',
+            })
+        elif z < -z_threshold:
+            anomalies.append({
+                'session': i,
+                'type': 'score_drop',
+                'value': scores[i],
+                'z_score': round(z, 2),
+                'detail': f'Session {i}: {scores[i]:.1f}% (z={z:.2f})',
+            })
+
+    # 2. Rule anomalies (per-rule z-scores)
+    for r in range(1, 6):
+        rh = student.rule_history.get(r, [])
+        if len(rh) < 4:
+            continue
+        r_zs = z_scores(rh)
+        for i, z in enumerate(r_zs):
+            if abs(z) > z_threshold * 1.2:  # stricter for rules
+                anomalies.append({
+                    'session': i,
+                    'type': 'rule_anomaly',
+                    'rule': r,
+                    'value': rh[i],
+                    'z_score': round(z, 2),
+                    'detail': f'Session {i} R{r}: {rh[i]:.0f}% (z={z:.2f})',
+                })
+
+    # 3. Session-to-session jumps
+    for i in range(1, len(scores)):
+        delta = scores[i] - scores[i - 1]
+        if abs(delta) > 25:  # >25% jump
+            anomalies.append({
+                'session': i,
+                'type': 'complexity_jump',
+                'value': delta,
+                'z_score': 0,
+                'detail': f'Session {i}: Δ={delta:+.1f}% from prev',
+            })
+
+    # Sort by absolute z-score
+    anomalies.sort(key=lambda a: abs(a.get('z_score', 0)), reverse=True)
+
+    return {
+        'anomalies': anomalies,
+        'sufficient_data': True,
+        'total_sessions': len(sessions),
+        'threshold': z_threshold,
+        'n_anomalies': len(anomalies),
+    }
+
+
+def format_anomalies(ad):
+    """Format anomaly report."""
+    if not ad.get('sufficient_data'):
+        return "Anomaly detection: insufficient data"
+
+    lines = [f"Anomaly Detection ({ad['total_sessions']} sessions, "
+             f"z>{ad['threshold']})"]
+    lines.append("─" * 50)
+
+    if not ad['anomalies']:
+        lines.append("  No anomalies detected. ✓")
+    else:
+        lines.append(f"  Found {ad['n_anomalies']} anomalies:")
+        for a in ad['anomalies'][:10]:  # top 10
+            icon = {'score_spike': '⬆', 'score_drop': '⬇',
+                    'rule_anomaly': '⚠', 'complexity_jump': '⚡'
+                    }.get(a['type'], '?')
+            lines.append(f"    {icon} {a['detail']}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# TRAINING PLAN GENERATOR — weekly/monthly schedule (v23)
+# ═══════════════════════════════════════════════════════════
+
+def generate_training_plan(student, weeks=4, sessions_per_week=3):
+    """
+    Generate a personalized training plan based on student profile.
+
+    Each session has:
+    - Focus area (weakest rule or group)
+    - Recommended length
+    - Target mastery actions
+    - Warm-up / main / cool-down structure
+
+    The plan considers:
+    - Current mastery level
+    - Weak rules (from rule_history)
+    - Trend direction
+    - Anomaly patterns
+    """
+    ml = student.mastery_level
+
+    # Identify weak rules
+    weak_rules = []
+    for r in range(1, 6):
+        rh = student.rule_history.get(r, [])
+        if rh:
+            avg = sum(rh[-5:]) / min(5, len(rh))
+            weak_rules.append((r, avg))
+    weak_rules.sort(key=lambda x: x[1])
+
+    # Identify weak groups
+    total_hits = sum(student.group_hits.values())
+    weak_groups = []
+    for g in range(1, min(8, ml + 3)):
+        hits = student.group_hits.get(g, 0)
+        pct = hits / max(1, total_hits) * 100
+        if pct < 15:  # underrepresented
+            weak_groups.append((g, pct))
+
+    # Get trend info
+    trend = predict_trend(student, horizon=weeks * sessions_per_week)
+
+    # Build weekly plan
+    plan = {
+        'student': student.name,
+        'mastery_level': ml,
+        'weeks': weeks,
+        'sessions_per_week': sessions_per_week,
+        'weak_rules': weak_rules[:2],
+        'weak_groups': weak_groups[:2],
+        'schedule': [],
+    }
+
+    rule_names = {1: 'Zone', 2: 'Anti-sym', 3: 'Alternation',
+                  4: 'Smoothness', 5: 'Conservation'}
+    group_names = {1: 'Empty', 2: 'Single', 3: 'Angle',
+                   4: 'Parallel', 5: 'Triple', 6: 'Master', 7: 'Peak'}
+
+    for w in range(1, weeks + 1):
+        week_sessions = []
+        for d in range(1, sessions_per_week + 1):
+            session_num = (w - 1) * sessions_per_week + d
+
+            # Rotate focus: weak rule → weak group → free practice
+            focus_cycle = session_num % 3
+            if focus_cycle == 1 and weak_rules:
+                wr = weak_rules[session_num % len(weak_rules)]
+                focus = f"R{wr[0]}-{rule_names[wr[0]]} (avg {wr[1]:.0f}%)"
+                focus_type = 'rule'
+            elif focus_cycle == 2 and weak_groups:
+                wg = weak_groups[session_num % len(weak_groups)]
+                focus = f"G{wg[0]}-{group_names.get(wg[0], '?')} ({wg[1]:.0f}%)"
+                focus_type = 'group'
+            else:
+                focus = 'Free practice (full kata)'
+                focus_type = 'free'
+
+            # Session length scales with week progression
+            base_len = 4 + ml
+            length = base_len + (w - 1)  # increase over weeks
+
+            # Structure
+            session = {
+                'week': w,
+                'day': d,
+                'session_num': session_num,
+                'focus': focus,
+                'focus_type': focus_type,
+                'length': length,
+                'warmup': max(2, length // 3),
+                'main': length,
+                'cooldown': max(1, length // 4),
+                'target_pct': min(95, 60 + w * 5 + ml * 3),
+            }
+            week_sessions.append(session)
+
+        plan['schedule'].append({
+            'week': w,
+            'sessions': week_sessions,
+            'week_goal': f"Maintain >{55 + w * 5}% avg" if w < weeks
+                         else f"Achieve >{70 + ml * 3}% avg",
+        })
+
+    return plan
+
+
+def format_training_plan(plan):
+    """Format training plan as readable schedule."""
+    lines = [f"Training Plan: {plan['student']} "
+             f"(L{plan['mastery_level']})"]
+    lines.append("═" * 55)
+
+    if plan['weak_rules']:
+        wr_str = ', '.join(f"R{r[0]}({r[1]:.0f}%)" for r in plan['weak_rules'])
+        lines.append(f"  Weak rules: {wr_str}")
+    if plan['weak_groups']:
+        wg_str = ', '.join(f"G{g[0]}({g[1]:.0f}%)" for g in plan['weak_groups'])
+        lines.append(f"  Weak groups: {wg_str}")
+
+    lines.append("")
+
+    for week_data in plan['schedule']:
+        w = week_data['week']
+        lines.append(f"  Week {w}: {week_data['week_goal']}")
+        lines.append("  " + "─" * 50)
+
+        for s in week_data['sessions']:
+            lines.append(
+                f"    #{s['session_num']:2d}  "
+                f"Focus: {s['focus']}")
+            lines.append(
+                f"         Warmup({s['warmup']}t) → "
+                f"Main({s['main']}t) → "
+                f"Cooldown({s['cooldown']}t)  "
+                f"Target: {s['target_pct']}%")
+        lines.append("")
+
+    total = plan['weeks'] * plan['sessions_per_week']
+    lines.append(f"  Total: {total} sessions over {plan['weeks']} weeks")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -8488,5 +8887,21 @@ if __name__ == '__main__':
     rp = replay_session(sim_school.students['Anna'], session_index=-1)
     print(format_replay(rp))
 
+    # 78. Trend Prediction
+    print("\n--- Trend Prediction ---")
+    tr = predict_trend(sim_school.students['Anna'], horizon=5)
+    print(format_trend(tr))
+
+    # 79. Anomaly Detection
+    print("\n--- Anomaly Detection ---")
+    ad = detect_anomalies(sim_school.students['Anna'], z_threshold=1.5)
+    print(format_anomalies(ad))
+
+    # 80. Training Plan
+    print("\n--- Training Plan ---")
+    tp = generate_training_plan(
+        sim_school.students['Anna'], weeks=4, sessions_per_week=3)
+    print(format_training_plan(tp))
+
     print("\n" + "=" * 60)
-    print("v22: Compact notation, heatmap, session replay.")
+    print("v23: Trend prediction, anomaly detection, training plans.")
