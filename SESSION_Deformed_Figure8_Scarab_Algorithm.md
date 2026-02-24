@@ -3260,3 +3260,103 @@ Markdown:   ~3300 строк
   format_ceremony()        — box-drawn церемония
   format_weekly_curriculum()— план с милестоунами
 ```
+
+---
+
+## Часть 34: Статистика, экспорт, peer review (v19)
+
+### 34.1 Статистический анализ
+
+```python
+stats = analyze_statistics(student)
+print(format_statistics(stats))
+```
+
+5 статистических блоков:
+
+```
+1. Grade distribution:
+   mean, median, σ (stddev), Q1, Q3, IQR, min, max
+
+2. Rule correlations (Pearson):
+   R2-R5: +0.97  → правила 2 и 5 сильно коррелируют
+   R3-R4: -0.55  → обратная корреляция
+
+3. Resonance distribution:
+   mean, σ, min..max
+
+4. Improvement rate:
+   slope = линейная регрессия по pct/session
+   +4.15%/session → стабильный рост
+
+5. Group chi-squared:
+   χ² = отклонение от равномерного
+   χ² → 0: все группы используются равномерно
+   χ² → ∞: сильный перекос в 1-2 группы
+```
+
+Корреляционная матрица визуализируется:
+```
+  R2(Ant)-R4(Smo): +0.97 ++++
+  R3(Alt)-R5(Con): -0.50 --
+  R4(Smo)-R5(Con): +0.97 ++++
+```
+
+### 34.2 Экспорт данных
+
+3 формата экспорта:
+
+**CSV ученика** — `export_sessions_csv(student)`:
+```csv
+session,quarter,year,grade,pct,resonance,lci_avg,r1,r2,r3,r4,r5,mastery_level
+1,Q1,1,D,50.0,0.00,0.650,100.0,0.0,100.0,0.0,0.0,1
+2,Q1,1,D,50.0,0.00,0.650,100.0,0.0,100.0,0.0,0.0,1
+```
+
+**Текстовая нотация ката** — `export_kata_text(kata)`:
+```
+  Tact  1: L=S00 R=S00  (G1/G1)
+  Tact  2: L=S02 R=S09  (G2/G2)
+  Tact  3: L=S06 R=S25  (G2/G5)
+```
+
+**CSV школы** — `export_school_csv(school)`:
+```csv
+student,mastery_level,sessions,avg_pct,avg_resonance,achievements,status
+Anna,5,12,75.7,0.56,7,graduated
+```
+
+### 34.3 Система Peer Review
+
+```python
+pr = peer_review(reviewer, author_kata, seed=77)
+print(format_peer_review(pr))
+```
+
+4 измерения оценки:
+
+```
+Dimension           Вес    Источник
+─────────────────────────────────────────
+Technical score     50%    score_dual_kata() — объективно
+Style compatibility 20%    DNA группового совпадения
+Creativity          30%    Кол-во групп + паттерны
+Noise               ±σ    Зависит от ML рецензента
+```
+
+Уровень рецензента влияет на качество:
+```
+ML ≥ 2 → замечания о diversity
+ML ≥ 3 → замечания о rule compliance
+ML ≥ 4 → заметит stylistic contrast
+ML 1-5 → noise σ = 0.05 × (6 - ML)
+```
+
+Пример:
+```
+Peer Review by Anna (L5)
+  Technical: B (80%)
+  Style compatibility: 57%
+  Creativity: 57%
+  Subjective score: 66.9
+```

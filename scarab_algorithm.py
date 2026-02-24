@@ -6138,6 +6138,339 @@ def format_weekly_curriculum(cur):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# STATISTICAL ANALYSIS — distributions & correlations (v19)
+# ═══════════════════════════════════════════════════════════
+
+def analyze_statistics(student):
+    """
+    Compute statistical summary for a student's session data.
+
+    Metrics:
+    1. Grade distribution (mean, median, stddev, quartiles)
+    2. Rule correlation matrix (which rules co-vary)
+    3. Resonance distribution
+    4. Session-over-session improvement rate
+    5. Group hit distribution (chi-squared from uniform)
+
+    Returns:
+        dict with all statistical measures
+    """
+    import math
+
+    sessions = student.sessions
+    n = len(sessions)
+    if n == 0:
+        return {'empty': True, 'student': student.name}
+
+    # 1. Grade distribution
+    pcts = [s['pct'] for s in sessions]
+    pcts_sorted = sorted(pcts)
+    mean_pct = sum(pcts) / n
+    median_pct = (pcts_sorted[n // 2] if n % 2 == 1
+                  else (pcts_sorted[n // 2 - 1] + pcts_sorted[n // 2]) / 2)
+    variance = sum((p - mean_pct) ** 2 for p in pcts) / max(1, n - 1)
+    stddev = math.sqrt(variance)
+    q1 = pcts_sorted[n // 4] if n >= 4 else pcts_sorted[0]
+    q3 = pcts_sorted[3 * n // 4] if n >= 4 else pcts_sorted[-1]
+
+    grade_stats = {
+        'mean': round(mean_pct, 1),
+        'median': round(median_pct, 1),
+        'stddev': round(stddev, 1),
+        'q1': round(q1, 1),
+        'q3': round(q3, 1),
+        'iqr': round(q3 - q1, 1),
+        'min': round(min(pcts), 1),
+        'max': round(max(pcts), 1),
+    }
+
+    # 2. Rule correlation (Pearson-like for 5 rules)
+    rule_series = {}
+    for r in range(1, 6):
+        h = student.rule_history.get(r, [])
+        # Pad or trim to n sessions
+        rule_series[r] = (h[:n] + [0] * max(0, n - len(h)))[:n]
+
+    correlations = {}
+    for r1 in range(1, 6):
+        for r2 in range(r1 + 1, 6):
+            s1, s2 = rule_series[r1], rule_series[r2]
+            m1 = sum(s1) / n
+            m2 = sum(s2) / n
+            cov = sum((s1[i] - m1) * (s2[i] - m2) for i in range(n)) / max(1, n - 1)
+            sd1 = math.sqrt(sum((v - m1) ** 2 for v in s1) / max(1, n - 1))
+            sd2 = math.sqrt(sum((v - m2) ** 2 for v in s2) / max(1, n - 1))
+            if sd1 > 0 and sd2 > 0:
+                corr = cov / (sd1 * sd2)
+            else:
+                corr = 0
+            correlations[(r1, r2)] = round(corr, 2)
+
+    # 3. Resonance distribution
+    res_vals = [s['resonance'] for s in sessions]
+    res_mean = sum(res_vals) / n
+    res_var = sum((r - res_mean) ** 2 for r in res_vals) / max(1, n - 1)
+    res_std = math.sqrt(res_var)
+
+    resonance_stats = {
+        'mean': round(res_mean, 2),
+        'stddev': round(res_std, 2),
+        'min': round(min(res_vals), 2),
+        'max': round(max(res_vals), 2),
+    }
+
+    # 4. Improvement rate (linear regression slope on pct)
+    if n >= 3:
+        x_mean = (n - 1) / 2.0
+        y_mean = mean_pct
+        num = sum((i - x_mean) * (pcts[i] - y_mean) for i in range(n))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        slope = num / den if den > 0 else 0
+    else:
+        slope = 0
+
+    # 5. Group chi-squared (deviation from uniform)
+    total_hits = sum(student.group_hits.values())
+    if total_hits > 0:
+        expected = total_hits / 7.0
+        chi2 = sum((student.group_hits.get(g, 0) - expected) ** 2 / expected
+                    for g in range(1, 8))
+    else:
+        chi2 = 0
+
+    return {
+        'empty': False,
+        'student': student.name,
+        'n_sessions': n,
+        'grade': grade_stats,
+        'rule_correlations': correlations,
+        'resonance': resonance_stats,
+        'improvement_rate': round(slope, 2),
+        'group_chi2': round(chi2, 1),
+    }
+
+
+def format_statistics(stats):
+    """Format statistical analysis as readable text."""
+    if stats.get('empty'):
+        return f"Statistics: {stats['student']} — no data"
+
+    lines = [f"Statistics: {stats['student']} ({stats['n_sessions']} sessions)"]
+    lines.append("─" * 50)
+
+    g = stats['grade']
+    lines.append(f"  Grade:  mean={g['mean']:.1f}  median={g['median']:.1f}"
+                 f"  σ={g['stddev']:.1f}")
+    lines.append(f"          Q1={g['q1']:.1f}  Q3={g['q3']:.1f}"
+                 f"  IQR={g['iqr']:.1f}")
+    lines.append(f"          min={g['min']:.1f}  max={g['max']:.1f}")
+
+    r = stats['resonance']
+    lines.append(f"  Reson:  mean={r['mean']:.2f}  σ={r['stddev']:.2f}"
+                 f"  [{r['min']:.2f}..{r['max']:.2f}]")
+
+    lines.append(f"  Trend:  slope={stats['improvement_rate']:+.2f}%/session")
+    lines.append(f"  Groups: χ²={stats['group_chi2']:.1f}"
+                 f" (uniform→0, skewed→high)")
+
+    # Correlations
+    lines.append("  Rule correlations:")
+    rnames = {1: 'Zon', 2: 'Ant', 3: 'Alt', 4: 'Smo', 5: 'Con'}
+    for (r1, r2), corr in sorted(stats['rule_correlations'].items()):
+        bar = '+' * max(0, int(corr * 5)) + '-' * max(0, int(-corr * 5))
+        lines.append(f"    R{r1}({rnames[r1]})-R{r2}({rnames[r2]}): "
+                     f"{corr:+.2f} {bar}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# EXPORT SYSTEM — CSV & text export (v19)
+# ═══════════════════════════════════════════════════════════
+
+def export_sessions_csv(student):
+    """
+    Export student sessions as CSV string.
+
+    Columns: session, quarter, year, grade, pct, resonance,
+             lci_avg, r1, r2, r3, r4, r5, mastery_level
+    """
+    header = ('session,quarter,year,grade,pct,resonance,'
+              'lci_avg,r1,r2,r3,r4,r5,mastery_level')
+    rows = [header]
+
+    for i, s in enumerate(student.sessions, 1):
+        rule_vals = []
+        for r in range(1, 6):
+            h = student.rule_history.get(r, [])
+            if i <= len(h):
+                rule_vals.append(f"{h[i-1]:.1f}")
+            else:
+                rule_vals.append("0.0")
+
+        row = (f"{i},{s.get('quarter', '')},{s.get('year', '')},"
+               f"{s['grade']},{s['pct']:.1f},{s['resonance']:.2f},"
+               f"{s['lci_avg']:.3f},"
+               f"{','.join(rule_vals)},{s.get('mastery_level', 1)}")
+        rows.append(row)
+
+    return '\n'.join(rows)
+
+
+def export_kata_text(kata, mode='dual'):
+    """
+    Export kata as human-readable text notation.
+
+    Format for dual:
+      Tact 1: L=A01A R=K00F  (G2/G5 ChVS=w)
+      Tact 2: L=L00E R=a00H  (G1/G3 ChVS=s)
+      ...
+    """
+    lines = []
+    for i, tact in enumerate(kata, 1):
+        if mode == 'dual':
+            sym_l = tact[0]
+            sym_r = tact[1]
+            gl = get_group(sym_l)
+            gr = get_group(sym_r)
+            hl = f"S{sym_l:02d}"
+            hr = f"S{sym_r:02d}"
+            lines.append(f"  Tact {i:2d}: L={hl} R={hr}"
+                         f"  (G{gl}/G{gr})")
+        else:
+            sym = tact if isinstance(tact, int) else tact[0]
+            g = get_group(sym)
+            h = f"S{sym:02d}"
+            lines.append(f"  Tact {i:2d}: {h}  (G{g})")
+    return '\n'.join(lines)
+
+
+def export_school_csv(school):
+    """
+    Export school summary as CSV string.
+
+    Columns: student, mastery_level, sessions, avg_pct,
+             avg_resonance, achievements, status
+    """
+    header = 'student,mastery_level,sessions,avg_pct,avg_resonance,achievements,status'
+    rows = [header]
+
+    for name, st in school.students.items():
+        n = len(st.sessions)
+        avg_pct = sum(s['pct'] for s in st.sessions) / n if n else 0
+        avg_res = sum(s['resonance'] for s in st.sessions) / n if n else 0
+        ach = check_achievements(st)
+        status = 'graduated' if name in school.graduated else 'active'
+        rows.append(f"{name},{st.mastery_level},{n},"
+                    f"{avg_pct:.1f},{avg_res:.2f},"
+                    f"{len(ach['earned'])},{status}")
+
+    return '\n'.join(rows)
+
+
+# ═══════════════════════════════════════════════════════════
+# PEER REVIEW — students evaluate each other (v19)
+# ═══════════════════════════════════════════════════════════
+
+def peer_review(reviewer, author_kata, seed=None):
+    """
+    Simulate one student reviewing another's kata.
+
+    Review dimensions:
+    1. Technical score (objective, via score_dual_kata)
+    2. Style compatibility (how similar to reviewer's DNA)
+    3. Creativity rating (group diversity, pattern variety)
+    4. Constructive feedback (based on reviewer's strengths)
+
+    The reviewer's mastery level affects review quality.
+    """
+    rng = random.Random(seed)
+
+    # 1. Technical score (objective)
+    tech = score_dual_kata(author_kata)
+
+    # 2. Style compatibility
+    # Generate a representative kata for the reviewer to compare styles
+    if reviewer.sessions:
+        rev_dma = DualMatchStickAutomaton(
+            mastery_level=reviewer.mastery_level,
+            seed=rng.randint(0, 2**31))
+        reviewer_kata = rev_dma.generate_dual_kata(length=len(author_kata))
+        reviewer_dna = kata_dna(reviewer_kata)
+    else:
+        reviewer_dna = None
+    author_dna = kata_dna(author_kata)
+
+    if reviewer_dna and author_dna:
+        # Compare group distributions (first 7 elements of vector)
+        rev_g = reviewer_dna['vector'][:7]
+        aut_g = author_dna['vector'][:7]
+        shared_groups = sum(1 for i in range(7)
+                           if rev_g[i] > 0 and aut_g[i] > 0)
+        style_compat = shared_groups / 7.0
+    else:
+        style_compat = 0.5
+
+    # 3. Creativity rating
+    aut_g = author_dna['vector'][:7]
+    author_groups_used = sum(1 for i in range(7) if aut_g[i] > 0)
+    creativity = author_groups_used / 7.0
+
+    patterns = classify_kata_patterns(author_kata)
+    if patterns['total'] > 2:
+        creativity = min(1.0, creativity + 0.15)
+
+    # 4. Constructive feedback
+    feedback = []
+    reviewer_ml = reviewer.mastery_level
+
+    # Higher mastery → more insightful feedback
+    if reviewer_ml >= 3 and tech['pct'] < 70:
+        feedback.append("Consider strengthening rule compliance")
+    if reviewer_ml >= 2 and creativity < 0.4:
+        feedback.append("Try exploring more group diversity")
+    if reviewer_ml >= 4 and style_compat < 0.3:
+        feedback.append("Interesting stylistic contrast — unique approach")
+    if tech['pct'] >= 85:
+        feedback.append("Strong technical execution")
+    if creativity >= 0.6:
+        feedback.append("Great creative range across groups")
+
+    # Noise from reviewer's experience
+    noise = rng.gauss(0, 0.05 * (6 - reviewer_ml))  # less noise at higher ML
+    subjective_score = max(0, min(100,
+        tech['pct'] * 0.5 +
+        style_compat * 100 * 0.2 +
+        creativity * 100 * 0.3 +
+        noise * 100))
+
+    return {
+        'reviewer': reviewer.name,
+        'reviewer_level': reviewer_ml,
+        'technical': {'grade': tech['grade'], 'pct': tech['pct']},
+        'style_compatibility': round(style_compat, 2),
+        'creativity': round(creativity, 2),
+        'subjective_score': round(subjective_score, 1),
+        'feedback': feedback,
+    }
+
+
+def format_peer_review(pr):
+    """Format peer review as readable text."""
+    lines = [f"Peer Review by {pr['reviewer']} (L{pr['reviewer_level']})"]
+    lines.append(f"  Technical: {pr['technical']['grade']} "
+                 f"({pr['technical']['pct']:.0f}%)")
+    lines.append(f"  Style compatibility: {pr['style_compatibility']:.0%}")
+    lines.append(f"  Creativity: {pr['creativity']:.0%}")
+    lines.append(f"  Subjective score: {pr['subjective_score']:.1f}")
+    if pr['feedback']:
+        lines.append("  Feedback:")
+        for fb in pr['feedback']:
+            lines.append(f"    - {fb}")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -6956,6 +7289,51 @@ if __name__ == '__main__':
     cur = generate_curriculum(cur_student, weeks=8, sessions_per_week=2)
     print(format_weekly_curriculum(cur))
 
+    # 66. Statistical Analysis
+    print("\n--- Statistical Analysis ---")
+    for sn in list(sim_school.students.keys())[:2]:
+        st = sim_school.students[sn]
+        stats = analyze_statistics(st)
+        print(format_statistics(stats))
+        print()
+
+    # 67. Export System
+    print("--- Export System ---")
+    csv_student = list(sim_school.students.values())[0]
+    csv_out = export_sessions_csv(csv_student)
+    csv_lines = csv_out.split('\n')
+    print(f"  Student CSV ({len(csv_lines)} rows):")
+    for line in csv_lines[:4]:
+        print(f"    {line}")
+    print(f"    ... ({len(csv_lines)-4} more rows)")
+
+    print(f"\n  Kata text notation (sample kata):")
+    demo_dma = DualMatchStickAutomaton(mastery_level=3, seed=99)
+    demo_kata = demo_dma.generate_dual_kata(length=4)
+    kata_text = export_kata_text(demo_kata)
+    for line in kata_text.split('\n')[:4]:
+        print(f"  {line}")
+    if len(demo_kata) > 4:
+        print("    ...")
+
+    csv_school = export_school_csv(sim_school)
+    print(f"\n  School CSV:")
+    for line in csv_school.split('\n')[:5]:
+        print(f"    {line}")
+
+    # 68. Peer Review
+    print("\n--- Peer Review ---")
+    all_st = list(sim_school.students.values())
+    reviewer_st = all_st[0]
+    author_st = all_st[1]
+    # Generate a kata for the author to be reviewed
+    rev_dma = DualMatchStickAutomaton(
+        mastery_level=author_st.mastery_level, seed=88)
+    author_kata = rev_dma.generate_dual_kata(length=5)
+    pr = peer_review(reviewer_st, author_kata, seed=77)
+    print(f"  {reviewer_st.name} reviews {author_st.name}'s kata:")
+    print(format_peer_review(pr))
+
     print("\n" + "=" * 60)
-    print("v18: Comparative analytics, graduation ceremony,")
-    print("     curriculum generator (8-week plan).")
+    print("v19: Statistical analysis, CSV/text export,")
+    print("     peer review system.")
