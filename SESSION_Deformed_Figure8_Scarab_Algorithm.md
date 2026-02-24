@@ -4719,3 +4719,38 @@ print(format_combos(combos))
 | full_cycle | все 7 групп | +10 |
 | zone_sweep | все 4 зоны | +7 |
 | palindrome | палиндром групп | +15 |
+
+---
+
+## Часть 54: Review queue, SRS, weakness analysis (v39)
+
+### 54.1 Очередь повторения
+
+```python
+rq = build_review_queue(student)
+print(rq.format_queue())
+next_item = rq.pop_next()
+rq.mark_reviewed('group_3')  # priority *= 0.7
+```
+
+### 54.2 Интервальное повторение (SM-2)
+
+```python
+srs = SpacedRepetition()
+srs.add_card(sym_id)
+srs.review(sym_id, quality=4, current_session=5)  # quality 0-5
+due = srs.due_cards(current_session=6)
+print(srs.format_srs(current_session=6))
+```
+
+Алгоритм SM-2: ease *= f(quality), interval *= ease. Mastered при reps ≥ 5.
+
+### 54.3 Анализ слабостей
+
+```python
+ws = analyze_weaknesses(student)
+print(format_weaknesses(ws, student_name='Anna'))
+```
+
+Области: overall_score, consistency, trend, mastery_lag.
+Severity: high (🔴), medium (🟡), positive (🟢).

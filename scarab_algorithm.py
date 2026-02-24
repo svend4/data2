@@ -13378,6 +13378,340 @@ def format_combos(combos, title='Combo Analysis'):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# REVIEW QUEUE (v39)
+# ═══════════════════════════════════════════════════════════
+
+class ReviewQueue:
+    """
+    Priority queue for reviewing symbols/groups that need work.
+
+    Items are scored by urgency: more mistakes = higher priority.
+    """
+
+    def __init__(self):
+        self.items = {}  # key → {priority, data, review_count}
+
+    def add(self, key, priority, data=None):
+        """Add or update a review item."""
+        if key in self.items:
+            self.items[key]['priority'] = max(
+                self.items[key]['priority'], priority)
+        else:
+            self.items[key] = {
+                'priority': priority,
+                'data': data or {},
+                'review_count': 0,
+            }
+
+    def pop_next(self):
+        """Get highest priority item."""
+        if not self.items:
+            return None
+        key = max(self.items, key=lambda k: self.items[k]['priority'])
+        item = self.items.pop(key)
+        item['key'] = key
+        return item
+
+    def peek(self, n=5):
+        """Peek at top N items without removing."""
+        sorted_keys = sorted(
+            self.items, key=lambda k: self.items[k]['priority'],
+            reverse=True)[:n]
+        return [(k, self.items[k]) for k in sorted_keys]
+
+    def mark_reviewed(self, key):
+        """Mark an item as reviewed (reduces priority)."""
+        if key in self.items:
+            self.items[key]['review_count'] += 1
+            self.items[key]['priority'] *= 0.7  # Decay
+
+    def size(self):
+        return len(self.items)
+
+    def format_queue(self, n=10):
+        """Format queue display."""
+        lines = [f"Review Queue ({self.size()} items)"]
+        lines.append("─" * 40)
+
+        top = self.peek(n)
+        for i, (key, item) in enumerate(top):
+            lines.append(f"  {i + 1}. [{key}] "
+                         f"priority={item['priority']:.1f} "
+                         f"reviews={item['review_count']}")
+
+        return '\n'.join(lines)
+
+
+def build_review_queue(student):
+    """Build review queue from student's weak areas."""
+    rq = ReviewQueue()
+    sessions = student.sessions
+
+    # Count errors per group
+    group_errors = {g: 0 for g in range(1, 8)}
+    group_seen = {g: 0 for g in range(1, 8)}
+
+    for s in sessions:
+        for v in s.get('violations', []):
+            g = v.get('group', 1)
+            if 1 <= g <= 7:
+                group_errors[g] += 1
+
+    # Score-based weakness
+    scores = [s['pct'] for s in sessions]
+    if scores:
+        recent = scores[-5:] if len(scores) >= 5 else scores
+        avg = sum(recent) / len(recent)
+
+        # Low scoring areas get priority
+        if avg < 70:
+            rq.add('general_practice', 8,
+                   {'reason': f'Low avg {avg:.0f}%'})
+
+    # Group-specific priorities
+    for g in range(1, 8):
+        errs = group_errors[g]
+        if errs > 0:
+            rq.add(f'group_{g}', errs * 2,
+                   {'reason': f'{errs} violations in G{g}'})
+
+    # Add rule areas
+    for rule_name in ['R1_Zone', 'R2_Adjacency', 'R3_Repetition']:
+        rule_viols = sum(
+            1 for s in sessions
+            for v in s.get('violations', [])
+            if v.get('rule', '') == rule_name)
+        if rule_viols > 0:
+            rq.add(f'rule_{rule_name}', rule_viols * 1.5,
+                   {'reason': f'{rule_viols} violations'})
+
+    return rq
+
+
+# ═══════════════════════════════════════════════════════════
+# SPACED REPETITION ENGINE (v39)
+# ═══════════════════════════════════════════════════════════
+
+class SpacedRepetition:
+    """
+    SM-2 inspired spaced repetition for symbol practice.
+
+    Each item has: ease_factor, interval, repetitions.
+    """
+
+    def __init__(self):
+        self.cards = {}  # symbol → card state
+
+    def add_card(self, symbol):
+        """Add a new card for a symbol."""
+        self.cards[symbol] = {
+            'ease': 2.5,
+            'interval': 1,
+            'repetitions': 0,
+            'next_review': 0,  # session number
+        }
+
+    def review(self, symbol, quality, current_session):
+        """
+        Review a card with quality 0-5 (SM-2 scale).
+
+        0-1: complete blackout
+        2: wrong but recognized
+        3: correct with difficulty
+        4: correct with hesitation
+        5: perfect
+        """
+        if symbol not in self.cards:
+            self.add_card(symbol)
+
+        card = self.cards[symbol]
+
+        if quality >= 3:
+            if card['repetitions'] == 0:
+                card['interval'] = 1
+            elif card['repetitions'] == 1:
+                card['interval'] = 3
+            else:
+                card['interval'] = round(
+                    card['interval'] * card['ease'])
+
+            card['repetitions'] += 1
+        else:
+            card['repetitions'] = 0
+            card['interval'] = 1
+
+        # Update ease factor
+        card['ease'] = max(1.3,
+            card['ease'] + 0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+
+        card['next_review'] = current_session + card['interval']
+        return card
+
+    def due_cards(self, current_session):
+        """Get cards due for review."""
+        due = []
+        for sym, card in self.cards.items():
+            if card['next_review'] <= current_session:
+                due.append((sym, card))
+        due.sort(key=lambda x: x[1]['next_review'])
+        return due
+
+    def stats(self):
+        """Get repetition stats."""
+        cards = list(self.cards.values())
+        if not cards:
+            return {'total': 0, 'avg_ease': 0, 'avg_interval': 0}
+
+        return {
+            'total': len(cards),
+            'avg_ease': round(
+                sum(c['ease'] for c in cards) / len(cards), 2),
+            'avg_interval': round(
+                sum(c['interval'] for c in cards) / len(cards), 1),
+            'mastered': sum(1 for c in cards if c['repetitions'] >= 5),
+            'learning': sum(1 for c in cards if 0 < c['repetitions'] < 5),
+            'new': sum(1 for c in cards if c['repetitions'] == 0),
+        }
+
+    def format_srs(self, current_session=0):
+        """Format SRS status."""
+        st = self.stats()
+        due = self.due_cards(current_session)
+
+        lines = [f"Spaced Repetition ({st['total']} cards)"]
+        lines.append("─" * 45)
+        lines.append(f"  Mastered: {st['mastered']}  |  "
+                     f"Learning: {st['learning']}  |  "
+                     f"New: {st['new']}")
+        lines.append(f"  Avg ease: {st['avg_ease']}  |  "
+                     f"Avg interval: {st['avg_interval']} sessions")
+        lines.append(f"  Due now: {len(due)} cards")
+
+        if due:
+            lines.append("  Next due:")
+            for sym, card in due[:5]:
+                lines.append(f"    S{sym:02d} (G{get_group(sym)})  "
+                             f"ease={card['ease']:.2f}  "
+                             f"reps={card['repetitions']}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# WEAKNESS ANALYZER (v39)
+# ═══════════════════════════════════════════════════════════
+
+def analyze_weaknesses(student):
+    """
+    Deep analysis of student weaknesses.
+
+    Returns structured weakness report with severity and
+    recommended remediation.
+    """
+    sessions = student.sessions
+    scores = [s['pct'] for s in sessions]
+    n = len(scores)
+
+    weaknesses = []
+
+    if n == 0:
+        return [{'area': 'experience', 'severity': 'high',
+                 'detail': 'No sessions completed',
+                 'remedy': 'Begin with warmup template'}]
+
+    avg = sum(scores) / n
+    recent = scores[-5:] if n >= 5 else scores
+    recent_avg = sum(recent) / len(recent)
+
+    # Score weakness
+    if recent_avg < 65:
+        weaknesses.append({
+            'area': 'overall_score',
+            'severity': 'high',
+            'detail': f'Recent avg only {recent_avg:.0f}%',
+            'remedy': 'Focus on fundamentals, use easier templates',
+        })
+    elif recent_avg < 75:
+        weaknesses.append({
+            'area': 'overall_score',
+            'severity': 'medium',
+            'detail': f'Recent avg {recent_avg:.0f}% — room to improve',
+            'remedy': 'Practice consistency with group_flow template',
+        })
+
+    # Variance weakness
+    if n >= 5:
+        variance = sum((s - avg) ** 2 for s in scores) / n
+        if variance > 200:
+            weaknesses.append({
+                'area': 'consistency',
+                'severity': 'high',
+                'detail': f'High variance σ²={variance:.0f}',
+                'remedy': 'Focus on maintaining steady performance',
+            })
+        elif variance > 100:
+            weaknesses.append({
+                'area': 'consistency',
+                'severity': 'medium',
+                'detail': f'Moderate variance σ²={variance:.0f}',
+                'remedy': 'Practice more to stabilize scores',
+            })
+
+    # Trend weakness
+    if n >= 4:
+        x_mean = (n - 1) / 2
+        num = sum((i - x_mean) * (scores[i] - avg) for i in range(n))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        slope = num / den if den > 0 else 0
+        if slope < -2:
+            weaknesses.append({
+                'area': 'trend',
+                'severity': 'medium',
+                'detail': f'Declining trend (slope: {slope:.2f})',
+                'remedy': 'Take a break, review basics, then resume',
+            })
+
+    # Mastery weakness
+    ml = student.mastery_level
+    expected_ml = min(7, n // 4 + 1)
+    if ml < expected_ml - 1:
+        weaknesses.append({
+            'area': 'mastery_lag',
+            'severity': 'medium',
+            'detail': f'Mastery L{ml} vs expected L{expected_ml}',
+            'remedy': 'Complete mastery requirements to advance',
+        })
+
+    # No weaknesses found
+    if not weaknesses:
+        weaknesses.append({
+            'area': 'none',
+            'severity': 'positive',
+            'detail': 'No significant weaknesses detected',
+            'remedy': 'Continue current approach',
+        })
+
+    return weaknesses
+
+
+def format_weaknesses(weaknesses, student_name=''):
+    """Format weakness analysis."""
+    name = f" — {student_name}" if student_name else ''
+    lines = [f"Weakness Analysis{name}"]
+    lines.append("═" * 50)
+
+    sev_icons = {'high': '🔴', 'medium': '🟡', 'positive': '🟢'}
+
+    for w in weaknesses:
+        icon = sev_icons.get(w['severity'], '⚪')
+        lines.append(f"\n  {icon} {w['area']} ({w['severity']})")
+        lines.append(f"     {w['detail']}")
+        lines.append(f"     → {w['remedy']}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -14848,3 +15182,35 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v38: Study groups, symbol encyclopedia, combo system.")
+
+    # 126. Review Queue
+    print("\n--- Review Queue ---")
+    rq = build_review_queue(sim_school.students['Anna'])
+    print(rq.format_queue())
+    if rq.size() > 0:
+        nxt = rq.pop_next()
+        print(f"  Popped: {nxt['key']} (priority {nxt['priority']:.1f})")
+
+    # 127. Spaced Repetition
+    print("\n--- Spaced Repetition ---")
+    srs = SpacedRepetition()
+    for s in range(20):
+        srs.add_card(s)
+    # Simulate reviews
+    import random as _rnd_srs
+    _rnd_srs.seed(42)
+    for session in range(1, 6):
+        due = srs.due_cards(session)
+        for sym, card in due[:5]:
+            quality = _rnd_srs.randint(2, 5)
+            srs.review(sym, quality, session)
+    print(srs.format_srs(current_session=6))
+
+    # 128. Weakness Analyzer
+    print("\n--- Weakness Analysis ---")
+    for sname in ['Anna', 'Ivan']:
+        ws = analyze_weaknesses(sim_school.students[sname])
+        print(format_weaknesses(ws, student_name=sname))
+
+    print("\n" + "=" * 60)
+    print("v39: Review queue, spaced repetition, weakness analyzer.")
