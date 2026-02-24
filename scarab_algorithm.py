@@ -18458,6 +18458,379 @@ def format_schedule_plan(plan):
     return '\n'.join(lines)
 
 
+# ── v54: Performance Profiler, Learning Bottleneck Detector, Optimizer Hints ──
+
+
+class PerformanceProfiler:
+    """Profiles student performance across multiple dimensions.
+
+    Generates a multi-axis profile: accuracy, speed, consistency,
+    group mastery, zone coverage, and improvement rate.
+    """
+
+    DIMENSIONS = [
+        'accuracy', 'consistency', 'group_breadth',
+        'improvement_rate', 'session_volume', 'mastery_depth'
+    ]
+
+    def __init__(self, student):
+        self.student = student
+        self.profile = {}
+
+    def build_profile(self):
+        """Build a complete performance profile."""
+        sessions = self.student.sessions
+        scores = [s.get('pct', 0) for s in sessions]
+
+        if not scores:
+            self.profile = {d: 0.0 for d in self.DIMENSIONS}
+            return self.profile
+
+        # Accuracy: normalized average score
+        avg = sum(scores) / len(scores)
+        self.profile['accuracy'] = round(min(avg / 100, 1.0), 4)
+
+        # Consistency: 1 - coefficient of variation
+        if avg > 0:
+            std = (sum((s - avg) ** 2 for s in scores) / len(scores)) ** 0.5
+            cv = std / avg
+            self.profile['consistency'] = round(max(0, 1 - cv), 4)
+        else:
+            self.profile['consistency'] = 0.0
+
+        # Group breadth: how many groups does student perform well in
+        group_scores = {g: [] for g in range(1, 8)}
+        for s in sessions:
+            seq = s.get('sequence', [])
+            for sym in seq:
+                g = get_group(sym)
+                group_scores[g].append(s.get('pct', 0))
+        groups_above_60 = sum(
+            1 for g, scs in group_scores.items()
+            if scs and sum(scs) / len(scs) > 60
+        )
+        self.profile['group_breadth'] = round(groups_above_60 / 7, 4)
+
+        # Improvement rate: slope of scores
+        if len(scores) >= 3:
+            n = len(scores)
+            x_mean = (n - 1) / 2
+            y_mean = sum(scores) / n
+            num = sum((i - x_mean) * (s - y_mean)
+                      for i, s in enumerate(scores))
+            den = sum((i - x_mean) ** 2 for i in range(n))
+            slope = num / max(den, 1)
+            # Normalize: positive slope → good, cap at 1.0
+            self.profile['improvement_rate'] = round(
+                max(0, min(1, (slope + 2) / 4)), 4
+            )
+        else:
+            self.profile['improvement_rate'] = 0.5
+
+        # Session volume: normalized by target (50 sessions)
+        self.profile['session_volume'] = round(
+            min(len(sessions) / 50, 1.0), 4
+        )
+
+        # Mastery depth: mastery_level / 7
+        ml = getattr(self.student, 'mastery_level', 1)
+        self.profile['mastery_depth'] = round(ml / 7, 4)
+
+        return self.profile
+
+    def overall_score(self):
+        """Compute weighted overall score from profile."""
+        weights = {
+            'accuracy': 0.25,
+            'consistency': 0.15,
+            'group_breadth': 0.15,
+            'improvement_rate': 0.15,
+            'session_volume': 0.10,
+            'mastery_depth': 0.20
+        }
+        total = sum(self.profile.get(d, 0) * w
+                    for d, w in weights.items())
+        return round(total * 100, 1)
+
+    def strengths_weaknesses(self):
+        """Identify top strengths and weaknesses."""
+        if not self.profile:
+            return {'strengths': [], 'weaknesses': []}
+
+        sorted_dims = sorted(self.profile.items(),
+                             key=lambda x: x[1], reverse=True)
+        strengths = [(d, round(v * 100, 1))
+                     for d, v in sorted_dims[:2] if v > 0.5]
+        weaknesses = [(d, round(v * 100, 1))
+                      for d, v in sorted_dims[-2:] if v < 0.6]
+        return {'strengths': strengths, 'weaknesses': weaknesses}
+
+
+def format_profile(profiler):
+    """Format performance profile for display."""
+    lines = [f"=== Performance Profile: {profiler.student.name} ==="]
+    lines.append(f"Overall Score: {profiler.overall_score()}/100")
+
+    lines.append("\nDimensions:")
+    for d in PerformanceProfiler.DIMENSIONS:
+        val = profiler.profile.get(d, 0)
+        bar_len = int(val * 20)
+        bar = '█' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  {d:20s} {bar} {val*100:.1f}%")
+
+    sw = profiler.strengths_weaknesses()
+    if sw['strengths']:
+        lines.append("\nStrengths: " +
+                     ", ".join(f"{d}({v}%)" for d, v in sw['strengths']))
+    if sw['weaknesses']:
+        lines.append("Weaknesses: " +
+                     ", ".join(f"{d}({v}%)" for d, v in sw['weaknesses']))
+
+    return '\n'.join(lines)
+
+
+class LearningBottleneckDetector:
+    """Detects learning bottlenecks that slow student progress.
+
+    Identifies specific groups, transitions, and patterns
+    that consistently cause errors or low performance.
+    """
+
+    def __init__(self, student):
+        self.student = student
+        self.bottlenecks = []
+
+    def detect(self):
+        """Run all bottleneck detection analyses."""
+        self.bottlenecks = []
+        self._check_score_plateaus()
+        self._check_group_weaknesses()
+        self._check_violation_patterns()
+        self._check_session_length_impact()
+        return self.bottlenecks
+
+    def _check_score_plateaus(self):
+        """Detect score plateaus (no improvement over N sessions)."""
+        scores = [s.get('pct', 0) for s in self.student.sessions]
+        if len(scores) < 5:
+            return
+
+        window = 5
+        for i in range(window, len(scores)):
+            recent = scores[i - window:i]
+            rng = max(recent) - min(recent)
+            avg = sum(recent) / len(recent)
+            if rng < 5 and avg < 80:
+                self.bottlenecks.append({
+                    'type': 'plateau',
+                    'severity': 'high' if avg < 60 else 'medium',
+                    'detail': f'Score plateau at ~{avg:.0f}% '
+                              f'(sessions {i-window+1}-{i})',
+                    'sessions': (i - window + 1, i)
+                })
+                break  # Only report first plateau
+
+    def _check_group_weaknesses(self):
+        """Detect consistently weak performance in specific groups."""
+        group_violations = {g: 0 for g in range(1, 8)}
+        total_sessions = len(self.student.sessions)
+        for s in self.student.sessions:
+            for v in s.get('violations', []):
+                if isinstance(v, dict) and 'group' in v:
+                    g = v['group']
+                    group_violations[g] = group_violations.get(g, 0) + 1
+                elif isinstance(v, (int, float)):
+                    g = get_group(int(v) % 64)
+                    group_violations[g] += 1
+
+        for g, count in group_violations.items():
+            if count > total_sessions * 0.3 and total_sessions > 3:
+                self.bottlenecks.append({
+                    'type': 'group_weakness',
+                    'severity': 'high',
+                    'detail': f'Group {g}: {count} violations '
+                              f'in {total_sessions} sessions',
+                    'group': g
+                })
+
+    def _check_violation_patterns(self):
+        """Detect increasing violation trends."""
+        sessions = self.student.sessions
+        if len(sessions) < 4:
+            return
+        half = len(sessions) // 2
+        first_half_v = sum(
+            len(s.get('violations', [])) for s in sessions[:half]
+        )
+        second_half_v = sum(
+            len(s.get('violations', [])) for s in sessions[half:]
+        )
+        if second_half_v > first_half_v * 1.5 and second_half_v > 3:
+            self.bottlenecks.append({
+                'type': 'increasing_violations',
+                'severity': 'medium',
+                'detail': f'Violations increased: '
+                          f'{first_half_v} → {second_half_v}'
+            })
+
+    def _check_session_length_impact(self):
+        """Check if longer sessions have lower scores."""
+        sessions = self.student.sessions
+        short = [s.get('pct', 0) for s in sessions
+                 if s.get('length', 16) <= 16]
+        long = [s.get('pct', 0) for s in sessions
+                if s.get('length', 16) > 16]
+        if short and long:
+            avg_short = sum(short) / len(short)
+            avg_long = sum(long) / len(long)
+            if avg_short - avg_long > 15:
+                self.bottlenecks.append({
+                    'type': 'length_sensitivity',
+                    'severity': 'medium',
+                    'detail': f'Short sessions avg={avg_short:.0f}% vs '
+                              f'Long avg={avg_long:.0f}%'
+                })
+
+
+def format_bottlenecks(bottlenecks, student_name=''):
+    """Format detected bottlenecks."""
+    lines = [f"=== Bottleneck Report{': ' + student_name if student_name else ''} ==="]
+    if not bottlenecks:
+        lines.append("  No bottlenecks detected!")
+        return '\n'.join(lines)
+
+    sev_icons = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}
+    for b in bottlenecks:
+        icon = sev_icons.get(b['severity'], '○')
+        lines.append(f"  {icon} [{b['type']}] {b['detail']}")
+
+    return '\n'.join(lines)
+
+
+class OptimizerHints:
+    """Generates actionable optimization hints for students.
+
+    Based on profile analysis, bottleneck detection, and
+    best practice heuristics for the Scarab system.
+    """
+
+    HINT_TEMPLATES = {
+        'increase_variety': 'Try practicing with more symbol groups. '
+                            'Focus on groups {groups}.',
+        'break_plateau': 'Score plateau detected. Try changing '
+                         'training mode to {mode}.',
+        'boost_consistency': 'Score variance is high. Focus on '
+                             'shorter, more frequent sessions.',
+        'deepen_mastery': 'Ready for next mastery level. '
+                          'Complete {n} more sessions above {threshold}%.',
+        'fix_violations': 'Violation rate is high for group {group}. '
+                          'Do targeted drills.',
+        'add_review': 'Include more review sessions. Spaced '
+                      'repetition improves retention by 40%.',
+        'celebrate': 'Excellent performance! Consider taking on '
+                     'assessment challenges.'
+    }
+
+    def __init__(self, profiler=None, bottlenecks=None):
+        self.profiler = profiler
+        self.bottlenecks = bottlenecks or []
+        self.hints = []
+
+    def generate_hints(self):
+        """Generate optimization hints."""
+        self.hints = []
+
+        if self.profiler:
+            profile = self.profiler.profile
+            sw = self.profiler.strengths_weaknesses()
+
+            # Check accuracy
+            if profile.get('accuracy', 0) < 0.6:
+                self.hints.append({
+                    'priority': 'high',
+                    'hint': 'Focus on accuracy. Score is below 60%. '
+                            'Slow down and verify each symbol.',
+                    'category': 'accuracy'
+                })
+
+            # Check consistency
+            if profile.get('consistency', 0) < 0.5:
+                self.hints.append({
+                    'priority': 'medium',
+                    'hint': self.HINT_TEMPLATES['boost_consistency'],
+                    'category': 'consistency'
+                })
+
+            # Check group breadth
+            if profile.get('group_breadth', 0) < 0.5:
+                weak_groups = [d for d, v in sw.get('weaknesses', [])
+                               if 'group' in d]
+                self.hints.append({
+                    'priority': 'medium',
+                    'hint': 'Expand symbol group coverage. '
+                            'Practice weaker groups more.',
+                    'category': 'breadth'
+                })
+
+            # Check mastery depth
+            if profile.get('mastery_depth', 0) > 0.7:
+                self.hints.append({
+                    'priority': 'low',
+                    'hint': self.HINT_TEMPLATES['celebrate'],
+                    'category': 'celebration'
+                })
+
+            # Check improvement
+            if profile.get('improvement_rate', 0) < 0.3:
+                self.hints.append({
+                    'priority': 'high',
+                    'hint': 'Improvement has stalled. '
+                            'Try a different training approach.',
+                    'category': 'improvement'
+                })
+
+        # Bottleneck-based hints
+        for b in self.bottlenecks:
+            if b['type'] == 'plateau':
+                self.hints.append({
+                    'priority': 'high',
+                    'hint': self.HINT_TEMPLATES['break_plateau'].format(
+                        mode='drill'),
+                    'category': 'plateau'
+                })
+            elif b['type'] == 'group_weakness':
+                self.hints.append({
+                    'priority': 'high',
+                    'hint': self.HINT_TEMPLATES['fix_violations'].format(
+                        group=b.get('group', '?')),
+                    'category': 'violations'
+                })
+
+        # General hints (always applicable)
+        self.hints.append({
+            'priority': 'low',
+            'hint': self.HINT_TEMPLATES['add_review'],
+            'category': 'general'
+        })
+
+        # Sort by priority
+        prio_order = {'high': 0, 'medium': 1, 'low': 2}
+        self.hints.sort(key=lambda h: prio_order.get(h['priority'], 9))
+
+        return self.hints
+
+
+def format_optimizer_hints(hints, student_name=''):
+    """Format optimizer hints for display."""
+    lines = [f"=== Optimizer Hints{': ' + student_name if student_name else ''} ==="]
+    prio_icons = {'high': '❗', 'medium': '💡', 'low': '✨'}
+    for h in hints:
+        icon = prio_icons.get(h['priority'], '•')
+        lines.append(f"  {icon} [{h['category']}] {h['hint']}")
+    lines.append(f"\nTotal hints: {len(hints)}")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -20494,3 +20867,32 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v53: Training calendar, reminder system, schedule optimizer.")
+
+    # ── v54 demos ────────────────────────────────────────
+
+    # 173. Performance Profiler
+    print("\n--- Performance Profiler ---")
+    for sname in ['Anna', 'Ivan']:
+        pp = PerformanceProfiler(sim_school.students[sname])
+        pp.build_profile()
+        print(format_profile(pp))
+
+    # 174. Learning Bottleneck Detector
+    print("\n--- Bottleneck Detector ---")
+    for sname in ['Anna', 'Max']:
+        bd = LearningBottleneckDetector(sim_school.students[sname])
+        bns = bd.detect()
+        print(format_bottlenecks(bns, sname))
+
+    # 175. Optimizer Hints
+    print("\n--- Optimizer Hints ---")
+    pp_anna = PerformanceProfiler(sim_school.students['Anna'])
+    pp_anna.build_profile()
+    bd_anna = LearningBottleneckDetector(sim_school.students['Anna'])
+    bns_anna = bd_anna.detect()
+    oh = OptimizerHints(profiler=pp_anna, bottlenecks=bns_anna)
+    hints = oh.generate_hints()
+    print(format_optimizer_hints(hints, 'Anna'))
+
+    print("\n" + "=" * 60)
+    print("v54: Performance profiler, bottleneck detector, optimizer hints.")

@@ -6014,3 +6014,44 @@ focus = so.suggest_focus()    # balanced/intensive/recovery/assessment
 plan = so.optimize(sessions_per_week=5, focus=focus)
 print(format_schedule_plan(plan))
 ```
+
+---
+
+## Часть 69: Performance Profiler, Bottleneck Detector, Optimizer Hints (v54)
+
+### 69.1 PerformanceProfiler
+
+6-мерный профиль: accuracy, consistency, group_breadth,
+improvement_rate, session_volume, mastery_depth.
+
+```python
+pp = PerformanceProfiler(student)
+pp.build_profile()
+score = pp.overall_score()      # взвешенная оценка 0-100
+sw = pp.strengths_weaknesses()  # сильные/слабые стороны
+print(format_profile(pp))
+```
+
+### 69.2 LearningBottleneckDetector
+
+Обнаружение узких мест обучения: плато, слабости групп,
+рост нарушений, чувствительность к длине сессии.
+
+```python
+bd = LearningBottleneckDetector(student)
+bottlenecks = bd.detect()
+print(format_bottlenecks(bottlenecks, student.name))
+```
+
+### 69.3 OptimizerHints
+
+Генерация рекомендаций на основе профиля и узких мест.
+
+```python
+oh = OptimizerHints(profiler=pp, bottlenecks=bottlenecks)
+hints = oh.generate_hints()
+print(format_optimizer_hints(hints, student.name))
+```
+
+7 шаблонов подсказок: increase_variety, break_plateau,
+boost_consistency, deepen_mastery, fix_violations, add_review, celebrate.
