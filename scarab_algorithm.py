@@ -862,6 +862,25 @@ def is_anti_symmetric(sym_left, sym_right):
     return match_count >= 3
 
 
+def complexity_balance(sym_left, sym_right):
+    """
+    Measure complexity conservation between two hands.
+
+    Rule 5: complexity(L) + complexity(R) ≈ const
+    Total cognitive load should stay within 7±2 (Miller's law).
+
+    Returns:
+        (total_complexity, is_balanced)
+        is_balanced = True if total ∈ [2, 6] (= 4 ± 2)
+    """
+    cL = symbol_complexity(sym_left)
+    cR = symbol_complexity(sym_right)
+    total = cL + cR
+    # Target: 4 ± 2 (one hand complex → other simple)
+    is_balanced = 2 <= total <= 6
+    return total, is_balanced
+
+
 class DualMatchStickAutomaton:
     """
     Two coordinated Match-Stick Automatons — one per hand.
@@ -904,18 +923,30 @@ class DualMatchStickAutomaton:
         self.lead = 'left'  # Which hand is currently attacking
         self.lead_count = 0
 
+        # Phase offset state (Rule 4)
+        # Left hand phase relative to right: +1 = ahead, -1 = behind
+        self.phase_offset = 1  # Left leads initially
+        self.phase_queue = []  # Buffered moves for phase-shifted hand
+
+        # Complexity target (Rule 5)
+        self.target_complexity = 4  # Total for both hands (Miller: 7±2 / 2 hands)
+
         # Dual history
         self.dual_history = [(0, 0)]
 
         self.mastery = mastery_level
 
-    def _get_complementary_symbol(self, partner_sym):
+    def _get_complementary_symbol(self, partner_sym, enforce_conservation=True):
         """
         Find a symbol complementary to the partner's current position.
 
-        Complementary = different zone + anti-symmetric lines.
+        Complementary = different zone + anti-symmetric lines + balanced complexity.
         Like a mirror image rotated 180°.
+
+        Rule 5 enforcement: if partner is complex (3-4), prefer simple (0-1) and vice versa.
         """
+        partner_complexity = symbol_complexity(partner_sym)
+
         candidates = []
         for s in self.left.available_symbols:
             if s == partner_sym:
@@ -933,6 +964,16 @@ class DualMatchStickAutomaton:
         if not candidates:
             candidates = self.left.available_symbols
 
+        # Rule 5: Complexity conservation — prefer balanced pairs
+        if enforce_conservation and len(candidates) > 1:
+            target_c = max(0, self.target_complexity - partner_complexity)
+            # Sort by closeness to target complexity
+            balanced = sorted(candidates,
+                              key=lambda s: abs(symbol_complexity(s) - target_c))
+            # Take top third (allow some variety)
+            cutoff = max(3, len(balanced) // 3)
+            candidates = balanced[:cutoff]
+
         return candidates
 
     def step(self, contact_left=None, contact_right=None):
@@ -942,6 +983,12 @@ class DualMatchStickAutomaton:
         The lead hand moves first (attack/initiative).
         The follow hand reacts (defense/complement).
 
+        Phase offset (Rule 4): lead hand is one sub-step ahead.
+        The follow hand's move is based on the lead's PREVIOUS position,
+        creating a cascading L1→R1→L2→R2 pattern.
+
+        Complexity conservation (Rule 5): enforced via _get_complementary_symbol.
+
         Returns: (left_sym, right_sym, left_mudra, right_mudra)
         """
         # Alternate lead hand every 1-3 tacts (ODD!)
@@ -950,6 +997,8 @@ class DualMatchStickAutomaton:
         if self.lead_count >= switch_at:
             self.lead = 'right' if self.lead == 'left' else 'left'
             self.lead_count = 0
+            # Phase offset flips when lead switches
+            self.phase_offset = -self.phase_offset
 
         if self.lead == 'left':
             lead_msa, follow_msa = self.left, self.right
@@ -971,7 +1020,22 @@ class DualMatchStickAutomaton:
         lead_msa.transition(lead_next)
 
         # 2. Follow hand: must complement the lead (anti-symmetric, no zone clash)
-        complements = self._get_complementary_symbol(lead_next)
+        #    Rule 4 (Phase offset): follow reacts to lead's position
+        #    with a slight delay — use previous lead state as context
+        #    for generating the cascade pattern
+        phase_reference = lead_next
+        if len(lead_msa.history) >= 3 and self.mastery >= 3:
+            # At higher mastery, follow hand anticipates based on pattern
+            # phase_reference blends current + previous for smoother cascade
+            prev = lead_msa.history[-2] if len(lead_msa.history) >= 2 else 0
+            # XOR blending: take bits from both to create phase-shifted target
+            blend_mask = self.rng.randint(0, 0x3F)
+            phase_reference = (lead_next & blend_mask) | (prev & ~blend_mask & 0x3F)
+            # But still must be a valid available symbol
+            if phase_reference not in lead_msa.available_symbols:
+                phase_reference = lead_next
+
+        complements = self._get_complementary_symbol(phase_reference)
         # Prefer neighbors of current follow state (smooth transition)
         follow_neighbors = follow_msa._adj.get(follow_msa.state, [])
         smooth_complements = [c for c in complements if c in follow_neighbors]
@@ -1045,6 +1109,110 @@ class DualMatchStickAutomaton:
                     valid += 1
         return valid, total
 
+    def generate_dual_training_session(self, duration_minutes=45):
+        """
+        Generate a complete dual-hand training session.
+
+        Format (adapted for two hands):
+          0-5 min:   Mirror warmup (same symbol, mirrored)
+          5-10 min:  Single-hand L (left kata, right at rest)
+          10-15 min: Single-hand R (right kata, left at rest)
+          15-25 min: Dual pairs — lead L (attack L / defend R)
+          25-35 min: Dual pairs — lead R (attack R / defend L)
+          35-40 min: Free duet (improvisation, both hands)
+          40-45 min: Cooldown (slow mirror transitions)
+
+        Returns: dict with blocks, each containing dual symbol sequences
+        """
+        session = {}
+
+        warmup_syms = [s for s in range(64) if get_group(s) in [1, 2]]
+
+        # 1. Mirror warmup: both hands do the same symbol
+        mirror_pairs = []
+        for _ in range(6):
+            s = self.rng.choice(warmup_syms)
+            mirror_pairs.append((s, s))
+        session['mirror_warmup'] = {
+            'duration': '0-5 min',
+            'pairs': mirror_pairs,
+            'instruction': 'Both hands mirror the same position. Hold 30s each. ChVS: FIST.',
+        }
+
+        # 2. Single-hand L: left hand does kata, right at rest
+        self.left.state = 0
+        self.left.history = [0]
+        kata_L = self.left.generate_kata(length=5)
+        session['single_L'] = {
+            'duration': '5-10 min',
+            'kata': [(s, 0) for s in kata_L],
+            'instruction': 'Left hand kata, right at rest (ready). Focus on L transitions.',
+        }
+
+        # 3. Single-hand R: right hand does kata, left at rest
+        self.right.state = 0
+        self.right.history = [0]
+        kata_R = self.right.generate_kata(length=5)
+        session['single_R'] = {
+            'duration': '10-15 min',
+            'kata': [(0, s) for s in kata_R],
+            'instruction': 'Right hand kata, left at rest (ready). Focus on R transitions.',
+        }
+
+        # 4. Dual pairs — lead L
+        self.left.state = 0
+        self.right.state = 0
+        self.left.history = [0]
+        self.right.history = [0]
+        self.lead = 'left'
+        self.dual_history = [(0, 0)]
+        dual_kata_L = self.generate_dual_kata(length=7)
+        session['dual_lead_L'] = {
+            'duration': '15-25 min',
+            'kata': dual_kata_L,
+            'instruction': 'Left hand attacks, right defends. Practice anti-symmetry.',
+        }
+
+        # 5. Dual pairs — lead R
+        self.left.state = 0
+        self.right.state = 0
+        self.left.history = [0]
+        self.right.history = [0]
+        self.lead = 'right'
+        self.dual_history = [(0, 0)]
+        dual_kata_R = self.generate_dual_kata(length=7)
+        session['dual_lead_R'] = {
+            'duration': '25-35 min',
+            'kata': dual_kata_R,
+            'instruction': 'Right hand attacks, left defends. Reverse lead.',
+        }
+
+        # 6. Free duet: improvisation
+        self.left.state = 0
+        self.right.state = 0
+        self.left.history = [0]
+        self.right.history = [0]
+        self.dual_history = [(0, 0)]
+        free_kata = self.generate_dual_kata(length=9)
+        session['free_duet'] = {
+            'duration': '35-40 min',
+            'kata': free_kata,
+            'instruction': 'Free improvisation. Lead alternates. All Rules (1-5) active.',
+        }
+
+        # 7. Cooldown: slow mirror
+        slow_pairs = []
+        for _ in range(4):
+            s = self.rng.choice(warmup_syms)
+            slow_pairs.append((s, s))
+        session['cooldown'] = {
+            'duration': '40-45 min',
+            'pairs': slow_pairs,
+            'instruction': 'Slow mirror transitions. Deep breathing. ChVS: GRAB (relaxed).',
+        }
+
+        return session
+
     def describe_dual_state(self):
         """Human-readable dual state description."""
         gL = get_group(self.left.state)
@@ -1059,11 +1227,14 @@ class DualMatchStickAutomaton:
             chvs_L = CHVS_NAMES[self.left.chvs]
             chvs_R = CHVS_NAMES[self.right.chvs]
 
+        total_c, balanced = complexity_balance(self.left.state, self.right.state)
+
         return (f"L: {self.left.state:06b}(G{gL},{chvs_L}) | "
                 f"R: {self.right.state:06b}(G{gR},{chvs_R}) | "
                 f"lead={self.lead} | "
                 f"conflict={'YES!' if conflict else 'no'} | "
-                f"anti-sym={'yes' if anti else 'NO'}")
+                f"anti-sym={'yes' if anti else 'NO'} | "
+                f"C={total_c}({'OK' if balanced else 'HI'})")
 
 
 def symbol_to_ascii(sym, size=5):
@@ -1430,6 +1601,100 @@ def export_training_session(session, mastery_level=1, filename=None):
     return text
 
 
+def export_dual_training_session(session, mastery_level=1, use_mudras=False,
+                                  filename=None):
+    """
+    Export a DUAL-HAND training session to human-readable text format.
+
+    Includes dual stick-figure visualization for kata sequences.
+    """
+    group_names = {1: 'Soft base', 2: 'Hard base', 3: 'MVS (wrist)',
+                   4: 'Rotational', 5: 'Weapon', 6: 'Master', 7: 'Peak defense'}
+    chvs_names = MUDRA_NAMES if use_mudras else CHVS_NAMES
+
+    lines = []
+    lines.append("=" * 70)
+    lines.append(f"DUAL-HAND TRAINING SESSION — Mastery Level {mastery_level}")
+    lines.append(f"Mode: {'8-mudra' if use_mudras else '4-ChVS'}")
+    lines.append(f"Date: ____________  Duration: 45 min")
+    lines.append("=" * 70)
+
+    for block_name, block_data in session.items():
+        dur = block_data.get('duration', '?')
+        instr = block_data.get('instruction', '')
+        lines.append(f"\n{'─' * 70}")
+        lines.append(f"[{dur}] {block_name.upper()}")
+        lines.append(f"  {instr}")
+
+        # Mirror/cooldown pairs: (sym, sym) tuples
+        if 'pairs' in block_data:
+            lines.append("  Positions:")
+            for j, (sL, sR) in enumerate(block_data['pairs']):
+                gL, gR = get_group(sL), get_group(sR)
+                total_c, balanced = complexity_balance(sL, sR)
+                lines.append(f"    {j+1}. L:{sL:06b}(G{gL}) | R:{sR:06b}(G{gR})"
+                             f" | C={total_c}{'*' if not balanced else ''}")
+                # Dual stick figure
+                fig = dual_stick_figure(sL, sR, CHVS_FIST, CHVS_FIST)
+                for f_line in fig:
+                    lines.append(f"      {f_line}")
+
+        # Single-hand kata: (sym, 0) or (0, sym) tuples
+        if 'kata' in block_data and isinstance(block_data['kata'], list):
+            kata = block_data['kata']
+            if len(kata) > 0 and isinstance(kata[0], tuple) and len(kata[0]) == 2:
+                # Single-hand format: list of (L, R)
+                lines.append("  Sequence:")
+                for j, (sL, sR) in enumerate(kata):
+                    active = sL if sL != 0 else sR
+                    hand = 'L' if sL != 0 else 'R'
+                    grp = get_group(active)
+                    lines.append(f"    Tact {j}: {hand}={active:06b}"
+                                 f"(G{grp}/{group_names[grp]})")
+                    la, ra = symbol_to_arms(active)
+                    fig = stick_figure_frame(la, ra)
+                    for f_line in fig:
+                        lines.append(f"        {f_line}")
+
+            elif len(kata) > 0 and isinstance(kata[0], tuple) and len(kata[0]) == 4:
+                # Dual format: list of (L, R, chvs_L, chvs_R)
+                lines.append("  Dual Kata:")
+                for j, (sL, sR, cL, cR) in enumerate(kata):
+                    gL, gR = get_group(sL), get_group(sR)
+                    total_c, balanced = complexity_balance(sL, sR)
+                    conflict = zones_conflict(sL, sR)
+                    anti = is_anti_symmetric(sL, sR)
+                    cL_name = chvs_names.get(cL, '?')
+                    cR_name = chvs_names.get(cR, '?')
+                    status = 'OK' if not conflict else 'COLLISION!'
+
+                    lines.append(f"    Tact {j}: L={sL:06b}(G{gL},{cL_name}) "
+                                 f"R={sR:06b}(G{gR},{cR_name}) "
+                                 f"[{status}] C={total_c}")
+
+                    fig = dual_stick_figure(sL, sR, cL, cR, use_mudras)
+                    for f_line in fig:
+                        lines.append(f"      {f_line}")
+
+    lines.append(f"\n{'─' * 70}")
+    lines.append("RULES ACTIVE:")
+    lines.append("  1. Zone Exclusion: hands never in same quadrant")
+    lines.append("  2. Anti-Symmetry: H1 attacks <-> H2 defends")
+    lines.append("  3. Lead Alternation: switches every 1-3 tacts (ODD)")
+    lines.append("  4. Phase Offset: cascade L1->R1->L2->R2")
+    lines.append("  5. Complexity Conservation: C(L)+C(R) in [2,6]")
+    lines.append("\n" + "=" * 70)
+    lines.append("END OF DUAL SESSION")
+
+    text = '\n'.join(lines)
+
+    if filename:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    return text
+
+
 # ═══════════════════════════════════════════════════════════
 # ANNUAL TRAINING PLAN MAPPING
 # ═══════════════════════════════════════════════════════════
@@ -1661,7 +1926,7 @@ if __name__ == '__main__':
     for frame in anim_frames:
         print(frame)
 
-    # 14. Export training session to file
+    # 14. Export single-hand training session to file
     msa_export = MatchStickAutomaton(mastery_level=2, seed=42)
     session_export = msa_export.generate_training_session()
     export_text = export_training_session(session_export, mastery_level=2,
@@ -1669,12 +1934,61 @@ if __name__ == '__main__':
     line_count = len(export_text.split('\n'))
     print(f"--- Exported Training Session (Level 2) ---")
     print(f"  Saved to: training_session_L2.txt ({line_count} lines)")
-    # Show first 10 lines as preview
     for line in export_text.split('\n')[:10]:
         print(f"  {line}")
     print("  ...")
 
-    # 15. Graph statistics (summary)
+    # 15. Complexity conservation (Rule 5)
+    print("\n--- Complexity Conservation (Rule 5) ---")
+    test_pairs = [
+        (0b110100, 0b000010),  # K-shape (complex) + bottom (simple)
+        (0b001111, 0b010000),  # square (complex) + diag1 (simple)
+        (0b111111, 0b000000),  # full (max) + empty (min)
+        (0b010000, 0b100000),  # diag1 + diag2 (both simple)
+        (0b111111, 0b111111),  # full + full (both max)
+    ]
+    for sL, sR in test_pairs:
+        total_c, balanced = complexity_balance(sL, sR)
+        cL = symbol_complexity(sL)
+        cR = symbol_complexity(sR)
+        print(f"  L:{sL:06b}(C{cL}) + R:{sR:06b}(C{cR}) = "
+              f"total {total_c} {'OK' if balanced else 'OVERLOAD'}")
+
+    # 16. Dual kata with Rule 4 (phase offset) + Rule 5 (conservation)
+    print("\n--- Dual Kata with Rules 4+5 (Level 4) ---")
+    dual_r45 = DualMatchStickAutomaton(mastery_level=4, use_mudras=True, seed=13)
+    dkata_r45 = dual_r45.generate_dual_kata(length=7)
+    for i, (L, R, mL, mR) in enumerate(dkata_r45):
+        gL, gR = get_group(L), get_group(R)
+        total_c, balanced = complexity_balance(L, R)
+        conflict = zones_conflict(L, R)
+        anti = is_anti_symmetric(L, R)
+        mL_name = MUDRA_NAMES.get(mL, '?')
+        mR_name = MUDRA_NAMES.get(mR, '?')
+        status_parts = []
+        if conflict:
+            status_parts.append('COLL')
+        if not balanced:
+            status_parts.append('HI-C')
+        status = ','.join(status_parts) if status_parts else 'OK'
+        print(f"  T{i}: L={L:06b}(G{gL},{mL_name:5s}) "
+              f"R={R:06b}(G{gR},{mR_name:5s}) "
+              f"C={total_c} lead={dual_r45.lead} [{status}]")
+
+    # 17. Export dual-hand training session
+    dual_export = DualMatchStickAutomaton(mastery_level=3, use_mudras=False, seed=42)
+    dual_session = dual_export.generate_dual_training_session()
+    dual_text = export_dual_training_session(
+        dual_session, mastery_level=3, use_mudras=False,
+        filename='training_session_dual_L3.txt')
+    dual_line_count = len(dual_text.split('\n'))
+    print(f"\n--- Exported Dual Training Session (Level 3) ---")
+    print(f"  Saved to: training_session_dual_L3.txt ({dual_line_count} lines)")
+    for line in dual_text.split('\n')[:15]:
+        print(f"  {line}")
+    print("  ...")
+
+    # 18. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
@@ -1698,4 +2012,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v4: Dual MSA + Mudra System. Two-hand juggler coordination.")
+    print("v5: Rules 4+5 (phase offset, complexity conservation),")
+    print("    dual-hand training session generation & export.")
