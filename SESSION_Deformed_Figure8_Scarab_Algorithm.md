@@ -2299,8 +2299,8 @@ StudentProfile → weaknesses() → adaptive_curriculum()
   export_training_session   текстовый файл сессии
   format_curriculum         ← NEW: вывод адаптивного плана
 
-ИТОГО: 46 демо-секций, 27 частей документации,
-       ~4500 строк кода, замкнутый цикл обратной связи
+ИТОГО: 50 демо-секций, 28 частей документации,
+       ~4900 строк кода, замкнутый цикл обратной связи
 ```
 
 ---
@@ -2459,9 +2459,163 @@ Resonance       0.969       0.957       1.000
   analyze_kata              статистика качества
   export_training_session   текстовый файл сессии
   format_curriculum         адаптивный план
-  format_drill              ← NEW: вывод дрилла
-  format_sparring           ← NEW: вывод спарринга
+  format_drill              вывод дрилла
+  format_sparring           вывод спарринга
+  KataLibrary               ← NEW: хранилище + поиск ката
+  format_library_search     ← NEW: вывод результатов поиска
+  mutate_kata               ← NEW: 5 типов мутаций
+  mutate_series             ← NEW: серия вариантов
+  plan_session              ← NEW: 5-фазный планировщик
+  format_session_plan       ← NEW: вывод плана сессии
 
-ИТОГО: 46 демо-секций, 27 частей документации,
-       ~4500 строк кода, замкнутый цикл обратной связи
+ИТОГО: 50 демо-секций, 28 частей документации,
+       ~4900 строк кода, замкнутый цикл обратной связи
+```
+
+---
+
+## Часть 28: Библиотека ката, мутации, планировщик сессий (v13)
+
+### 28.1 Библиотека ката (KataLibrary)
+
+```python
+lib = KataLibrary()
+
+# Добавление ката с тегами
+lib.add(kata, mode='dual', tags={'battle', 'format-4'},
+        source='battle_gen', mastery_level=4) → id
+
+# Поиск по DNA-сходству
+results = lib.search(query_kata=target, top_k=5,
+                     min_grade='B', tags_filter={'seasonal'})
+print(format_library_search(results))
+
+# Фильтрация
+lib.by_grade('A')     → [entries with grade A]
+lib.by_tag('battle')  → [entries tagged 'battle']
+lib.stats()           → {total, grades, tags}
+```
+
+Пример вывода:
+```
+Library: 7 entries
+Grades: {'A': 3, 'B': 3, 'D': 1}
+Tags: ['battle', 'format-4', 'grade-A', 'guided', 'optimized', ...]
+
+Search results (3 matches):
+  #000 sim=1.000 [A] G2(Single) C=1.7±1.0 ... tags=['grade-A', 'optimized']
+  #002 sim=0.969 [B] G5(Triple) C=1.8±1.2 ... tags=['guided', 'resonance']
+  #004 sim=0.942 [A] G2(Single) C=1.8±1.1 ... tags=['q2', 'seasonal']
+```
+
+Применение:
+- **Учебный репозиторий**: накопление лучших ката для повторного использования
+- **Поиск аналогов**: "найди ката, похожую на эту"
+- **Фильтрация**: выбрать все ката Grade A для экзамена
+- **Предотвращение повторов**: не давать ученику одинаковые ката
+
+### 28.2 Система мутаций
+
+```python
+# Одиночная мутация
+variant = mutate_kata(kata, mutation='mirror', seed=42)
+
+# Серия мутаций (все 5 типов)
+variants = mutate_series(kata, n_variants=5, seed=42)
+```
+
+5 типов мутаций:
+
+```
+Мутация      Описание                   Сохранение оценки  Сходство
+─────────────────────────────────────────────────────────────────────
+mirror       L ↔ R (смена рук)          высокое            ~0.997
+reverse      обратный порядок тактов     среднее            1.000*
+shift        каждый символ → сосед ±1    низкое             ~0.968
+recolor      новые ChVS, символы те же   высокое            1.000*
+crossover    первая половина + shift     среднее            ~0.937
+
+* DNA вектор зависит от структуры, не от ChVS/порядка
+```
+
+Пример:
+```
+Parent: [0a9c0d655b77] Grade A (93%)
+  mirror     → [217f5b4a1639] Grade A (93%) sim=0.997
+  reverse    → [0a9c0d655b77] Grade B (89%) sim=1.000
+  shift      → [ebb434fce610] Grade C (68%) sim=0.968
+  recolor    → [0a9c0d655b77] Grade A (93%) sim=1.000
+  crossover  → [fa297270f445] Grade C (71%) sim=0.937
+```
+
+Применение мутаций:
+- **Вариативность тренировки**: не повторять одну и ту же ката
+- **Прогрессия сложности**: shift снижает оценку → ученик исправляет
+- **Левша/правша**: mirror для смены ведущей руки
+- **Тест понимания**: recolor — символы те же, ChVS другой
+
+### 28.3 Планировщик сессий
+
+```python
+session = plan_session(student, quarter='Q3', year=2,
+                       duration_min=45, seed=42)
+print(format_session_plan(session))
+```
+
+5-фазная структура:
+
+```
+Фаза         Время    Содержание
+───────────────────────────────────────────────
+Warm-up       10%     Лёгкая ката (mastery-2), разогрев
+Review        15%     Ката на mastery-1, повторение
+Main work     45%     Новая ката на текущем уровне
+Drills        20%     Дриллы по top-2 слабостям
+Cool-down     10%     Лёгкая ката, запись нотации
+```
+
+Пример (45 мин):
+```
+Session Plan: Elena (Q3/Y2, 45 min)
+==================================================
+  [00-04 min] Warm-up (4 min)
+    Grade: B (75%) — Easy kata at L1
+  [04-10 min] Review (6 min)
+    Grade: B (81%) — Review at L2
+  [10-30 min] Main work (20 min)
+    Grade: B (85%) — Q3/Y2 kata at L3, len=5
+  [30-39 min] Drills (9 min)
+    Drill: Lead alternation (avg 81%)
+    Drill: Group 1 (Empty) (avg 78%)
+  [39-45 min] Cool-down (6 min)
+    Grade: B (83%) — Easy kata at L2
+```
+
+Связь с остальными компонентами:
+- Warm-up и Cool-down используют `DualMatchStickAutomaton` с пониженным уровнем
+- Main work использует `TRAINING_PLAN[quarter]` для длины ката
+- Drills подключают `generate_drill()` по `student.weaknesses()`
+- Вся сессия записывается в `StudentProfile` через `record_session()`
+
+### 28.4 Полная архитектура v13
+
+```
+┌─────────────────────────────────────────────────┐
+│              SCARAB Algorithm v13                │
+├─────────────┬─────────────┬─────────────────────┤
+│  ГЕНЕРАЦИЯ  │  ТРЕНИРОВКА │   АНАЛИЗ            │
+│             │             │                     │
+│ MatchStick  │ Seasonal    │ score_dual_kata     │
+│ DualMatch   │ Session     │ analyze_kata        │
+│ trajectory  │ Progression │ detect_resonance    │
+│ battle_kata │ Exam        │ compute_lci         │
+│ optimize    │ Curriculum  │ kata_dna            │
+│ resonance   │ Drill       │ kata_similarity     │
+│ mutate_kata │ Sparring    │ KataLibrary         │
+│             │ plan_session│                     │
+├─────────────┴─────────────┴─────────────────────┤
+│  ТЕОРИЯ: ScarabQuaternion, 4 сферы, π-инвариант │
+│  АЛФАВИТ: 76 символов × 4 ChVS × 8 мудр        │
+│  ГРАФ: 64 узла, 672 ребра, диаметр 3            │
+└─────────────────────────────────────────────────┘
 ```

@@ -3964,6 +3964,343 @@ def kata_similarity(dna_a, dna_b):
     return round(dot / (mag_a * mag_b), 4)
 
 
+# ═══════════════════════════════════════════════════════════
+# KATA LIBRARY — store, search, retrieve by DNA (v13)
+# ═══════════════════════════════════════════════════════════
+
+class KataLibrary:
+    """
+    In-memory library of kata with DNA-based search.
+
+    Stores kata with metadata, enables:
+    - Add kata with tags and source info
+    - Search by DNA similarity (top-k nearest)
+    - Filter by grade, tags, mastery level
+    - Export/import as plain dict
+    """
+
+    def __init__(self):
+        self.entries = []  # list of {kata, dna, score, tags, meta}
+
+    def add(self, kata, mode='dual', tags=None, source='unknown',
+            mastery_level=None):
+        """Add a kata to the library."""
+        dna = kata_dna(kata, mode=mode)
+        sc = score_dual_kata(kata) if mode == 'dual' else {'grade': '?', 'pct': 0}
+        entry = {
+            'id': len(self.entries),
+            'kata': kata,
+            'dna': dna,
+            'score': sc,
+            'tags': set(tags or []),
+            'source': source,
+            'mastery_level': mastery_level,
+            'mode': mode,
+        }
+        self.entries.append(entry)
+        return entry['id']
+
+    def search(self, query_kata=None, query_dna=None, top_k=5,
+               min_grade=None, tags_filter=None, mode='dual'):
+        """
+        Search library for similar kata.
+
+        Provide either query_kata or query_dna. Returns top-k matches
+        sorted by descending similarity.
+        """
+        if query_dna is None and query_kata is not None:
+            query_dna = kata_dna(query_kata, mode=mode)
+
+        results = []
+        for entry in self.entries:
+            # Filter by grade
+            if min_grade and entry['score'].get('grade', 'F') > min_grade:
+                continue
+            # Filter by tags
+            if tags_filter and not tags_filter.issubset(entry['tags']):
+                continue
+
+            sim = kata_similarity(query_dna, entry['dna']) if query_dna else 0
+            results.append((sim, entry))
+
+        results.sort(key=lambda x: -x[0])
+        return results[:top_k]
+
+    def by_grade(self, grade):
+        """Get all entries with a specific grade."""
+        return [e for e in self.entries if e['score'].get('grade') == grade]
+
+    def by_tag(self, tag):
+        """Get all entries containing a specific tag."""
+        return [e for e in self.entries if tag in e['tags']]
+
+    def stats(self):
+        """Library statistics."""
+        grades = {}
+        for e in self.entries:
+            g = e['score'].get('grade', '?')
+            grades[g] = grades.get(g, 0) + 1
+        all_tags = set()
+        for e in self.entries:
+            all_tags.update(e['tags'])
+        return {
+            'total': len(self.entries),
+            'grades': grades,
+            'tags': sorted(all_tags),
+        }
+
+
+def format_library_search(results):
+    """Format search results as readable text."""
+    lines = [f"Search results ({len(results)} matches):"]
+    for sim, entry in results:
+        lines.append(
+            f"  #{entry['id']:03d} sim={sim:.3f} "
+            f"[{entry['score'].get('grade', '?')}] "
+            f"{entry['dna']['profile']} "
+            f"tags={sorted(entry['tags'])}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# KATA MUTATION — variations of existing kata (v13)
+# ═══════════════════════════════════════════════════════════
+
+def mutate_kata(kata, mutation='mirror', seed=None):
+    """
+    Create a variation of an existing dual kata.
+
+    Mutations:
+      'mirror':     swap L ↔ R hands
+      'reverse':    reverse tact order
+      'shift':      shift all symbols by ±1 bit (Hamming neighbor)
+      'recolor':    randomise ChVS values keeping symbols
+      'crossover':  splice two halves from original + shifted copy
+
+    Returns:
+        new dual kata (list of tuples)
+    """
+    rng = random.Random(seed)
+    n = len(kata)
+
+    if mutation == 'mirror':
+        # Swap left and right hands
+        return [(e[1], e[0]) + e[2:] for e in kata]
+
+    elif mutation == 'reverse':
+        # Reverse tact order
+        return list(reversed(kata))
+
+    elif mutation == 'shift':
+        # Shift every symbol to a Hamming neighbor
+        result = []
+        for e in kata:
+            L = e[0]
+            R = e[1]
+            nL = rng.choice(get_neighbors(L, max_changes=1))
+            nR = rng.choice(get_neighbors(R, max_changes=1))
+            rest = e[2:] if len(e) > 2 else (rng.randint(0, 3), rng.randint(0, 3))
+            result.append((nL, nR) + rest)
+        return result
+
+    elif mutation == 'recolor':
+        # Keep symbols, randomise ChVS
+        return [(e[0], e[1], rng.randint(0, 3), rng.randint(0, 3))
+                for e in kata]
+
+    elif mutation == 'crossover':
+        # Splice: first half original, second half shifted
+        mid = n // 2
+        shifted = mutate_kata(kata, mutation='shift', seed=seed)
+        return list(kata[:mid]) + list(shifted[mid:])
+
+    else:
+        return list(kata)  # identity
+
+
+def mutate_series(kata, n_variants=5, seed=None):
+    """
+    Generate a series of mutations from one parent kata.
+
+    Applies all 5 mutation types and scores each variant.
+
+    Returns:
+        list of {mutation, kata, score, dna, similarity_to_parent}
+    """
+    rng = random.Random(seed)
+    parent_dna = kata_dna(kata, mode='dual')
+    mutations = ['mirror', 'reverse', 'shift', 'recolor', 'crossover']
+
+    variants = []
+    for mut in mutations[:n_variants]:
+        variant = mutate_kata(kata, mutation=mut, seed=rng.randint(0, 2**31))
+        v_dna = kata_dna(variant, mode='dual')
+        v_sc = score_dual_kata(variant)
+        sim = kata_similarity(parent_dna, v_dna)
+        variants.append({
+            'mutation': mut,
+            'kata': variant,
+            'score': v_sc,
+            'dna': v_dna,
+            'similarity': sim,
+        })
+    return variants
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION PLANNER — structured multi-phase session (v13)
+# ═══════════════════════════════════════════════════════════
+
+def plan_session(student, quarter='Q3', year=2, duration_min=45, seed=None):
+    """
+    Plan a structured training session with phases.
+
+    Phases:
+      1. Warm-up (10%):  easy drills, low mastery, familiar groups
+      2. Review  (15%):  repeat best kata from last 3 sessions
+      3. Main    (45%):  new kata at current level, targeting weaknesses
+      4. Drill   (20%):  focused drills on top 2 weaknesses
+      5. Cool-dn (10%):  easy kata, review notation
+
+    Returns:
+        dict with phases, each containing kata/drills and timing
+    """
+    rng = random.Random(seed)
+    weaknesses = student.weaknesses()
+    ml = student.mastery_level
+
+    phases = []
+
+    # Phase 1: Warm-up (10%)
+    warmup_min = int(duration_min * 0.10)
+    warmup_dma = DualMatchStickAutomaton(
+        mastery_level=max(1, ml - 2), seed=rng.randint(0, 2**31))
+    warmup_kata = warmup_dma.generate_dual_kata(length=3)
+    phases.append({
+        'name': 'Warm-up',
+        'duration_min': warmup_min,
+        'type': 'kata',
+        'content': warmup_kata,
+        'score': score_dual_kata(warmup_kata),
+        'notes': f'Easy kata at L{max(1, ml - 2)}',
+    })
+
+    # Phase 2: Review (15%)
+    review_min = int(duration_min * 0.15)
+    if student.sessions:
+        # Generate a review kata at slightly lower difficulty
+        review_dma = DualMatchStickAutomaton(
+            mastery_level=max(1, ml - 1), seed=rng.randint(0, 2**31))
+        review_kata = review_dma.generate_dual_kata(length=4)
+        review_note = f'Review at L{max(1, ml-1)} (based on {len(student.sessions)} sessions)'
+    else:
+        review_dma = DualMatchStickAutomaton(
+            mastery_level=ml, seed=rng.randint(0, 2**31))
+        review_kata = review_dma.generate_dual_kata(length=4)
+        review_note = 'New review kata (no history)'
+    phases.append({
+        'name': 'Review',
+        'duration_min': review_min,
+        'type': 'kata',
+        'content': review_kata,
+        'score': score_dual_kata(review_kata),
+        'notes': review_note,
+    })
+
+    # Phase 3: Main work (45%)
+    main_min = int(duration_min * 0.45)
+    length = TRAINING_PLAN.get(quarter, TRAINING_PLAN['Q1'])['kata_length']
+    main_dma = DualMatchStickAutomaton(
+        mastery_level=ml,
+        use_mudras=(ml >= 4),
+        seed=rng.randint(0, 2**31))
+    main_kata = main_dma.generate_dual_kata(length=length)
+    phases.append({
+        'name': 'Main work',
+        'duration_min': main_min,
+        'type': 'kata',
+        'content': main_kata,
+        'score': score_dual_kata(main_kata),
+        'notes': f'{quarter}/Y{year} kata at L{ml}, len={length}',
+    })
+
+    # Phase 4: Drills (20%)
+    drill_min = int(duration_min * 0.20)
+    drill_items = []
+    # Target top 2 weaknesses
+    rule_weaks = [w for w in weaknesses if w['type'] == 'rule'][:1]
+    group_weaks = [w for w in weaknesses if w['type'] == 'group'][:1]
+    for w in rule_weaks:
+        dr = generate_drill(target='rule', rule_num=w['rule'],
+                            n_reps=3, mastery_level=ml,
+                            seed=rng.randint(0, 2**31))
+        drill_items.append(dr)
+    for w in group_weaks:
+        dr = generate_drill(target='group', group_num=w['group'],
+                            n_reps=3, mastery_level=ml,
+                            seed=rng.randint(0, 2**31))
+        drill_items.append(dr)
+    if not drill_items:
+        dr = generate_drill(target='transition', n_reps=3,
+                            mastery_level=ml,
+                            seed=rng.randint(0, 2**31))
+        drill_items.append(dr)
+    phases.append({
+        'name': 'Drills',
+        'duration_min': drill_min,
+        'type': 'drills',
+        'content': drill_items,
+        'notes': f'{len(drill_items)} drill(s) for weaknesses',
+    })
+
+    # Phase 5: Cool-down (10%)
+    cooldown_min = duration_min - sum(p['duration_min'] for p in phases)
+    cd_dma = DualMatchStickAutomaton(
+        mastery_level=max(1, ml - 1), seed=rng.randint(0, 2**31))
+    cd_kata = cd_dma.generate_dual_kata(length=3)
+    phases.append({
+        'name': 'Cool-down',
+        'duration_min': cooldown_min,
+        'type': 'kata',
+        'content': cd_kata,
+        'score': score_dual_kata(cd_kata),
+        'notes': f'Easy kata at L{max(1, ml - 1)}, review notation',
+    })
+
+    return {
+        'student': student.name,
+        'quarter': quarter,
+        'year': year,
+        'duration_min': duration_min,
+        'phases': phases,
+        'n_phases': len(phases),
+    }
+
+
+def format_session_plan(plan):
+    """Format a session plan as readable text."""
+    lines = [f"Session Plan: {plan['student']} "
+             f"({plan['quarter']}/Y{plan['year']}, "
+             f"{plan['duration_min']} min)"]
+    lines.append("=" * 50)
+    t = 0
+    for p in plan['phases']:
+        t_end = t + p['duration_min']
+        lines.append(f"  [{t:02d}-{t_end:02d} min] {p['name']} "
+                     f"({p['duration_min']} min)")
+        if p['type'] == 'kata' and 'score' in p:
+            lines.append(f"    Grade: {p['score']['grade']} "
+                         f"({p['score']['pct']:.0f}%)")
+        elif p['type'] == 'drills':
+            for dr in p['content']:
+                avg = sum(s['pct'] for s in dr['scores']) / len(dr['scores'])
+                lines.append(f"    Drill: {dr['description']} "
+                             f"(avg {avg:.0f}%)")
+        lines.append(f"    {p['notes']}")
+        t = t_end
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -4503,7 +4840,57 @@ if __name__ == '__main__':
     print(f"    Opt↔Resonance: {sim_or:.3f}")
     print(f"    Battle↔Res:    {sim_br:.3f}")
 
-    # 46. Graph statistics (summary)
+    # 47. Kata Library
+    print("\n--- Kata Library ---")
+    lib = KataLibrary()
+    # Populate with kata from earlier demos
+    lib.add(opt_kata['kata'], tags={'optimized', 'grade-A'}, source='optimizer',
+            mastery_level=3)
+    lib.add(bk['kata'], tags={'battle', 'format-4'}, source='battle_gen',
+            mastery_level=4)
+    lib.add(rk['kata'], tags={'resonance', 'guided'}, source='resonance_gen',
+            mastery_level=3)
+    # Add seasonal kata
+    for q in ['Q1', 'Q2', 'Q3', 'Q4']:
+        sk = generate_seasonal_kata(q, mastery_level=3, year=2,
+                                    use_dual=True, seed=hash(q) % 2**31)
+        lib.add(sk['kata'], tags={'seasonal', q.lower()}, source='seasonal',
+                mastery_level=3)
+    print(f"  Library: {lib.stats()['total']} entries")
+    print(f"  Grades: {lib.stats()['grades']}")
+    print(f"  Tags: {lib.stats()['tags']}")
+
+    # Search for kata similar to optimized
+    search_results = lib.search(query_kata=opt_kata['kata'], top_k=3)
+    print(format_library_search(search_results))
+
+    # 48. Kata Mutation
+    print("\n--- Kata Mutation ---")
+    parent = opt_kata['kata']
+    parent_dna = kata_dna(parent, mode='dual')
+    parent_sc = score_dual_kata(parent)
+    print(f"  Parent: [{parent_dna['hex']}] Grade {parent_sc['grade']} "
+          f"({parent_sc['pct']:.0f}%)")
+    variants = mutate_series(parent, n_variants=5, seed=42)
+    for v in variants:
+        print(f"    {v['mutation']:10s} → [{v['dna']['hex']}] "
+              f"Grade {v['score']['grade']} ({v['score']['pct']:.0f}%) "
+              f"sim={v['similarity']:.3f}")
+
+    # 49. Session Planner
+    print("\n--- Session Planner ---")
+    # Reset student for clean demo
+    sp_student = StudentProfile('Elena', mastery_level=3)
+    for _ in range(3):
+        sks = generate_seasonal_kata('Q2', mastery_level=3, year=2,
+                                     use_dual=True,
+                                     seed=random.Random(77+_).randint(0, 2**31))
+        sp_student.record_session(sks['kata'], quarter='Q2', year=2, mode='dual')
+    session = plan_session(sp_student, quarter='Q3', year=2,
+                           duration_min=45, seed=42)
+    print(format_session_plan(session))
+
+    # 50. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     # 64 base (6-bit) + 12 half-line = 76 total symbols
     all_76 = list(range(64)) + list(HALF_SYMBOLS.keys())
@@ -4511,9 +4898,9 @@ if __name__ == '__main__':
     for sym in range(64):
         total_edges_64 += len(get_neighbors(sym, max_changes=2))
     total_edges_64 //= 2
-    from collections import deque as _deque3
+    from collections import deque as _deque4
     visited = {0: 0}
-    queue = _deque3([0])
+    queue = _deque4([0])
     while queue:
         node = queue.popleft()
         for nb in get_neighbors(node, max_changes=2):
@@ -4529,5 +4916,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v12: Drill generator, sparring system,")
-    print("     kata DNA fingerprint, similarity matching.")
+    print("v13: Kata library, mutation system,")
+    print("     structured session planner.")
