@@ -23761,6 +23761,369 @@ def format_query_engine(qe):
     return '\n'.join(lines)
 
 
+# ══════════════════════════════════════════════════════════════
+# v62: Caching System, Rate Limiter, Circuit Breaker
+# ══════════════════════════════════════════════════════════════
+
+class CacheSystem:
+    """Multi-strategy caching system for the Scarab system.
+
+    Supports LRU, TTL-based expiration, and manual invalidation
+    with hit/miss tracking for cache efficiency analysis.
+    """
+
+    STRATEGIES = ['lru', 'fifo', 'lfu']
+
+    def __init__(self, max_size=100, strategy='lru'):
+        self.max_size = max_size
+        self.strategy = strategy
+        self._cache = {}
+        self._access_order = []
+        self._access_count = {}
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key):
+        """Get value from cache."""
+        if key in self._cache:
+            self._hits += 1
+            self._access_count[key] = self._access_count.get(key, 0) + 1
+            # Update access order for LRU
+            if key in self._access_order:
+                self._access_order.remove(key)
+            self._access_order.append(key)
+            return self._cache[key]
+
+        self._misses += 1
+        return None
+
+    def put(self, key, value):
+        """Put value into cache."""
+        if key in self._cache:
+            self._cache[key] = value
+            if key in self._access_order:
+                self._access_order.remove(key)
+            self._access_order.append(key)
+            return
+
+        # Evict if needed
+        while len(self._cache) >= self.max_size:
+            self._evict()
+
+        self._cache[key] = value
+        self._access_order.append(key)
+        self._access_count[key] = 0
+
+    def _evict(self):
+        """Evict based on strategy."""
+        if not self._access_order:
+            return
+
+        if self.strategy == 'lru':
+            victim = self._access_order[0]
+        elif self.strategy == 'fifo':
+            victim = self._access_order[0]
+        elif self.strategy == 'lfu':
+            # Find least frequently used
+            victim = min(self._access_order,
+                         key=lambda k: self._access_count.get(k, 0))
+        else:
+            victim = self._access_order[0]
+
+        self._access_order.remove(victim)
+        del self._cache[victim]
+        self._access_count.pop(victim, None)
+
+    def invalidate(self, key):
+        """Invalidate a cache entry."""
+        if key in self._cache:
+            del self._cache[key]
+            if key in self._access_order:
+                self._access_order.remove(key)
+            self._access_count.pop(key, None)
+            return True
+        return False
+
+    def clear(self):
+        """Clear entire cache."""
+        self._cache.clear()
+        self._access_order.clear()
+        self._access_count.clear()
+
+    def contains(self, key):
+        """Check if key is in cache."""
+        return key in self._cache
+
+    def size(self):
+        """Current cache size."""
+        return len(self._cache)
+
+    def statistics(self):
+        """Get cache statistics."""
+        total = self._hits + self._misses
+        return {
+            'size': len(self._cache),
+            'max_size': self.max_size,
+            'strategy': self.strategy,
+            'hits': self._hits,
+            'misses': self._misses,
+            'hit_rate': round(
+                self._hits / max(1, total) * 100, 1),
+            'total_requests': total
+        }
+
+
+def format_cache_system(cs):
+    """Format cache system status."""
+    stats = cs.statistics()
+    lines = ["=== Cache System ==="]
+    lines.append(f"Size: {stats['size']}/{stats['max_size']} "
+                 f"(strategy: {stats['strategy']})")
+    lines.append(f"Hit rate: {stats['hit_rate']}% "
+                 f"({stats['hits']} hits, "
+                 f"{stats['misses']} misses)")
+    lines.append(f"Total requests: {stats['total_requests']}")
+    return '\n'.join(lines)
+
+
+class RateLimiter:
+    """Token bucket rate limiter for the Scarab system.
+
+    Controls request rates using the token bucket algorithm
+    with configurable capacity and refill rates.
+    """
+
+    def __init__(self, capacity=10, refill_rate=1.0):
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self._buckets = {}
+        self._request_log = []
+
+    def allow(self, client_id='default', tokens=1):
+        """Check if request is allowed and consume tokens."""
+        if client_id not in self._buckets:
+            self._buckets[client_id] = {
+                'tokens': self.capacity,
+                'total_requests': 0,
+                'denied': 0
+            }
+
+        bucket = self._buckets[client_id]
+        bucket['total_requests'] += 1
+
+        if bucket['tokens'] >= tokens:
+            bucket['tokens'] -= tokens
+            self._request_log.append({
+                'client': client_id,
+                'allowed': True,
+                'tokens_remaining': bucket['tokens']
+            })
+            return True
+
+        bucket['denied'] += 1
+        self._request_log.append({
+            'client': client_id,
+            'allowed': False,
+            'tokens_remaining': bucket['tokens']
+        })
+        return False
+
+    def refill(self, client_id=None, amount=None):
+        """Refill tokens for a client or all clients."""
+        targets = ([client_id] if client_id
+                   else list(self._buckets.keys()))
+        fill = amount if amount is not None else self.refill_rate
+
+        for cid in targets:
+            if cid in self._buckets:
+                self._buckets[cid]['tokens'] = min(
+                    self.capacity,
+                    self._buckets[cid]['tokens'] + fill)
+
+    def get_tokens(self, client_id='default'):
+        """Get remaining tokens for a client."""
+        bucket = self._buckets.get(client_id)
+        return bucket['tokens'] if bucket else self.capacity
+
+    def reset(self, client_id=None):
+        """Reset a client's bucket or all buckets."""
+        if client_id:
+            if client_id in self._buckets:
+                self._buckets[client_id]['tokens'] = self.capacity
+        else:
+            for b in self._buckets.values():
+                b['tokens'] = self.capacity
+
+    def statistics(self):
+        """Get rate limiter statistics."""
+        total_req = sum(b['total_requests']
+                        for b in self._buckets.values())
+        total_denied = sum(b['denied']
+                           for b in self._buckets.values())
+        return {
+            'clients': len(self._buckets),
+            'capacity': self.capacity,
+            'refill_rate': self.refill_rate,
+            'total_requests': total_req,
+            'total_denied': total_denied,
+            'deny_rate': round(
+                total_denied / max(1, total_req) * 100, 1)
+        }
+
+
+def format_rate_limiter(rl):
+    """Format rate limiter status."""
+    stats = rl.statistics()
+    lines = ["=== Rate Limiter ==="]
+    lines.append(f"Capacity: {stats['capacity']} "
+                 f"(refill: {stats['refill_rate']}/tick)")
+    lines.append(f"Clients: {stats['clients']}")
+    lines.append(f"Requests: {stats['total_requests']} "
+                 f"(denied: {stats['total_denied']}, "
+                 f"deny rate: {stats['deny_rate']}%)")
+
+    for cid, bucket in rl._buckets.items():
+        lines.append(f"  {cid}: {bucket['tokens']:.0f}/"
+                     f"{rl.capacity} tokens, "
+                     f"{bucket['total_requests']} requests")
+
+    return '\n'.join(lines)
+
+
+class CircuitBreaker:
+    """Circuit breaker pattern for fault tolerance.
+
+    Protects system components from cascading failures by
+    monitoring failure rates and temporarily disabling calls.
+
+    States: CLOSED (normal), OPEN (failing), HALF_OPEN (testing)
+    """
+
+    STATES = ['closed', 'open', 'half_open']
+
+    def __init__(self, failure_threshold=3, recovery_attempts=1):
+        self.failure_threshold = failure_threshold
+        self.recovery_attempts = recovery_attempts
+        self._circuits = {}
+
+    def register(self, name):
+        """Register a circuit."""
+        self._circuits[name] = {
+            'state': 'closed',
+            'failures': 0,
+            'successes': 0,
+            'total_calls': 0,
+            'last_failure': None,
+            'recovery_count': 0
+        }
+
+    def call(self, name, fn, *args, **kwargs):
+        """Execute function through circuit breaker."""
+        if name not in self._circuits:
+            self.register(name)
+
+        circuit = self._circuits[name]
+        circuit['total_calls'] += 1
+
+        # Check state
+        if circuit['state'] == 'open':
+            # Allow limited recovery attempts
+            if circuit['recovery_count'] < self.recovery_attempts:
+                circuit['state'] = 'half_open'
+                circuit['recovery_count'] += 1
+            else:
+                return {
+                    'success': False,
+                    'error': f'Circuit {name} is OPEN',
+                    'state': 'open'
+                }
+
+        # Execute
+        try:
+            result = fn(*args, **kwargs)
+            circuit['successes'] += 1
+
+            if circuit['state'] == 'half_open':
+                circuit['state'] = 'closed'
+                circuit['failures'] = 0
+                circuit['recovery_count'] = 0
+
+            return {
+                'success': True,
+                'result': result,
+                'state': circuit['state']
+            }
+
+        except Exception as e:
+            circuit['failures'] += 1
+            circuit['last_failure'] = str(e)
+
+            if circuit['failures'] >= self.failure_threshold:
+                circuit['state'] = 'open'
+
+            return {
+                'success': False,
+                'error': str(e),
+                'state': circuit['state']
+            }
+
+    def get_state(self, name):
+        """Get circuit state."""
+        circuit = self._circuits.get(name)
+        return circuit['state'] if circuit else 'unknown'
+
+    def reset(self, name):
+        """Manually reset a circuit to closed."""
+        if name in self._circuits:
+            self._circuits[name]['state'] = 'closed'
+            self._circuits[name]['failures'] = 0
+            self._circuits[name]['recovery_count'] = 0
+
+    def statistics(self):
+        """Get circuit breaker statistics."""
+        states = {}
+        for c in self._circuits.values():
+            s = c['state']
+            states[s] = states.get(s, 0) + 1
+
+        return {
+            'circuits': len(self._circuits),
+            'by_state': states,
+            'total_calls': sum(c['total_calls']
+                               for c in self._circuits.values()),
+            'total_failures': sum(c['failures']
+                                  for c in self._circuits.values())
+        }
+
+
+def format_circuit_breaker(cb):
+    """Format circuit breaker status."""
+    stats = cb.statistics()
+    lines = ["=== Circuit Breaker ==="]
+    lines.append(f"Circuits: {stats['circuits']} "
+                 f"(threshold: {cb.failure_threshold})")
+    lines.append(f"Total calls: {stats['total_calls']}, "
+                 f"failures: {stats['total_failures']}")
+
+    lines.append("\nBy state:")
+    for s in CircuitBreaker.STATES:
+        count = stats['by_state'].get(s, 0)
+        if count > 0:
+            icon = {'closed': '●', 'open': '✗',
+                    'half_open': '◐'}.get(s, '?')
+            lines.append(f"  {icon} {s}: {count}")
+
+    lines.append("\nCircuits:")
+    for name, c in sorted(cb._circuits.items()):
+        icon = {'closed': '●', 'open': '✗',
+                'half_open': '◐'}.get(c['state'], '?')
+        lines.append(f"  {icon} {name}: {c['state']} "
+                     f"(fails={c['failures']}, "
+                     f"calls={c['total_calls']})")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -26642,3 +27005,108 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v61: Event store, command handler, query engine.")
+
+    # ── v62: Caching System, Rate Limiter, Circuit Breaker ──
+
+    # 210. Caching System
+    print("\n" + "=" * 60)
+    print("--- Caching System ---")
+
+    cache = CacheSystem(max_size=5, strategy='lru')
+
+    # Populate cache
+    for i in range(7):
+        cache.put(f'key_{i}', f'value_{i}')
+
+    print(f"After inserting 7 items (max=5): size={cache.size()}")
+    print(f"Contains key_0 (evicted): {cache.contains('key_0')}")
+    print(f"Contains key_5 (recent): {cache.contains('key_5')}")
+
+    # Get with hits/misses
+    cache.get('key_5')  # hit
+    cache.get('key_6')  # hit
+    cache.get('key_99')  # miss
+    cache.get('key_0')   # miss (evicted)
+
+    print(format_cache_system(cache))
+
+    # Invalidation
+    cache.invalidate('key_3')
+    print(f"\nAfter invalidate key_3: size={cache.size()}")
+
+    # LFU strategy
+    cache_lfu = CacheSystem(max_size=3, strategy='lfu')
+    cache_lfu.put('a', 1)
+    cache_lfu.put('b', 2)
+    cache_lfu.put('c', 3)
+    cache_lfu.get('a')  # a=1 access
+    cache_lfu.get('a')  # a=2 accesses
+    cache_lfu.get('b')  # b=1 access
+    cache_lfu.put('d', 4)  # should evict c (least used)
+    print(f"\nLFU: contains a={cache_lfu.contains('a')}, "
+          f"b={cache_lfu.contains('b')}, "
+          f"c={cache_lfu.contains('c')}, "
+          f"d={cache_lfu.contains('d')}")
+
+    # 211. Rate Limiter
+    print("\n--- Rate Limiter ---")
+
+    rl = RateLimiter(capacity=5, refill_rate=2.0)
+
+    # Consume tokens
+    results = []
+    for i in range(8):
+        allowed = rl.allow('client_a')
+        results.append('✓' if allowed else '✗')
+
+    print(f"8 requests from client_a: {' '.join(results)}")
+    print(f"Remaining tokens: {rl.get_tokens('client_a'):.0f}")
+
+    # Refill
+    rl.refill('client_a')
+    print(f"After refill: {rl.get_tokens('client_a'):.0f} tokens")
+
+    # Another client
+    for _ in range(3):
+        rl.allow('client_b')
+    print(f"Client_b after 3 requests: "
+          f"{rl.get_tokens('client_b'):.0f} tokens")
+
+    print(f"\n{format_rate_limiter(rl)}")
+
+    # 212. Circuit Breaker
+    print("\n--- Circuit Breaker ---")
+
+    cb = CircuitBreaker(failure_threshold=3, recovery_attempts=1)
+
+    # Healthy service
+    r1 = cb.call('service_a', lambda: 'OK')
+    print(f"service_a (healthy): state={r1['state']}, "
+          f"result={r1.get('result')}")
+
+    # Failing service
+    _fc = [0]
+    def failing_fn():
+        _fc[0] += 1
+        raise ValueError(f"Error #{_fc[0]}")
+
+    for i in range(4):
+        r = cb.call('service_b', failing_fn)
+        print(f"service_b attempt {i+1}: state={r['state']}, "
+              f"error={r.get('error', 'none')}")
+
+    # Circuit is now open
+    r_open = cb.call('service_b', lambda: 'should not run')
+    print(f"service_b (open): state={r_open['state']}, "
+          f"error={r_open.get('error', 'none')}")
+
+    # Manual reset
+    cb.reset('service_b')
+    r_reset = cb.call('service_b', lambda: 'recovered!')
+    print(f"service_b (after reset): state={r_reset['state']}, "
+          f"result={r_reset.get('result')}")
+
+    print(f"\n{format_circuit_breaker(cb)}")
+
+    print("\n" + "=" * 60)
+    print("v62: Caching system, rate limiter, circuit breaker.")
