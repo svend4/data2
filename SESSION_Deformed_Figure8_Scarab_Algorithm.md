@@ -4804,3 +4804,40 @@ print(format_achievement_gallery(gallery, student_name='Anna'))
 Компоненты:    55+
 Категории:     25+
 ```
+
+---
+
+## Часть 56: Сценарии, milestones, pipeline (v41)
+
+### 56.1 Scenario Engine
+
+4 предустановленных сценария: boot_camp, precision_drill, endurance_run, mastery_test.
+
+```python
+sc = SCENARIOS['mastery_test']
+result = sc.evaluate({'pct': 92, 'violations': [], 'length': 14})
+print(format_scenario_result(result))
+```
+
+### 56.2 MilestoneTracker
+
+12 вех: First Session → Century (100 sessions).
+
+```python
+mt = MilestoneTracker()
+newly = mt.check(student)  # → list of newly reached
+print(mt.format_milestones(student_name='Anna'))
+```
+
+### 56.3 Data Pipeline (ETL)
+
+```python
+pipe = DataPipeline('my_pipeline')
+pipe.extract(school)
+pipe.aggregate('student', 'pct', 'mean')
+pipe.sort_by('mean_pct', reverse=True)
+pipe.transform()
+results = pipe.load()
+```
+
+Цепочки: extract → filter_by / sort_by / aggregate → transform → load.

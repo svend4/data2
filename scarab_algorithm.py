@@ -13996,6 +13996,291 @@ def format_achievement_gallery(gallery, student_name=''):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# SCENARIO ENGINE (v41)
+# ═══════════════════════════════════════════════════════════
+
+class Scenario:
+    """
+    Predefined training scenario with objectives and evaluation.
+
+    Scenarios combine templates, rules, and success criteria
+    into a structured training experience.
+    """
+
+    def __init__(self, scenario_id, name, description, objectives,
+                 settings=None):
+        self.scenario_id = scenario_id
+        self.name = name
+        self.description = description
+        self.objectives = objectives  # list of {type, target, description}
+        self.settings = settings or {}
+        self.attempts = 0
+        self.best_result = None
+
+    def evaluate(self, session_result):
+        """Evaluate a session result against objectives."""
+        self.attempts += 1
+        pct = session_result.get('pct', 0)
+        viols = len(session_result.get('violations', []))
+
+        results = []
+        all_passed = True
+
+        for obj in self.objectives:
+            passed = False
+            if obj['type'] == 'min_score':
+                passed = pct >= obj['target']
+            elif obj['type'] == 'max_violations':
+                passed = viols <= obj['target']
+            elif obj['type'] == 'min_tacts':
+                passed = session_result.get('length', 0) >= obj['target']
+
+            if not passed:
+                all_passed = False
+
+            results.append({
+                'objective': obj['description'],
+                'passed': passed,
+                'type': obj['type'],
+            })
+
+        score = round(sum(1 for r in results if r['passed']) /
+                      len(results) * 100) if results else 0
+
+        if self.best_result is None or score > self.best_result:
+            self.best_result = score
+
+        return {
+            'scenario': self.name,
+            'attempt': self.attempts,
+            'all_passed': all_passed,
+            'score': score,
+            'results': results,
+        }
+
+
+SCENARIOS = {
+    'boot_camp': Scenario(
+        'boot_camp', 'Boot Camp',
+        'Intensive fundamentals training',
+        [{'type': 'min_score', 'target': 60, 'description': 'Score ≥60%'},
+         {'type': 'max_violations', 'target': 3, 'description': '≤3 violations'}],
+    ),
+    'precision_drill': Scenario(
+        'precision_drill', 'Precision Drill',
+        'High accuracy challenge',
+        [{'type': 'min_score', 'target': 85, 'description': 'Score ≥85%'},
+         {'type': 'max_violations', 'target': 0, 'description': 'Zero violations'}],
+    ),
+    'endurance_run': Scenario(
+        'endurance_run', 'Endurance Run',
+        'Long session without dropping',
+        [{'type': 'min_score', 'target': 70, 'description': 'Score ≥70%'},
+         {'type': 'min_tacts', 'target': 20, 'description': '≥20 tacts'}],
+    ),
+    'mastery_test': Scenario(
+        'mastery_test', 'Mastery Test',
+        'Prove mastery-level capability',
+        [{'type': 'min_score', 'target': 90, 'description': 'Score ≥90%'},
+         {'type': 'max_violations', 'target': 1, 'description': '≤1 violation'},
+         {'type': 'min_tacts', 'target': 14, 'description': '≥14 tacts'}],
+    ),
+}
+
+
+def format_scenario_result(result):
+    """Format scenario evaluation result."""
+    lines = [f"Scenario: {result['scenario']} "
+             f"(attempt #{result['attempt']})"]
+    lines.append("─" * 45)
+
+    for r in result['results']:
+        icon = '✓' if r['passed'] else '✗'
+        lines.append(f"  {icon} {r['objective']}")
+
+    status = 'PASSED' if result['all_passed'] else 'FAILED'
+    lines.append(f"  Result: {status} ({result['score']}%)")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PROGRESS MILESTONES (v41)
+# ═══════════════════════════════════════════════════════════
+
+class MilestoneTracker:
+    """
+    Track major milestones in student's journey.
+
+    Auto-detects when milestones are reached.
+    """
+
+    MILESTONES = [
+        {'id': 'M01', 'name': 'First Session', 'sessions': 1},
+        {'id': 'M02', 'name': 'Week One', 'sessions': 5},
+        {'id': 'M03', 'name': 'Double Digits', 'sessions': 10},
+        {'id': 'M04', 'name': 'Apprentice', 'mastery': 2},
+        {'id': 'M05', 'name': 'Journeyman', 'mastery': 3},
+        {'id': 'M06', 'name': 'Expert', 'mastery': 5},
+        {'id': 'M07', 'name': 'Master', 'mastery': 7},
+        {'id': 'M08', 'name': 'First A', 'score': 90},
+        {'id': 'M09', 'name': 'Near Perfect', 'score': 95},
+        {'id': 'M10', 'name': 'Quarter Century', 'sessions': 25},
+        {'id': 'M11', 'name': 'Half Century', 'sessions': 50},
+        {'id': 'M12', 'name': 'Century', 'sessions': 100},
+    ]
+
+    def __init__(self):
+        self.reached = {}  # id → session_number
+
+    def check(self, student):
+        """Check which milestones are reached."""
+        n = len(student.sessions)
+        ml = student.mastery_level
+        best = max((s['pct'] for s in student.sessions), default=0)
+
+        newly_reached = []
+        for m in self.MILESTONES:
+            if m['id'] in self.reached:
+                continue
+
+            reached = False
+            if 'sessions' in m and n >= m['sessions']:
+                reached = True
+            if 'mastery' in m and ml >= m['mastery']:
+                reached = True
+            if 'score' in m and best >= m['score']:
+                reached = True
+
+            if reached:
+                self.reached[m['id']] = n
+                newly_reached.append(m)
+
+        return newly_reached
+
+    def format_milestones(self, student_name=''):
+        """Format milestone status."""
+        name = f" — {student_name}" if student_name else ''
+        lines = [f"Milestones{name}"]
+        lines.append("═" * 45)
+
+        for m in self.MILESTONES:
+            if m['id'] in self.reached:
+                sess = self.reached[m['id']]
+                lines.append(f"  ★ {m['id']} {m['name']} "
+                             f"(reached at session {sess})")
+            else:
+                lines.append(f"  ○ {m['id']} {m['name']}")
+
+        done = len(self.reached)
+        total = len(self.MILESTONES)
+        lines.append(f"\n  {done}/{total} milestones reached")
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# DATA PIPELINE (v41)
+# ═══════════════════════════════════════════════════════════
+
+class DataPipeline:
+    """
+    ETL pipeline for Scarab data processing.
+
+    Stages: Extract → Transform → Load
+    Supports chaining transforms.
+    """
+
+    def __init__(self, name='default'):
+        self.name = name
+        self.transforms = []
+        self.data = None
+
+    def extract(self, school):
+        """Extract raw data from school."""
+        records = []
+        for sname, st in school.students.items():
+            for i, s in enumerate(st.sessions):
+                records.append({
+                    'student': sname,
+                    'session': i + 1,
+                    'pct': s['pct'],
+                    'mastery': st.mastery_level,
+                    'violations': len(s.get('violations', [])),
+                    'length': s.get('length', 0),
+                })
+        self.data = records
+        return self
+
+    def add_transform(self, fn, name=''):
+        """Add a transform function."""
+        self.transforms.append({'fn': fn, 'name': name})
+        return self
+
+    def transform(self):
+        """Apply all transforms in order."""
+        for t in self.transforms:
+            self.data = t['fn'](self.data)
+        return self
+
+    def filter_by(self, field, value):
+        """Add a filter transform."""
+        return self.add_transform(
+            lambda data: [r for r in data if r.get(field) == value],
+            name=f'filter({field}={value})')
+
+    def sort_by(self, field, reverse=False):
+        """Add a sort transform."""
+        return self.add_transform(
+            lambda data: sorted(data, key=lambda r: r.get(field, 0),
+                                reverse=reverse),
+            name=f'sort({field})')
+
+    def aggregate(self, group_field, agg_field, agg_fn='mean'):
+        """Add an aggregation transform."""
+        def _agg(data):
+            groups = {}
+            for r in data:
+                key = r.get(group_field, '')
+                groups.setdefault(key, []).append(r.get(agg_field, 0))
+
+            result = []
+            for key, vals in groups.items():
+                if agg_fn == 'mean':
+                    val = sum(vals) / len(vals) if vals else 0
+                elif agg_fn == 'sum':
+                    val = sum(vals)
+                elif agg_fn == 'count':
+                    val = len(vals)
+                elif agg_fn == 'max':
+                    val = max(vals) if vals else 0
+                else:
+                    val = sum(vals) / len(vals) if vals else 0
+
+                result.append({
+                    group_field: key,
+                    f'{agg_fn}_{agg_field}': round(val, 1),
+                    'count': len(vals),
+                })
+            return result
+
+        return self.add_transform(_agg,
+            name=f'agg({group_field},{agg_fn}({agg_field}))')
+
+    def load(self):
+        """Load (return) the processed data."""
+        return self.data
+
+    def format_pipeline(self):
+        """Format pipeline info."""
+        lines = [f"Pipeline: {self.name}"]
+        lines.append("─" * 40)
+        for i, t in enumerate(self.transforms):
+            lines.append(f"  {i + 1}. {t['name']}")
+        n = len(self.data) if self.data else 0
+        lines.append(f"  Records: {n}")
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -15523,4 +15808,50 @@ if __name__ == '__main__':
     print("v40: Statistics engine, achievement gallery.")
     print(f"\n  Total: 131 demos, 55 parts, v1-v40.")
     print(f"  Code: ~{15000} lines, Docs: ~{4800} lines")
-    print("  Scarab Algorithm: COMPLETE.")
+    print("  v36-v40 block complete.")
+
+    # 132. Scenario Engine
+    print("\n--- Scenario Engine ---")
+    for sc_id in ['boot_camp', 'precision_drill', 'mastery_test']:
+        sc = SCENARIOS[sc_id]
+        fake_result = {'pct': 88.5, 'violations': [{'r': 'R1'}],
+                       'length': 14}
+        ev = sc.evaluate(fake_result)
+        print(format_scenario_result(ev))
+
+    # 133. Progress Milestones
+    print("\n--- Progress Milestones ---")
+    mt = MilestoneTracker()
+    mt.check(sim_school.students['Anna'])
+    print(mt.format_milestones(student_name='Anna'))
+
+    mt2 = MilestoneTracker()
+    mt2.check(sim_school.students['Ivan'])
+    print(mt2.format_milestones(student_name='Ivan'))
+
+    # 134. Data Pipeline
+    print("\n--- Data Pipeline ---")
+    pipe = DataPipeline('student_averages')
+    pipe.extract(sim_school)
+    pipe.aggregate('student', 'pct', 'mean')
+    pipe.sort_by('mean_pct', reverse=True)
+    pipe.transform()
+    print(pipe.format_pipeline())
+    results = pipe.load()
+    for r in results:
+        print(f"  {r['student']:12s} avg={r['mean_pct']}%  "
+              f"({r['count']} sessions)")
+
+    # Pipeline 2: filter
+    pipe2 = DataPipeline('high_scores')
+    pipe2.extract(sim_school)
+    pipe2.add_transform(
+        lambda data: [r for r in data if r['pct'] >= 85],
+        name='filter(pct>=85)')
+    pipe2.sort_by('pct', reverse=True)
+    pipe2.transform()
+    high = pipe2.load()
+    print(f"\n  High scores (≥85%): {len(high)} records")
+
+    print("\n" + "=" * 60)
+    print("v41: Scenario engine, milestones, data pipeline.")
