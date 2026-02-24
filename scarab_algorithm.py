@@ -30299,6 +30299,1227 @@ def version_history_v80():
     return '\n'.join(lines)
 
 
+# ============================================================
+# v81: StringProcessor, RegexEngine, TextTokenizer
+# ============================================================
+
+class StringProcessor:
+    """Advanced string manipulation and analysis."""
+
+    def __init__(self):
+        self.operations = 0
+
+    def pad(self, s, width, char=' ', align='left'):
+        self.operations += 1
+        if align == 'left':
+            return s.ljust(width, char)
+        elif align == 'right':
+            return s.rjust(width, char)
+        elif align == 'center':
+            return s.center(width, char)
+        return s
+
+    def truncate(self, s, max_len, suffix='...'):
+        self.operations += 1
+        if len(s) <= max_len:
+            return s
+        return s[:max_len - len(suffix)] + suffix
+
+    def camel_to_snake(self, s):
+        self.operations += 1
+        result = []
+        for i, ch in enumerate(s):
+            if ch.isupper() and i > 0:
+                result.append('_')
+            result.append(ch.lower())
+        return ''.join(result)
+
+    def snake_to_camel(self, s):
+        self.operations += 1
+        parts = s.split('_')
+        return parts[0] + ''.join(p.capitalize() for p in parts[1:])
+
+    def slug(self, s):
+        self.operations += 1
+        result = []
+        for ch in s.lower():
+            if ch.isalnum():
+                result.append(ch)
+            elif ch in (' ', '-', '_'):
+                if result and result[-1] != '-':
+                    result.append('-')
+        return ''.join(result).strip('-')
+
+    def word_count(self, s):
+        self.operations += 1
+        return len(s.split())
+
+    def char_frequency(self, s):
+        self.operations += 1
+        freq = {}
+        for ch in s:
+            freq[ch] = freq.get(ch, 0) + 1
+        return dict(sorted(freq.items(), key=lambda x: -x[1]))
+
+    def reverse_words(self, s):
+        self.operations += 1
+        return ' '.join(s.split()[::-1])
+
+    def is_palindrome(self, s):
+        self.operations += 1
+        cleaned = ''.join(ch.lower() for ch in s if ch.isalnum())
+        return cleaned == cleaned[::-1]
+
+    def levenshtein(self, a, b):
+        self.operations += 1
+        if len(a) < len(b):
+            return self.levenshtein(b, a)
+        if len(b) == 0:
+            return len(a)
+        prev_row = list(range(len(b) + 1))
+        for i, ca in enumerate(a):
+            curr_row = [i + 1]
+            for j, cb in enumerate(b):
+                ins = prev_row[j + 1] + 1
+                dl = curr_row[j] + 1
+                sub = prev_row[j] + (0 if ca == cb else 1)
+                curr_row.append(min(ins, dl, sub))
+            prev_row = curr_row
+        return prev_row[-1]
+
+    def get_stats(self):
+        return {'operations': self.operations}
+
+
+class RegexEngine:
+    """Simple regex-like pattern matching engine."""
+
+    def __init__(self):
+        self.compiled = {}
+        self.match_count = 0
+
+    def compile(self, pattern):
+        tokens = self._tokenize(pattern)
+        self.compiled[pattern] = tokens
+        return pattern
+
+    def _tokenize(self, pattern):
+        tokens = []
+        i = 0
+        while i < len(pattern):
+            ch = pattern[i]
+            if ch == '.':
+                tokens.append(('any', None))
+            elif ch == '*' and tokens:
+                prev = tokens.pop()
+                tokens.append(('star', prev))
+            elif ch == '+' and tokens:
+                prev = tokens.pop()
+                tokens.append(('plus', prev))
+            elif ch == '?'  and tokens:
+                prev = tokens.pop()
+                tokens.append(('opt', prev))
+            elif ch == '[':
+                j = pattern.index(']', i)
+                chars = pattern[i+1:j]
+                tokens.append(('class', chars))
+                i = j
+            elif ch == '^':
+                tokens.append(('start', None))
+            elif ch == '$':
+                tokens.append(('end', None))
+            elif ch == '\\' and i + 1 < len(pattern):
+                i += 1
+                if pattern[i] == 'd':
+                    tokens.append(('class', '0123456789'))
+                elif pattern[i] == 'w':
+                    tokens.append(('class', 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'))
+                elif pattern[i] == 's':
+                    tokens.append(('class', ' \t\n\r'))
+                else:
+                    tokens.append(('lit', pattern[i]))
+            else:
+                tokens.append(('lit', ch))
+            i += 1
+        return tokens
+
+    def match(self, pattern, text):
+        if pattern not in self.compiled:
+            self.compile(pattern)
+        tokens = self.compiled[pattern]
+        result = self._match_tokens(tokens, text, 0)
+        if result is not None:
+            self.match_count += 1
+        return result is not None
+
+    def _match_tokens(self, tokens, text, pos):
+        if not tokens:
+            return pos
+        token = tokens[0]
+        rest = tokens[1:]
+        ttype, tval = token
+        if ttype == 'start':
+            if pos == 0:
+                return self._match_tokens(rest, text, pos)
+            return None
+        if ttype == 'end':
+            if pos == len(text):
+                return self._match_tokens(rest, text, pos)
+            return None
+        if ttype == 'lit':
+            if pos < len(text) and text[pos] == tval:
+                return self._match_tokens(rest, text, pos + 1)
+            return None
+        if ttype == 'any':
+            if pos < len(text):
+                return self._match_tokens(rest, text, pos + 1)
+            return None
+        if ttype == 'class':
+            if pos < len(text) and text[pos] in tval:
+                return self._match_tokens(rest, text, pos + 1)
+            return None
+        if ttype == 'opt':
+            r = self._match_tokens([tval] + list(rest), text, pos)
+            if r is not None:
+                return r
+            return self._match_tokens(rest, text, pos)
+        if ttype == 'star':
+            r = self._match_tokens(rest, text, pos)
+            if r is not None:
+                return r
+            if pos < len(text):
+                r2 = self._match_tokens([tval] + [token] + list(rest), text, pos)
+                if r2 is not None:
+                    return r2
+            return None
+        if ttype == 'plus':
+            r = self._match_tokens([tval, ('star', tval)] + list(rest), text, pos)
+            return r
+        return None
+
+    def find_all(self, pattern, text):
+        matches = []
+        for i in range(len(text)):
+            if self.match(pattern, text[i:]):
+                matches.append(i)
+        return matches
+
+    def get_stats(self):
+        return {'patterns': len(self.compiled), 'matches': self.match_count}
+
+
+class TextTokenizer:
+    """Configurable text tokenizer."""
+
+    def __init__(self):
+        self.rules = []
+        self.tokens_produced = 0
+
+    def add_rule(self, name, predicate):
+        self.rules.append({'name': name, 'predicate': predicate})
+
+    def tokenize(self, text):
+        tokens = []
+        i = 0
+        while i < len(text):
+            matched = False
+            for rule in self.rules:
+                j = i
+                while j < len(text) and rule['predicate'](text[j]):
+                    j += 1
+                if j > i:
+                    tokens.append({'type': rule['name'], 'value': text[i:j], 'pos': i})
+                    i = j
+                    matched = True
+                    break
+            if not matched:
+                i += 1
+        self.tokens_produced += len(tokens)
+        return tokens
+
+    def tokenize_words(self, text):
+        words = []
+        current = []
+        for ch in text:
+            if ch.isalnum() or ch == '_':
+                current.append(ch)
+            else:
+                if current:
+                    words.append(''.join(current))
+                    current = []
+        if current:
+            words.append(''.join(current))
+        self.tokens_produced += len(words)
+        return words
+
+    def tokenize_sentences(self, text):
+        sentences = []
+        current = []
+        for ch in text:
+            current.append(ch)
+            if ch in '.!?':
+                sentences.append(''.join(current).strip())
+                current = []
+        if current:
+            rest = ''.join(current).strip()
+            if rest:
+                sentences.append(rest)
+        self.tokens_produced += len(sentences)
+        return sentences
+
+    def get_stats(self):
+        return {'rules': len(self.rules), 'tokens_produced': self.tokens_produced}
+
+
+def format_string_processor(sp):
+    stats = sp.get_stats()
+    lines = ["=== StringProcessor ==="]
+    lines.append(f"  Operations: {stats['operations']}")
+    return '\n'.join(lines)
+
+
+def format_regex_engine(re_eng):
+    stats = re_eng.get_stats()
+    lines = ["=== RegexEngine ==="]
+    lines.append(f"  Compiled patterns: {stats['patterns']}")
+    lines.append(f"  Successful matches: {stats['matches']}")
+    return '\n'.join(lines)
+
+
+def format_text_tokenizer(tok):
+    stats = tok.get_stats()
+    lines = ["=== TextTokenizer ==="]
+    lines.append(f"  Rules: {stats['rules']}")
+    lines.append(f"  Tokens produced: {stats['tokens_produced']}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v82: BitSet, BloomFilterV2, HyperLogLog
+# ============================================================
+
+class BitSet:
+    """Efficient bit array operations."""
+
+    def __init__(self, size=64):
+        self.size = size
+        self.bits = [0] * size
+
+    def set(self, pos):
+        if 0 <= pos < self.size:
+            self.bits[pos] = 1
+
+    def clear(self, pos):
+        if 0 <= pos < self.size:
+            self.bits[pos] = 0
+
+    def get(self, pos):
+        if 0 <= pos < self.size:
+            return self.bits[pos]
+        return 0
+
+    def toggle(self, pos):
+        if 0 <= pos < self.size:
+            self.bits[pos] = 1 - self.bits[pos]
+
+    def count(self):
+        return sum(self.bits)
+
+    def and_op(self, other):
+        result = BitSet(self.size)
+        for i in range(min(self.size, other.size)):
+            result.bits[i] = self.bits[i] & other.bits[i]
+        return result
+
+    def or_op(self, other):
+        result = BitSet(self.size)
+        for i in range(min(self.size, other.size)):
+            result.bits[i] = self.bits[i] | other.bits[i]
+        return result
+
+    def xor_op(self, other):
+        result = BitSet(self.size)
+        for i in range(min(self.size, other.size)):
+            result.bits[i] = self.bits[i] ^ other.bits[i]
+        return result
+
+    def not_op(self):
+        result = BitSet(self.size)
+        for i in range(self.size):
+            result.bits[i] = 1 - self.bits[i]
+        return result
+
+    def to_int(self):
+        val = 0
+        for i in range(self.size):
+            if self.bits[i]:
+                val |= (1 << i)
+        return val
+
+    def from_int(self, val):
+        for i in range(self.size):
+            self.bits[i] = (val >> i) & 1
+
+    def to_string(self):
+        return ''.join(str(b) for b in reversed(self.bits))
+
+
+class BloomFilterV2:
+    """Enhanced Bloom filter with multiple hash functions."""
+
+    def __init__(self, size=256, num_hashes=5):
+        self.size = size
+        self.num_hashes = num_hashes
+        self.bits = BitSet(size)
+        self.count_added = 0
+
+    def _hashes(self, item):
+        s = str(item)
+        results = []
+        for i in range(self.num_hashes):
+            h = 0
+            for ch in s:
+                h = (h * (31 + i * 7) + ord(ch)) & 0xFFFFFFFF
+            results.append(h % self.size)
+        return results
+
+    def add(self, item):
+        for pos in self._hashes(item):
+            self.bits.set(pos)
+        self.count_added += 1
+
+    def might_contain(self, item):
+        return all(self.bits.get(pos) for pos in self._hashes(item))
+
+    def false_positive_rate(self):
+        m = self.size
+        k = self.num_hashes
+        n = self.count_added
+        if n == 0:
+            return 0.0
+        return (1 - (1 - 1/m) ** (k * n)) ** k
+
+    def get_fill_ratio(self):
+        return self.bits.count() / self.size
+
+    def get_stats(self):
+        return {
+            'size': self.size,
+            'hashes': self.num_hashes,
+            'added': self.count_added,
+            'fill_ratio': self.get_fill_ratio(),
+            'est_fpr': self.false_positive_rate()
+        }
+
+
+class HyperLogLog:
+    """HyperLogLog cardinality estimator."""
+
+    def __init__(self, precision=8):
+        self.precision = precision
+        self.num_buckets = 1 << precision
+        self.buckets = [0] * self.num_buckets
+        self.count = 0
+
+    def _hash(self, item):
+        s = str(item)
+        h = 0x811c9dc5
+        for ch in s:
+            h ^= ord(ch)
+            h = (h * 0x01000193) & 0xFFFFFFFF
+        return h
+
+    def add(self, item):
+        h = self._hash(item)
+        bucket = h & (self.num_buckets - 1)
+        remaining = h >> self.precision
+        run = 1
+        while remaining & 1 == 0 and run < 32 - self.precision:
+            run += 1
+            remaining >>= 1
+        self.buckets[bucket] = max(self.buckets[bucket], run)
+        self.count += 1
+
+    def estimate(self):
+        alpha = 0.7213 / (1 + 1.079 / self.num_buckets)
+        raw = alpha * self.num_buckets ** 2 * (
+            1.0 / sum(2 ** (-b) for b in self.buckets))
+        if raw <= 2.5 * self.num_buckets:
+            zeros = self.buckets.count(0)
+            if zeros > 0:
+                return self.num_buckets * (self.num_buckets / zeros)
+        return raw
+
+    def merge(self, other):
+        for i in range(min(len(self.buckets), len(other.buckets))):
+            self.buckets[i] = max(self.buckets[i], other.buckets[i])
+
+    def get_stats(self):
+        return {
+            'precision': self.precision,
+            'buckets': self.num_buckets,
+            'items_added': self.count,
+            'estimated_cardinality': int(self.estimate())
+        }
+
+
+def format_bitset(bs):
+    lines = ["=== BitSet ==="]
+    lines.append(f"  Size: {bs.size}")
+    lines.append(f"  Set bits: {bs.count()}")
+    lines.append(f"  Bits: {bs.to_string()[:32]}...")
+    return '\n'.join(lines)
+
+
+def format_bloom_v2(bf):
+    stats = bf.get_stats()
+    lines = ["=== BloomFilterV2 ==="]
+    lines.append(f"  Size: {stats['size']}, Hashes: {stats['hashes']}")
+    lines.append(f"  Added: {stats['added']}")
+    lines.append(f"  Fill ratio: {stats['fill_ratio']:.1%}")
+    lines.append(f"  Est FPR: {stats['est_fpr']:.4%}")
+    return '\n'.join(lines)
+
+
+def format_hyperloglog(hll):
+    stats = hll.get_stats()
+    lines = ["=== HyperLogLog ==="]
+    lines.append(f"  Precision: {stats['precision']}")
+    lines.append(f"  Buckets: {stats['buckets']}")
+    lines.append(f"  Items added: {stats['items_added']}")
+    lines.append(f"  Estimated cardinality: {stats['estimated_cardinality']}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v83: BTreeIndex, SkipList, TreapMap
+# ============================================================
+
+class BTreeIndex:
+    """B-Tree inspired index for fast lookups."""
+
+    def __init__(self, order=4):
+        self.order = order
+        self.root = {'keys': [], 'children': [], 'leaf': True}
+        self.size = 0
+
+    def insert(self, key, value=None):
+        if value is None:
+            value = key
+        if len(self.root['keys']) >= self.order - 1:
+            new_root = {'keys': [], 'children': [self.root], 'leaf': False}
+            self._split_child(new_root, 0)
+            self.root = new_root
+        self._insert_non_full(self.root, key, value)
+        self.size += 1
+
+    def _insert_non_full(self, node, key, value):
+        i = len(node['keys']) - 1
+        if node['leaf']:
+            node['keys'].append((key, value))
+            node['keys'].sort(key=lambda x: x[0])
+        else:
+            while i >= 0 and key < node['keys'][i][0]:
+                i -= 1
+            i += 1
+            if len(node['children'][i]['keys']) >= self.order - 1:
+                self._split_child(node, i)
+                if key > node['keys'][i][0]:
+                    i += 1
+            self._insert_non_full(node['children'][i], key, value)
+
+    def _split_child(self, parent, idx):
+        child = parent['children'][idx]
+        mid = len(child['keys']) // 2
+        new_node = {
+            'keys': child['keys'][mid + 1:],
+            'children': child['children'][mid + 1:] if not child['leaf'] else [],
+            'leaf': child['leaf']
+        }
+        median = child['keys'][mid]
+        child['keys'] = child['keys'][:mid]
+        if not child['leaf']:
+            child['children'] = child['children'][:mid + 1]
+        parent['keys'].insert(idx, median)
+        parent['children'].insert(idx + 1, new_node)
+
+    def search(self, key):
+        return self._search_node(self.root, key)
+
+    def _search_node(self, node, key):
+        for k, v in node['keys']:
+            if k == key:
+                return v
+        if node['leaf']:
+            return None
+        for i, (k, _) in enumerate(node['keys']):
+            if key < k:
+                return self._search_node(node['children'][i], key)
+        return self._search_node(node['children'][-1], key)
+
+    def range_query(self, low, high):
+        results = []
+        self._range_collect(self.root, low, high, results)
+        return results
+
+    def _range_collect(self, node, low, high, results):
+        for k, v in node['keys']:
+            if low <= k <= high:
+                results.append((k, v))
+        if not node['leaf']:
+            for child in node['children']:
+                self._range_collect(child, low, high, results)
+
+    def get_height(self):
+        h = 0
+        node = self.root
+        while not node['leaf'] and node['children']:
+            h += 1
+            node = node['children'][0]
+        return h
+
+    def in_order(self):
+        result = []
+        self._in_order(self.root, result)
+        return result
+
+    def _in_order(self, node, result):
+        if node['leaf']:
+            result.extend(node['keys'])
+            return
+        for i, child in enumerate(node['children']):
+            self._in_order(child, result)
+            if i < len(node['keys']):
+                result.append(node['keys'][i])
+
+
+class SkipList:
+    """Probabilistic skip list for O(log n) operations."""
+
+    def __init__(self, max_level=8):
+        self.max_level = max_level
+        self.head = {'key': None, 'value': None, 'next': [None] * (max_level + 1)}
+        self.level = 0
+        self.size = 0
+
+    def _random_level(self):
+        import random
+        lvl = 0
+        while random.random() < 0.5 and lvl < self.max_level:
+            lvl += 1
+        return lvl
+
+    def insert(self, key, value=None):
+        update = [None] * (self.max_level + 1)
+        current = self.head
+        for i in range(self.level, -1, -1):
+            while current['next'][i] and current['next'][i]['key'] < key:
+                current = current['next'][i]
+            update[i] = current
+        lvl = self._random_level()
+        if lvl > self.level:
+            for i in range(self.level + 1, lvl + 1):
+                update[i] = self.head
+            self.level = lvl
+        new_node = {'key': key, 'value': value if value is not None else key,
+                    'next': [None] * (lvl + 1)}
+        for i in range(lvl + 1):
+            new_node['next'][i] = update[i]['next'][i]
+            update[i]['next'][i] = new_node
+        self.size += 1
+
+    def search(self, key):
+        current = self.head
+        for i in range(self.level, -1, -1):
+            while current['next'][i] and current['next'][i]['key'] < key:
+                current = current['next'][i]
+        current = current['next'][0]
+        if current and current['key'] == key:
+            return current['value']
+        return None
+
+    def delete(self, key):
+        update = [None] * (self.max_level + 1)
+        current = self.head
+        for i in range(self.level, -1, -1):
+            while current['next'][i] and current['next'][i]['key'] < key:
+                current = current['next'][i]
+            update[i] = current
+        target = current['next'][0]
+        if target and target['key'] == key:
+            for i in range(self.level + 1):
+                if update[i]['next'][i] != target:
+                    break
+                update[i]['next'][i] = target['next'][i]
+            while self.level > 0 and self.head['next'][self.level] is None:
+                self.level -= 1
+            self.size -= 1
+            return True
+        return False
+
+    def to_list(self):
+        result = []
+        current = self.head['next'][0]
+        while current:
+            result.append((current['key'], current['value']))
+            current = current['next'][0]
+        return result
+
+
+class TreapMap:
+    """Treap — tree + heap hybrid data structure."""
+
+    def __init__(self):
+        self.root = None
+        self.size = 0
+
+    def _new_node(self, key, value):
+        import random
+        return {'key': key, 'value': value, 'priority': random.random(),
+                'left': None, 'right': None}
+
+    def _rotate_right(self, node):
+        left = node['left']
+        node['left'] = left['right']
+        left['right'] = node
+        return left
+
+    def _rotate_left(self, node):
+        right = node['right']
+        node['right'] = right['left']
+        right['left'] = node
+        return right
+
+    def insert(self, key, value=None):
+        self.root = self._insert(self.root, key, value if value is not None else key)
+        self.size += 1
+
+    def _insert(self, node, key, value):
+        if node is None:
+            return self._new_node(key, value)
+        if key < node['key']:
+            node['left'] = self._insert(node['left'], key, value)
+            if node['left']['priority'] > node['priority']:
+                node = self._rotate_right(node)
+        elif key > node['key']:
+            node['right'] = self._insert(node['right'], key, value)
+            if node['right']['priority'] > node['priority']:
+                node = self._rotate_left(node)
+        else:
+            node['value'] = value
+            self.size -= 1
+        return node
+
+    def search(self, key):
+        node = self.root
+        while node:
+            if key == node['key']:
+                return node['value']
+            elif key < node['key']:
+                node = node['left']
+            else:
+                node = node['right']
+        return None
+
+    def delete(self, key):
+        self.root, deleted = self._delete(self.root, key)
+        if deleted:
+            self.size -= 1
+        return deleted
+
+    def _delete(self, node, key):
+        if node is None:
+            return None, False
+        if key < node['key']:
+            node['left'], deleted = self._delete(node['left'], key)
+            return node, deleted
+        elif key > node['key']:
+            node['right'], deleted = self._delete(node['right'], key)
+            return node, deleted
+        else:
+            if node['left'] is None:
+                return node['right'], True
+            elif node['right'] is None:
+                return node['left'], True
+            elif node['left']['priority'] > node['right']['priority']:
+                node = self._rotate_right(node)
+                node['right'], deleted = self._delete(node['right'], key)
+                return node, deleted
+            else:
+                node = self._rotate_left(node)
+                node['left'], deleted = self._delete(node['left'], key)
+                return node, deleted
+
+    def in_order(self):
+        result = []
+        self._in_order(self.root, result)
+        return result
+
+    def _in_order(self, node, result):
+        if node is None:
+            return
+        self._in_order(node['left'], result)
+        result.append((node['key'], node['value']))
+        self._in_order(node['right'], result)
+
+    def get_height(self):
+        return self._height(self.root)
+
+    def _height(self, node):
+        if node is None:
+            return 0
+        return 1 + max(self._height(node['left']), self._height(node['right']))
+
+
+def format_btree(bt):
+    lines = ["=== BTreeIndex ==="]
+    lines.append(f"  Order: {bt.order}")
+    lines.append(f"  Size: {bt.size}")
+    lines.append(f"  Height: {bt.get_height()}")
+    return '\n'.join(lines)
+
+
+def format_skip_list(sl):
+    lines = ["=== SkipList ==="]
+    lines.append(f"  Size: {sl.size}")
+    lines.append(f"  Level: {sl.level}")
+    lines.append(f"  Max level: {sl.max_level}")
+    return '\n'.join(lines)
+
+
+def format_treap(treap):
+    lines = ["=== TreapMap ==="]
+    lines.append(f"  Size: {treap.size}")
+    lines.append(f"  Height: {treap.get_height()}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v84: SocketSimulator, DNSResolver, IPRouter
+# ============================================================
+
+class SocketSimulator:
+    """Simulated network socket for testing."""
+
+    def __init__(self):
+        self.sockets = {}
+        self.next_fd = 1
+        self.data_buffers = {}
+
+    def create(self, sock_type='tcp'):
+        fd = self.next_fd
+        self.next_fd += 1
+        self.sockets[fd] = {
+            'type': sock_type,
+            'state': 'created',
+            'local': None,
+            'remote': None,
+            'options': {}
+        }
+        self.data_buffers[fd] = {'recv': [], 'send': []}
+        return fd
+
+    def bind(self, fd, address):
+        if fd in self.sockets:
+            self.sockets[fd]['local'] = address
+            self.sockets[fd]['state'] = 'bound'
+            return True
+        return False
+
+    def connect(self, fd, address):
+        if fd in self.sockets:
+            self.sockets[fd]['remote'] = address
+            self.sockets[fd]['state'] = 'connected'
+            return True
+        return False
+
+    def listen(self, fd, backlog=5):
+        if fd in self.sockets:
+            self.sockets[fd]['state'] = 'listening'
+            self.sockets[fd]['options']['backlog'] = backlog
+            return True
+        return False
+
+    def send(self, fd, data):
+        if fd in self.sockets and self.sockets[fd]['state'] == 'connected':
+            self.data_buffers[fd]['send'].append(data)
+            remote = self.sockets[fd]['remote']
+            for other_fd, sock in self.sockets.items():
+                if sock['local'] == remote and sock['state'] in ('connected', 'listening'):
+                    self.data_buffers[other_fd]['recv'].append(data)
+            return len(data)
+        return -1
+
+    def recv(self, fd, max_size=4096):
+        if fd in self.data_buffers and self.data_buffers[fd]['recv']:
+            data = self.data_buffers[fd]['recv'].pop(0)
+            return data[:max_size]
+        return None
+
+    def close(self, fd):
+        if fd in self.sockets:
+            self.sockets[fd]['state'] = 'closed'
+            return True
+        return False
+
+    def get_socket_info(self, fd):
+        return self.sockets.get(fd)
+
+
+class DNSResolver:
+    """Simulated DNS resolver with caching."""
+
+    def __init__(self):
+        self.records = {}
+        self.cache = {}
+        self.query_count = 0
+
+    def add_record(self, domain, record_type, value, ttl=300):
+        key = (domain, record_type)
+        self.records.setdefault(key, [])
+        self.records[key].append({'value': value, 'ttl': ttl})
+
+    def resolve(self, domain, record_type='A'):
+        self.query_count += 1
+        cache_key = (domain, record_type)
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        key = (domain, record_type)
+        if key in self.records:
+            values = [r['value'] for r in self.records[key]]
+            self.cache[cache_key] = values
+            return values
+        parts = domain.split('.')
+        if len(parts) > 2:
+            parent = '.'.join(parts[1:])
+            return self.resolve(parent, record_type)
+        return []
+
+    def reverse_resolve(self, ip):
+        for (domain, rtype), records in self.records.items():
+            if rtype == 'A':
+                for r in records:
+                    if r['value'] == ip:
+                        return domain
+        return None
+
+    def clear_cache(self):
+        self.cache.clear()
+
+    def get_stats(self):
+        return {
+            'records': sum(len(v) for v in self.records.values()),
+            'cached': len(self.cache),
+            'queries': self.query_count
+        }
+
+
+class IPRouter:
+    """Simulated IP routing table."""
+
+    def __init__(self):
+        self.routes = []
+        self.interfaces = {}
+        self.packets_routed = 0
+
+    def add_interface(self, name, ip, subnet_mask):
+        self.interfaces[name] = {'ip': ip, 'mask': subnet_mask}
+
+    def add_route(self, network, mask, gateway, interface, metric=100):
+        self.routes.append({
+            'network': network, 'mask': mask,
+            'gateway': gateway, 'interface': interface,
+            'metric': metric
+        })
+        self.routes.sort(key=lambda r: (-self._mask_to_prefix(r['mask']), r['metric']))
+
+    def route(self, dest_ip):
+        self.packets_routed += 1
+        dest_int = self._ip_to_int(dest_ip)
+        for r in self.routes:
+            net_int = self._ip_to_int(r['network'])
+            mask_int = self._ip_to_int(r['mask'])
+            if (dest_int & mask_int) == (net_int & mask_int):
+                return {
+                    'gateway': r['gateway'],
+                    'interface': r['interface'],
+                    'metric': r['metric']
+                }
+        return None
+
+    def _ip_to_int(self, ip):
+        parts = [int(p) for p in ip.split('.')]
+        return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+
+    def _mask_to_prefix(self, mask):
+        m = self._ip_to_int(mask)
+        count = 0
+        while m & (1 << (31 - count)):
+            count += 1
+            if count >= 32:
+                break
+        return count
+
+    def traceroute(self, dest_ip, max_hops=10):
+        hops = []
+        current = dest_ip
+        for i in range(max_hops):
+            result = self.route(current)
+            if result:
+                hops.append({'hop': i + 1, 'gateway': result['gateway'],
+                             'interface': result['interface']})
+                if result['gateway'] == '0.0.0.0' or result['gateway'] == current:
+                    break
+                current = result['gateway']
+            else:
+                hops.append({'hop': i + 1, 'gateway': '*', 'interface': '*'})
+                break
+        return hops
+
+    def get_stats(self):
+        return {
+            'routes': len(self.routes),
+            'interfaces': len(self.interfaces),
+            'packets_routed': self.packets_routed
+        }
+
+
+def format_socket_sim(ss):
+    lines = ["=== SocketSimulator ==="]
+    active = sum(1 for s in ss.sockets.values() if s['state'] != 'closed')
+    lines.append(f"  Sockets: {len(ss.sockets)} (active: {active})")
+    return '\n'.join(lines)
+
+
+def format_dns_resolver(dns):
+    stats = dns.get_stats()
+    lines = ["=== DNSResolver ==="]
+    lines.append(f"  Records: {stats['records']}")
+    lines.append(f"  Cached: {stats['cached']}")
+    lines.append(f"  Queries: {stats['queries']}")
+    return '\n'.join(lines)
+
+
+def format_ip_router(ipr):
+    stats = ipr.get_stats()
+    lines = ["=== IPRouter ==="]
+    lines.append(f"  Routes: {stats['routes']}")
+    lines.append(f"  Interfaces: {stats['interfaces']}")
+    lines.append(f"  Packets routed: {stats['packets_routed']}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# v85: CryptoHash, SymmetricCipher, KeyDerivation + 60K
+# ============================================================
+
+class CryptoHash:
+    """Cryptographic-style hash functions."""
+
+    def __init__(self):
+        self.computations = 0
+
+    def sha256_sim(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        h = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+        ]
+        for i, byte in enumerate(data):
+            idx = i % 8
+            h[idx] = ((h[idx] ^ byte) * 0x100000001B3 + (i * 0x517CC1B727220A95)) & 0xFFFFFFFF
+            h[(idx + 1) % 8] = (h[(idx + 1) % 8] + h[idx]) & 0xFFFFFFFF
+        for i in range(64):
+            a, b = i % 8, (i + 1) % 8
+            h[a] = ((h[a] << 3) | (h[a] >> 29)) & 0xFFFFFFFF
+            h[a] = (h[a] ^ h[b]) & 0xFFFFFFFF
+        self.computations += 1
+        return ''.join(f'{x:08x}' for x in h)
+
+    def md5_sim(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        a, b, c, d = 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476
+        for i, byte in enumerate(data):
+            a = ((a + byte * 7 + b) ^ c) & 0xFFFFFFFF
+            b = ((b + byte * 13 + d) ^ a) & 0xFFFFFFFF
+            c = ((c + byte * 23 + a) ^ d) & 0xFFFFFFFF
+            d = ((d + byte * 37 + b) ^ c) & 0xFFFFFFFF
+        for _ in range(32):
+            a = ((a << 5) | (a >> 27)) & 0xFFFFFFFF
+            a, b, c, d = b, c, d, (a ^ b ^ c) & 0xFFFFFFFF
+        self.computations += 1
+        return f'{a:08x}{b:08x}{c:08x}{d:08x}'
+
+    def hmac_sim(self, key, message):
+        inner = self.sha256_sim(key + ':inner:' + message)
+        outer = self.sha256_sim(key + ':outer:' + inner)
+        return outer
+
+    def get_stats(self):
+        return {'computations': self.computations}
+
+
+class SymmetricCipher:
+    """Simple symmetric encryption/decryption."""
+
+    def __init__(self):
+        self.operations = 0
+
+    def xor_encrypt(self, plaintext, key):
+        self.operations += 1
+        result = []
+        for i, ch in enumerate(plaintext):
+            k = key[i % len(key)]
+            result.append(chr(ord(ch) ^ ord(k)))
+        return ''.join(result)
+
+    def xor_decrypt(self, ciphertext, key):
+        self.operations += 1
+        return self.xor_encrypt(ciphertext, key)
+
+    def caesar_encrypt(self, plaintext, shift):
+        self.operations += 1
+        result = []
+        for ch in plaintext:
+            if ch.isalpha():
+                base = ord('A') if ch.isupper() else ord('a')
+                result.append(chr((ord(ch) - base + shift) % 26 + base))
+            else:
+                result.append(ch)
+        return ''.join(result)
+
+    def caesar_decrypt(self, ciphertext, shift):
+        self.operations += 1
+        return self.caesar_encrypt(ciphertext, -shift)
+
+    def substitution_encrypt(self, plaintext, key_map):
+        self.operations += 1
+        return ''.join(key_map.get(ch, ch) for ch in plaintext)
+
+    def substitution_decrypt(self, ciphertext, key_map):
+        self.operations += 1
+        reverse = {v: k for k, v in key_map.items()}
+        return ''.join(reverse.get(ch, ch) for ch in ciphertext)
+
+    def get_stats(self):
+        return {'operations': self.operations}
+
+
+class KeyDerivation:
+    """Key derivation and management."""
+
+    def __init__(self):
+        self.keys_derived = 0
+
+    def pbkdf2_sim(self, password, salt, iterations=1000, key_length=32):
+        block = password + ':' + salt
+        h = 0x6a09e667
+        for _ in range(iterations):
+            for ch in block:
+                h = ((h ^ ord(ch)) * 0x01000193 + 0x811c9dc5) & 0xFFFFFFFF
+            block = f'{h:08x}'
+        result = ''
+        while len(result) < key_length * 2:
+            h = (h * 0x100000001B3 + 0x14650FB0739D0383) & 0xFFFFFFFF
+            result += f'{h:08x}'
+        self.keys_derived += 1
+        return result[:key_length * 2]
+
+    def derive_key(self, master_key, context, length=32):
+        combined = master_key + ':' + context
+        return self.pbkdf2_sim(combined, 'derive_salt', 100, length)
+
+    def generate_salt(self, length=16):
+        import random
+        chars = '0123456789abcdef'
+        return ''.join(random.choice(chars) for _ in range(length))
+
+    def hash_password(self, password, salt=None):
+        if salt is None:
+            salt = self.generate_salt()
+        derived = self.pbkdf2_sim(password, salt, 1000)
+        return f'{salt}${derived}'
+
+    def verify_password(self, password, stored):
+        salt, expected = stored.split('$', 1)
+        derived = self.pbkdf2_sim(password, salt, 1000)
+        return derived == expected
+
+    def get_stats(self):
+        return {'keys_derived': self.keys_derived}
+
+
+def format_crypto_hash(ch):
+    stats = ch.get_stats()
+    lines = ["=== CryptoHash ==="]
+    lines.append(f"  Computations: {stats['computations']}")
+    return '\n'.join(lines)
+
+
+def format_symmetric_cipher(sc):
+    stats = sc.get_stats()
+    lines = ["=== SymmetricCipher ==="]
+    lines.append(f"  Operations: {stats['operations']}")
+    return '\n'.join(lines)
+
+
+def format_key_derivation(kd):
+    stats = kd.get_stats()
+    lines = ["=== KeyDerivation ==="]
+    lines.append(f"  Keys derived: {stats['keys_derived']}")
+    return '\n'.join(lines)
+
+
+def milestone_dashboard_60k():
+    return """
+╔══════════════════════════════════════════════════════════════╗
+║              SCARAB ALGORITHM — 60K MILESTONE               ║
+╠══════════════════════════════════════════════════════════════╣
+║  Versions:     85 (v1-v85)                                  ║
+║  Components:   230+                                         ║
+║  Demos:        290                                          ║
+║  Total lines:  60,000 (Python + Docs)                       ║
+║  Architecture: 11 layers                                    ║
+║  Patterns:     35+                                          ║
+╠══════════════════════════════════════════════════════════════╣
+║  v81: StringProcessor, RegexEngine, TextTokenizer           ║
+║  v82: BitSet, BloomFilterV2, HyperLogLog                    ║
+║  v83: BTreeIndex, SkipList, TreapMap                        ║
+║  v84: SocketSimulator, DNSResolver, IPRouter                ║
+║  v85: CryptoHash, SymmetricCipher, KeyDerivation            ║
+╠══════════════════════════════════════════════════════════════╣
+║  MILESTONES: 35K★ 40K★★ 45K★★★ 50K★★★★ 55K★★★★★ 60K★★★★★★║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
+
+def version_history_v85():
+    history = {
+        'v1-v10': 'Core algorithm, symbols, groups, zones',
+        'v11-v20': 'Training, sessions, mastery tracking',
+        'v21-v30': 'Analytics, statistics, predictions',
+        'v31-v40': 'Advanced analytics, clustering, NLP',
+        'v41-v50': 'Architecture, patterns, facades',
+        'v51-v60': 'Dashboard, widgets, 35K milestone',
+        'v61-v65': 'CQRS, caching, templates, API, monitoring',
+        'v66-v70': 'I18n, GraphDB, tests, DI, workflows',
+        'v71-v75': 'L2 cache, ORM, AST, reactive, consensus',
+        'v76-v80': 'Serializer, VFS, HTTP, FSM, memory mgmt',
+        'v81': 'String processor, regex engine, tokenizer',
+        'v82': 'BitSet, BloomFilterV2, HyperLogLog',
+        'v83': 'BTreeIndex, SkipList, TreapMap',
+        'v84': 'Socket simulator, DNS resolver, IP router',
+        'v85': 'Crypto hash, symmetric cipher, key derivation, 60K milestone',
+    }
+    lines = ["=== Version History (v1-v85) ==="]
+    for ver, desc in history.items():
+        lines.append(f"  {ver}: {desc}")
+    lines.append(f"\nTotal: 85 versions, 230+ components")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -35202,3 +36423,302 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v80: Memory allocator, GC, object store, 55K milestone.")
+
+    # ── Demo 276: StringProcessor ──
+    print("\n" + "=" * 60)
+    print("Demo 276: StringProcessor")
+    print("=" * 60)
+    sp = StringProcessor()
+    print(f"Pad left: '{sp.pad('hi', 10, char='.')}'")
+    print(f"Pad right: '{sp.pad('hi', 10, char='.', align='right')}'")
+    print(f"Truncate: '{sp.truncate('Hello World from Scarab', 15)}'")
+    print(f"camelToSnake: {sp.camel_to_snake('myVariableName')}")
+    print(f"snake_to_camel: {sp.snake_to_camel('my_variable_name')}")
+    print(f"Slug: {sp.slug('Hello World! v85')}")
+    print(f"Word count: {sp.word_count('The quick brown fox')}")
+    freq = sp.char_frequency("banana")
+    print(f"Char freq 'banana': {freq}")
+    print(f"Reverse words: {sp.reverse_words('one two three')}")
+    print(f"Palindrome 'racecar': {sp.is_palindrome('racecar')}")
+    print(f"Palindrome 'hello': {sp.is_palindrome('hello')}")
+    print(f"Levenshtein('kitten','sitting'): {sp.levenshtein('kitten', 'sitting')}")
+    print(format_string_processor(sp))
+
+    # ── Demo 277: RegexEngine ──
+    print("\n" + "=" * 60)
+    print("Demo 277: RegexEngine")
+    print("=" * 60)
+    re_eng = RegexEngine()
+    print(f"Match 'ab' in 'ab': {re_eng.match('ab', 'ab')}")
+    print(f"Match 'a.c' in 'abc': {re_eng.match('a.c', 'abc')}")
+    print(f"Match 'a.c' in 'adc': {re_eng.match('a.c', 'adc')}")
+    print(f"Match '^ab' in 'ab': {re_eng.match('^ab', 'ab')}")
+    print(f"Match 'ab$' in 'ab': {re_eng.match('ab$', 'ab')}")
+    re_eng.compile('[abc]')
+    print(f"Match '[abc]' in 'b': {re_eng.match('[abc]', 'b')}")
+    print(f"Match '[abc]' in 'x': {re_eng.match('[abc]', 'x')}")
+    digit_pat = '\\d'
+    re_eng.compile(digit_pat)
+    digit_match = re_eng.match(digit_pat, '5')
+    print(f"Match digit in '5': {digit_match}")
+    print(format_regex_engine(re_eng))
+
+    # ── Demo 278: TextTokenizer ──
+    print("\n" + "=" * 60)
+    print("Demo 278: TextTokenizer")
+    print("=" * 60)
+    tok = TextTokenizer()
+    tok.add_rule('number', lambda c: c.isdigit())
+    tok.add_rule('word', lambda c: c.isalpha())
+    tok.add_rule('space', lambda c: c.isspace())
+    tokens = tok.tokenize("Hello 42 World 7")
+    print(f"Tokens: {len(tokens)}")
+    for t in tokens:
+        print(f"  {t['type']}: '{t['value']}' @{t['pos']}")
+    words = tok.tokenize_words("The quick brown fox jumps over 3 lazy dogs")
+    print(f"Words: {words}")
+    sents = tok.tokenize_sentences("Hello world. How are you? Fine!")
+    print(f"Sentences: {sents}")
+    print(format_text_tokenizer(tok))
+
+    # ── Demo 279: BitSet ──
+    print("\n" + "=" * 60)
+    print("Demo 279: BitSet")
+    print("=" * 60)
+    bs = BitSet(16)
+    bs.set(0)
+    bs.set(3)
+    bs.set(7)
+    bs.set(15)
+    print(f"Bits: {bs.to_string()}")
+    print(f"Count: {bs.count()}")
+    print(f"Get(3): {bs.get(3)}, Get(4): {bs.get(4)}")
+    bs.toggle(3)
+    print(f"After toggle(3): get(3)={bs.get(3)}")
+    print(f"Int value: {bs.to_int()}")
+    bs2 = BitSet(16)
+    bs2.set(0)
+    bs2.set(1)
+    bs2.set(7)
+    and_result = bs.and_op(bs2)
+    print(f"AND count: {and_result.count()}")
+    or_result = bs.or_op(bs2)
+    print(f"OR count: {or_result.count()}")
+    print(format_bitset(bs))
+
+    # ── Demo 280: BloomFilterV2 ──
+    print("\n" + "=" * 60)
+    print("Demo 280: BloomFilterV2")
+    print("=" * 60)
+    bf2 = BloomFilterV2(size=256, num_hashes=5)
+    for word in ['apple', 'banana', 'cherry', 'date', 'elderberry']:
+        bf2.add(word)
+    print(f"Contains 'apple': {bf2.might_contain('apple')}")
+    print(f"Contains 'banana': {bf2.might_contain('banana')}")
+    print(f"Contains 'fig': {bf2.might_contain('fig')}")
+    print(f"Contains 'grape': {bf2.might_contain('grape')}")
+    print(f"Fill ratio: {bf2.get_fill_ratio():.1%}")
+    print(f"Est FPR: {bf2.false_positive_rate():.4%}")
+    print(format_bloom_v2(bf2))
+
+    # ── Demo 281: HyperLogLog ──
+    print("\n" + "=" * 60)
+    print("Demo 281: HyperLogLog")
+    print("=" * 60)
+    hll = HyperLogLog(precision=8)
+    import random
+    random.seed(81)
+    for i in range(1000):
+        hll.add(f"user_{random.randint(1, 500)}")
+    est = hll.estimate()
+    print(f"Added 1000 items (500 unique)")
+    print(f"Estimated cardinality: {int(est)}")
+    hll2 = HyperLogLog(precision=8)
+    for i in range(200):
+        hll2.add(f"user_{random.randint(400, 700)}")
+    hll.merge(hll2)
+    print(f"After merge, estimated: {int(hll.estimate())}")
+    print(format_hyperloglog(hll))
+
+    # ── Demo 282: BTreeIndex ──
+    print("\n" + "=" * 60)
+    print("Demo 282: BTreeIndex")
+    print("=" * 60)
+    bt = BTreeIndex(order=4)
+    for val in [10, 20, 5, 15, 25, 30, 3, 7, 12, 18]:
+        bt.insert(val, f"val_{val}")
+    print(f"Size: {bt.size}")
+    print(f"Height: {bt.get_height()}")
+    print(f"Search(15): {bt.search(15)}")
+    print(f"Search(99): {bt.search(99)}")
+    rng = bt.range_query(10, 25)
+    print(f"Range [10,25]: {[(k,v) for k,v in rng]}")
+    ordered = bt.in_order()
+    print(f"In-order: {[k for k,v in ordered]}")
+    print(format_btree(bt))
+
+    # ── Demo 283: SkipList ──
+    print("\n" + "=" * 60)
+    print("Demo 283: SkipList")
+    print("=" * 60)
+    random.seed(83)
+    sl = SkipList(max_level=6)
+    for val in [30, 10, 50, 20, 40, 60, 5, 35]:
+        sl.insert(val, f"item_{val}")
+    print(f"Size: {sl.size}")
+    print(f"Search(20): {sl.search(20)}")
+    print(f"Search(99): {sl.search(99)}")
+    items = sl.to_list()
+    print(f"Sorted: {[k for k,v in items]}")
+    sl.delete(30)
+    print(f"After delete(30), size: {sl.size}")
+    print(f"Search(30): {sl.search(30)}")
+    print(format_skip_list(sl))
+
+    # ── Demo 284: TreapMap ──
+    print("\n" + "=" * 60)
+    print("Demo 284: TreapMap")
+    print("=" * 60)
+    random.seed(84)
+    treap = TreapMap()
+    for val in [50, 25, 75, 10, 30, 60, 90]:
+        treap.insert(val, f"node_{val}")
+    print(f"Size: {treap.size}")
+    print(f"Height: {treap.get_height()}")
+    print(f"Search(25): {treap.search(25)}")
+    print(f"Search(99): {treap.search(99)}")
+    ordered = treap.in_order()
+    print(f"In-order: {[k for k,v in ordered]}")
+    treap.delete(25)
+    print(f"After delete(25), size: {treap.size}")
+    print(format_treap(treap))
+
+    # ── Demo 285: SocketSimulator ──
+    print("\n" + "=" * 60)
+    print("Demo 285: SocketSimulator")
+    print("=" * 60)
+    ss = SocketSimulator()
+    server = ss.create('tcp')
+    ss.bind(server, ('127.0.0.1', 8080))
+    ss.listen(server)
+    client = ss.create('tcp')
+    ss.connect(client, ('127.0.0.1', 8080))
+    sent = ss.send(client, 'Hello Server!')
+    print(f"Sent {sent} bytes")
+    received = ss.recv(server)
+    print(f"Received: {received}")
+    info = ss.get_socket_info(client)
+    print(f"Client state: {info['state']}")
+    ss.close(client)
+    print(f"After close: {ss.get_socket_info(client)['state']}")
+    print(format_socket_sim(ss))
+
+    # ── Demo 286: DNSResolver ──
+    print("\n" + "=" * 60)
+    print("Demo 286: DNSResolver")
+    print("=" * 60)
+    dns = DNSResolver()
+    dns.add_record('example.com', 'A', '93.184.216.34')
+    dns.add_record('example.com', 'A', '93.184.216.35')
+    dns.add_record('example.com', 'MX', 'mail.example.com')
+    dns.add_record('api.example.com', 'A', '10.0.0.1')
+    dns.add_record('cdn.example.com', 'CNAME', 'cdn.cloudflare.com')
+    ips = dns.resolve('example.com')
+    print(f"example.com A: {ips}")
+    mx = dns.resolve('example.com', 'MX')
+    print(f"example.com MX: {mx}")
+    api_ip = dns.resolve('api.example.com')
+    print(f"api.example.com: {api_ip}")
+    rev = dns.reverse_resolve('93.184.216.34')
+    print(f"Reverse 93.184.216.34: {rev}")
+    sub = dns.resolve('sub.api.example.com')
+    print(f"sub.api.example.com (parent): {sub}")
+    print(format_dns_resolver(dns))
+
+    # ── Demo 287: IPRouter ──
+    print("\n" + "=" * 60)
+    print("Demo 287: IPRouter")
+    print("=" * 60)
+    ipr = IPRouter()
+    ipr.add_interface('eth0', '192.168.1.1', '255.255.255.0')
+    ipr.add_interface('eth1', '10.0.0.1', '255.255.0.0')
+    ipr.add_route('192.168.1.0', '255.255.255.0', '0.0.0.0', 'eth0', 10)
+    ipr.add_route('10.0.0.0', '255.255.0.0', '0.0.0.0', 'eth1', 10)
+    ipr.add_route('0.0.0.0', '0.0.0.0', '192.168.1.254', 'eth0', 100)
+    r1 = ipr.route('192.168.1.50')
+    print(f"Route 192.168.1.50: {r1}")
+    r2 = ipr.route('10.0.1.100')
+    print(f"Route 10.0.1.100: {r2}")
+    r3 = ipr.route('8.8.8.8')
+    print(f"Route 8.8.8.8 (default): {r3}")
+    hops = ipr.traceroute('8.8.8.8')
+    print(f"Traceroute: {len(hops)} hops")
+    for h in hops:
+        print(f"  Hop {h['hop']}: {h['gateway']} via {h['interface']}")
+    print(format_ip_router(ipr))
+
+    # ── Demo 288: CryptoHash ──
+    print("\n" + "=" * 60)
+    print("Demo 288: CryptoHash")
+    print("=" * 60)
+    ch = CryptoHash()
+    sha = ch.sha256_sim("Scarab Algorithm v85")
+    print(f"SHA256-sim: {sha[:32]}...")
+    md5 = ch.md5_sim("Scarab Algorithm v85")
+    print(f"MD5-sim: {md5}")
+    sha2 = ch.sha256_sim("Scarab Algorithm v85")
+    print(f"Deterministic: {sha == sha2}")
+    sha3 = ch.sha256_sim("Scarab Algorithm v86")
+    print(f"Different input: {sha != sha3}")
+    hmac = ch.hmac_sim("secret_key", "important message")
+    print(f"HMAC-sim: {hmac[:32]}...")
+    print(format_crypto_hash(ch))
+
+    # ── Demo 289: SymmetricCipher ──
+    print("\n" + "=" * 60)
+    print("Demo 289: SymmetricCipher")
+    print("=" * 60)
+    cipher = SymmetricCipher()
+    plain = "Hello Scarab!"
+    key = "SecretKey"
+    encrypted = cipher.xor_encrypt(plain, key)
+    decrypted = cipher.xor_decrypt(encrypted, key)
+    print(f"Original: {plain}")
+    print(f"XOR encrypted length: {len(encrypted)}")
+    print(f"XOR decrypted: {decrypted}")
+    print(f"Match: {plain == decrypted}")
+    caesar_enc = cipher.caesar_encrypt("ATTACK AT DAWN", 3)
+    print(f"Caesar +3: {caesar_enc}")
+    caesar_dec = cipher.caesar_decrypt(caesar_enc, 3)
+    print(f"Caesar dec: {caesar_dec}")
+    sub_map = {ch: chr((ord(ch) - ord('a') + 5) % 26 + ord('a')) for ch in 'abcdefghijklmnopqrstuvwxyz'}
+    sub_enc = cipher.substitution_encrypt("hello", sub_map)
+    sub_dec = cipher.substitution_decrypt(sub_enc, sub_map)
+    print(f"Subst enc/dec: {sub_enc} → {sub_dec}")
+    print(format_symmetric_cipher(cipher))
+
+    # ── Demo 290: KeyDerivation ──
+    print("\n" + "=" * 60)
+    print("Demo 290: KeyDerivation")
+    print("=" * 60)
+    kd = KeyDerivation()
+    random.seed(290)
+    key1 = kd.pbkdf2_sim("password123", "salt_abc", 1000, 32)
+    print(f"PBKDF2 key: {key1[:32]}...")
+    key2 = kd.derive_key("master_secret", "encryption", 16)
+    print(f"Derived key: {key2[:16]}...")
+    salt = kd.generate_salt()
+    print(f"Salt: {salt}")
+    stored = kd.hash_password("mypassword", salt)
+    print(f"Stored hash: {stored[:40]}...")
+    verify_ok = kd.verify_password("mypassword", stored)
+    verify_bad = kd.verify_password("wrongpass", stored)
+    print(f"Verify correct: {verify_ok}")
+    print(f"Verify wrong: {verify_bad}")
+    print(format_key_derivation(kd))
+
+    print("\n" + milestone_dashboard_60k())
+    print("\n" + version_history_v85())
+
+    print("\n" + "=" * 60)
+    print("v85: Crypto hash, cipher, key derivation, 60K milestone.")
