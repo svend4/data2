@@ -13143,6 +13143,241 @@ class DailyChallengeGenerator:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# STUDY GROUPS (v38)
+# ═══════════════════════════════════════════════════════════
+
+class StudyGroup:
+    """
+    Collaborative study group of students.
+
+    Groups train together, share progress, and compete internally.
+    """
+
+    def __init__(self, name, max_size=6):
+        self.name = name
+        self.max_size = max_size
+        self.members = {}  # name → student
+        self.group_sessions = 0
+
+    def add_member(self, student):
+        """Add student to group."""
+        if len(self.members) >= self.max_size:
+            return False
+        self.members[student.name] = student
+        return True
+
+    def remove_member(self, name):
+        """Remove student from group."""
+        return self.members.pop(name, None) is not None
+
+    def group_average(self):
+        """Average score across all members."""
+        all_scores = []
+        for st in self.members.values():
+            scores = [s['pct'] for s in st.sessions]
+            all_scores.extend(scores)
+        return round(sum(all_scores) / len(all_scores), 1) \
+            if all_scores else 0
+
+    def internal_ranking(self):
+        """Rank members by recent performance."""
+        entries = []
+        for name, st in self.members.items():
+            scores = [s['pct'] for s in st.sessions]
+            recent = scores[-5:] if len(scores) >= 5 else scores
+            avg = sum(recent) / len(recent) if recent else 0
+            entries.append({'name': name, 'avg': round(avg, 1),
+                            'sessions': len(scores)})
+        entries.sort(key=lambda e: e['avg'], reverse=True)
+        return entries
+
+    def format_group(self):
+        """Format group display."""
+        lines = [f"Study Group: {self.name}"]
+        lines.append("═" * 45)
+        lines.append(f"  Members: {len(self.members)}/{self.max_size}  |  "
+                     f"Group avg: {self.group_average()}%")
+
+        ranking = self.internal_ranking()
+        for i, e in enumerate(ranking):
+            lines.append(f"    {i + 1}. {e['name']:12s}  "
+                         f"avg={e['avg']}%  ({e['sessions']} sess)")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SYMBOL ENCYCLOPEDIA (v38)
+# ═══════════════════════════════════════════════════════════
+
+def symbol_encyclopedia():
+    """
+    Generate a comprehensive encyclopedia of all 64 Scarab symbols.
+
+    Each entry includes: symbol ID, group, zone, properties.
+    """
+    entries = []
+    for sym in range(64):
+        group = get_group(sym)
+        zone = get_zones(sym)
+
+        # Determine difficulty tier
+        if group <= 2:
+            tier = 'basic'
+        elif group <= 4:
+            tier = 'intermediate'
+        elif group <= 6:
+            tier = 'advanced'
+        else:
+            tier = 'expert'
+
+        # Recommended mastery level
+        rec_ml = max(1, (group + 1) // 2)
+
+        entries.append({
+            'sym': sym,
+            'group': group,
+            'zone': zone,
+            'tier': tier,
+            'rec_mastery': rec_ml,
+            'hex': f'{sym:02X}',
+            'binary': f'{sym:06b}',
+        })
+
+    return entries
+
+
+def format_encyclopedia(entries, group_filter=None):
+    """Format encyclopedia entries."""
+    if group_filter is not None:
+        entries = [e for e in entries if e['group'] == group_filter]
+
+    lines = ["Symbol Encyclopedia"]
+    if group_filter:
+        lines[0] += f" — Group {group_filter}"
+    lines.append("═" * 55)
+
+    current_group = None
+    for e in entries:
+        if e['group'] != current_group:
+            current_group = e['group']
+            lines.append(f"\n  [Group {current_group}]")
+
+        lines.append(f"    S{e['sym']:02d} │ 0x{e['hex']} │ "
+                     f"{e['binary']} │ Z{e['zone']} │ "
+                     f"{e['tier']} │ rec: L{e['rec_mastery']}")
+
+    lines.append(f"\n  Total: {len(entries)} symbols")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# COMBO SYSTEM (v38)
+# ═══════════════════════════════════════════════════════════
+
+def detect_combos(tact_sequence):
+    """
+    Detect combos (special symbol sequences) in a tact list.
+
+    Combo types:
+    - same_group_3: 3+ consecutive same-group symbols
+    - ascending: 3+ ascending symbols
+    - full_cycle: all 7 groups touched
+    - palindrome: palindromic group sequence
+    - zone_sweep: hit all 4 zones
+    """
+    if not tact_sequence:
+        return []
+
+    groups = [get_group(s) for s in tact_sequence]
+    zones = [get_zones(s) for s in tact_sequence]
+    combos = []
+
+    # Same group 3+
+    streak = 1
+    for i in range(1, len(groups)):
+        if groups[i] == groups[i - 1]:
+            streak += 1
+            if streak == 3:
+                combos.append({
+                    'type': 'same_group_3',
+                    'position': i - 2,
+                    'length': streak,
+                    'group': groups[i],
+                    'bonus': 5,
+                })
+        else:
+            streak = 1
+
+    # Ascending symbols 3+
+    asc = 1
+    for i in range(1, len(tact_sequence)):
+        if tact_sequence[i] > tact_sequence[i - 1]:
+            asc += 1
+            if asc == 3:
+                combos.append({
+                    'type': 'ascending',
+                    'position': i - 2,
+                    'length': asc,
+                    'bonus': 3,
+                })
+        else:
+            asc = 1
+
+    # Full cycle: all 7 groups
+    unique_groups = set(groups)
+    if len(unique_groups) >= 7:
+        combos.append({
+            'type': 'full_cycle',
+            'position': 0,
+            'length': len(tact_sequence),
+            'bonus': 10,
+        })
+
+    # Zone sweep: all 4 zones
+    unique_zones = set(zones)
+    if len(unique_zones) >= 4:
+        combos.append({
+            'type': 'zone_sweep',
+            'position': 0,
+            'length': len(tact_sequence),
+            'bonus': 7,
+        })
+
+    # Palindrome (groups): check if group sequence is palindromic
+    if len(groups) >= 5:
+        mid = len(groups) // 2
+        if groups[:mid] == groups[-mid:][::-1]:
+            combos.append({
+                'type': 'palindrome',
+                'position': 0,
+                'length': len(groups),
+                'bonus': 15,
+            })
+
+    return combos
+
+
+def format_combos(combos, title='Combo Analysis'):
+    """Format detected combos."""
+    lines = [title]
+    lines.append("─" * 40)
+
+    if not combos:
+        lines.append("  No combos detected.")
+    else:
+        total_bonus = sum(c['bonus'] for c in combos)
+        for c in combos:
+            extra = f" G{c['group']}" if 'group' in c else ''
+            lines.append(f"  [{c['type']}] pos={c['position']} "
+                         f"len={c['length']}{extra}  "
+                         f"+{c['bonus']} bonus")
+        lines.append(f"  Total bonus: +{total_bonus}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -14573,3 +14808,43 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v37: Pattern recognition, mentor system, daily challenges.")
+
+    # 123. Study Groups
+    print("\n--- Study Groups ---")
+    sg = StudyGroup("Alpha Team", max_size=4)
+    sg.add_member(sim_school.students['Anna'])
+    sg.add_member(sim_school.students['Ivan'])
+    sg.add_member(sim_school.students['Lena'])
+    print(sg.format_group())
+
+    sg2 = StudyGroup("Beta Team", max_size=4)
+    sg2.add_member(sim_school.students['Max'])
+    print(sg2.format_group())
+
+    # 124. Symbol Encyclopedia
+    print("\n--- Symbol Encyclopedia ---")
+    enc = symbol_encyclopedia()
+    print(format_encyclopedia(enc, group_filter=1))
+    print(f"\n  Total symbols in encyclopedia: {len(enc)}")
+    tiers = {}
+    for e in enc:
+        tiers[e['tier']] = tiers.get(e['tier'], 0) + 1
+    print(f"  Tiers: {tiers}")
+
+    # 125. Combo System
+    print("\n--- Combo System ---")
+    import random as _rnd_combo
+    _rnd_combo.seed(555)
+    combo_seq = [_rnd_combo.randint(0, 63) for _ in range(14)]
+    combos = detect_combos(combo_seq)
+    print(f"  Sequence: {combo_seq}")
+    print(format_combos(combos))
+
+    # Craft a palindrome combo
+    half = [5, 20, 35, 50]
+    palindrome_seq = half + [30] + half[::-1]
+    p_combos = detect_combos(palindrome_seq)
+    print(format_combos(p_combos, title='Palindrome Combo'))
+
+    print("\n" + "=" * 60)
+    print("v38: Study groups, symbol encyclopedia, combo system.")

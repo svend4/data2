@@ -4681,3 +4681,41 @@ print(dcg.format_week(week))
 ```
 
 5 типов: time_attack, accuracy, endurance, group_focus, streak.
+
+---
+
+## Часть 53: Study groups, encyclopedia, combos (v38)
+
+### 53.1 Учебные группы
+
+```python
+sg = StudyGroup("Alpha Team", max_size=4)
+sg.add_member(student)
+print(sg.format_group())
+print(sg.group_average())
+ranking = sg.internal_ranking()
+```
+
+### 53.2 Энциклопедия символов
+
+```python
+enc = symbol_encyclopedia()  # → 64 entries
+print(format_encyclopedia(enc, group_filter=1))
+```
+
+Каждый символ: ID, group, zone, tier (basic/intermediate/advanced/expert), rec_mastery, hex, binary.
+
+### 53.3 Комбо-система
+
+```python
+combos = detect_combos(tact_sequence)
+print(format_combos(combos))
+```
+
+| Комбо | Условие | Бонус |
+|-------|---------|-------|
+| same_group_3 | 3+ одногрупповых | +5 |
+| ascending | 3+ возрастающих | +3 |
+| full_cycle | все 7 групп | +10 |
+| zone_sweep | все 4 зоны | +7 |
+| palindrome | палиндром групп | +15 |
