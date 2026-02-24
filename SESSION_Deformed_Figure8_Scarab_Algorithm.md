@@ -4438,3 +4438,57 @@ config.format_config(only_changed=True)
 
 Секции: Core, Sessions, Scoring, Analytics, Scheduler, Notifications, Display.
 Валидация: min < max, grade_a > grade_b > grade_c, window >= 3.
+
+---
+
+## Часть 48: Feedback loop, progression path, heatmap (v33)
+
+### 48.1 Система обратной связи (FeedbackLoop)
+
+Цикл: **Observe → Analyze → Decide → Act**
+
+```python
+fl = FeedbackLoop(student, lookback=5)
+result = fl.run_cycle()
+print(fl.format_cycle(result))
+```
+
+Распознаваемые паттерны:
+| Паттерн | Условие | Решение |
+|---------|---------|---------|
+| plateau | σ² < 10, \|trend\| < 3 | increase_difficulty |
+| regression | trend < -5 | reduce_difficulty |
+| breakthrough | trend > +8 | maintain_pace |
+| struggling | avg < 60% | simplify |
+| excellence | avg ≥ 90% | advance |
+
+### 48.2 Путь прогрессии
+
+```python
+path = compute_progression_path(student)
+print(format_progression_path(path))
+```
+
+```
+S003 ┃ ↑ Level 1 → 2  (avg: 50.0%)
+S007 ┃ ★ first_90  (90.0%)
+S012 ┃ ● Current: L5 (avg: 75.7%)
+
+↑───↑───★───↑───↑───●
+```
+
+### 48.3 Heatmap-анализ
+
+```python
+hm = session_heatmap(student, metric='score')
+print(format_session_heatmap(hm, title='Score Heatmap'))
+```
+
+Сетка 10 сессий на строку, тепловые символы:
+```
+S001-010: ░ ░ ░ ▓ ▓ ▓ █ █ █ █
+S011-012: █ █
+Legend: ░ low  ▓ average  █ high
+```
+
+Метрики: `score`, `violations`, или любое числовое поле сессии.

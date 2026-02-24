@@ -11452,6 +11452,405 @@ class ScarabConfig:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# FEEDBACK LOOP SYSTEM (v33)
+# ═══════════════════════════════════════════════════════════
+
+class FeedbackLoop:
+    """
+    Adaptive feedback loop that adjusts training based on performance.
+
+    Cycle: Observe → Analyze → Decide → Act
+    - Observe: collect recent session data
+    - Analyze: detect patterns (plateau, regression, breakthrough)
+    - Decide: choose intervention
+    - Act: produce actionable recommendations
+    """
+
+    STATES = ['observing', 'analyzing', 'deciding', 'acting']
+
+    def __init__(self, student, lookback=5):
+        self.student = student
+        self.lookback = lookback
+        self.state = 'observing'
+        self.cycle_count = 0
+        self.interventions = []
+
+    def observe(self):
+        """Collect recent data."""
+        sessions = self.student.sessions
+        scores = [s['pct'] for s in sessions]
+        n = len(scores)
+        recent = scores[-self.lookback:] if n >= self.lookback else scores
+
+        observation = {
+            'n_sessions': n,
+            'recent_scores': recent,
+            'recent_avg': round(sum(recent) / len(recent), 1) if recent else 0,
+            'trend': 0,
+        }
+
+        if len(recent) >= 3:
+            first_half = recent[:len(recent) // 2]
+            second_half = recent[len(recent) // 2:]
+            avg1 = sum(first_half) / len(first_half)
+            avg2 = sum(second_half) / len(second_half)
+            observation['trend'] = round(avg2 - avg1, 1)
+
+        self.state = 'analyzing'
+        return observation
+
+    def analyze(self, observation):
+        """Detect patterns from observation."""
+        patterns = []
+        avg = observation['recent_avg']
+        trend = observation['trend']
+        scores = observation['recent_scores']
+
+        # Plateau: low variance, no trend
+        if len(scores) >= 3:
+            mean = sum(scores) / len(scores)
+            variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+            if variance < 10 and abs(trend) < 3:
+                patterns.append({
+                    'type': 'plateau',
+                    'level': round(mean, 1),
+                    'severity': 'medium',
+                })
+
+        # Regression: declining trend
+        if trend < -5:
+            patterns.append({
+                'type': 'regression',
+                'drop': abs(trend),
+                'severity': 'high' if trend < -10 else 'medium',
+            })
+
+        # Breakthrough: strong upward trend
+        if trend > 8:
+            patterns.append({
+                'type': 'breakthrough',
+                'gain': trend,
+                'severity': 'positive',
+            })
+
+        # Struggling: low average
+        if avg < 60:
+            patterns.append({
+                'type': 'struggling',
+                'avg': avg,
+                'severity': 'high',
+            })
+
+        # Excellence: high average
+        if avg >= 90:
+            patterns.append({
+                'type': 'excellence',
+                'avg': avg,
+                'severity': 'positive',
+            })
+
+        self.state = 'deciding'
+        return patterns
+
+    def decide(self, patterns):
+        """Choose interventions based on patterns."""
+        decisions = []
+
+        for p in patterns:
+            if p['type'] == 'plateau':
+                decisions.append({
+                    'action': 'increase_difficulty',
+                    'reason': f"Plateau at {p['level']}%",
+                    'suggestion': 'Try harder templates or new focus areas',
+                })
+
+            elif p['type'] == 'regression':
+                decisions.append({
+                    'action': 'reduce_difficulty',
+                    'reason': f"Score dropped by {p['drop']} points",
+                    'suggestion': 'Review fundamentals, shorter sessions',
+                })
+
+            elif p['type'] == 'breakthrough':
+                decisions.append({
+                    'action': 'maintain_pace',
+                    'reason': f"Gained {p['gain']} points",
+                    'suggestion': 'Keep current approach, consolidate gains',
+                })
+
+            elif p['type'] == 'struggling':
+                decisions.append({
+                    'action': 'simplify',
+                    'reason': f"Average only {p['avg']}%",
+                    'suggestion': 'Use warmup template, focus on basics',
+                })
+
+            elif p['type'] == 'excellence':
+                decisions.append({
+                    'action': 'advance',
+                    'reason': f"Excellent at {p['avg']}%",
+                    'suggestion': 'Ready for next mastery level or peak challenge',
+                })
+
+        if not decisions:
+            decisions.append({
+                'action': 'continue',
+                'reason': 'No significant patterns detected',
+                'suggestion': 'Continue current training plan',
+            })
+
+        self.state = 'acting'
+        return decisions
+
+    def run_cycle(self):
+        """Run one full feedback cycle."""
+        obs = self.observe()
+        patterns = self.analyze(obs)
+        decisions = self.decide(patterns)
+
+        self.cycle_count += 1
+        self.interventions.extend(decisions)
+
+        self.state = 'observing'
+        return {
+            'cycle': self.cycle_count,
+            'observation': obs,
+            'patterns': patterns,
+            'decisions': decisions,
+        }
+
+    def format_cycle(self, result):
+        """Format a feedback cycle result."""
+        lines = [f"Feedback Cycle #{result['cycle']}"]
+        lines.append("─" * 50)
+
+        obs = result['observation']
+        lines.append(f"  Observe: {obs['n_sessions']} sessions, "
+                     f"recent avg={obs['recent_avg']}%, "
+                     f"trend={obs['trend']:+.1f}")
+
+        patterns = result['patterns']
+        if patterns:
+            lines.append(f"  Analyze: {len(patterns)} pattern(s)")
+            for p in patterns:
+                lines.append(f"    • {p['type']} ({p['severity']})")
+        else:
+            lines.append("  Analyze: no significant patterns")
+
+        for d in result['decisions']:
+            lines.append(f"  Decide: {d['action']}")
+            lines.append(f"    Reason: {d['reason']}")
+            lines.append(f"    → {d['suggestion']}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# PROGRESSION PATH VISUALIZER (v33)
+# ═══════════════════════════════════════════════════════════
+
+def compute_progression_path(student):
+    """
+    Compute the student's progression path through mastery levels.
+
+    Returns list of path nodes with timestamps and scores.
+    """
+    sessions = student.sessions
+    ml = student.mastery_level
+
+    path = []
+    # Reconstruct progression based on score thresholds
+    level_thresholds = [0, 50, 60, 70, 75, 80, 85]
+    current_level = 1
+    running_avg = 0
+
+    for i, s in enumerate(sessions):
+        score = s['pct']
+        running_avg = (running_avg * i + score) / (i + 1)
+
+        # Check if level up happened
+        if current_level < 7:
+            threshold = level_thresholds[current_level]
+            if running_avg >= threshold and i >= current_level * 2:
+                path.append({
+                    'event': 'level_up',
+                    'from_level': current_level,
+                    'to_level': current_level + 1,
+                    'session': i + 1,
+                    'avg_at_time': round(running_avg, 1),
+                })
+                current_level += 1
+
+        # Score milestones
+        if score >= 90 and not any(
+                p.get('milestone') == 'first_90' for p in path):
+            path.append({
+                'event': 'milestone',
+                'milestone': 'first_90',
+                'session': i + 1,
+                'score': round(score, 1),
+            })
+
+    # Current position
+    path.append({
+        'event': 'current',
+        'level': ml,
+        'session': len(sessions),
+        'avg': round(running_avg, 1) if sessions else 0,
+    })
+
+    return path
+
+
+def format_progression_path(path):
+    """Format progression path as ASCII timeline."""
+    lines = ["Progression Path"]
+    lines.append("═" * 50)
+
+    for node in path:
+        if node['event'] == 'level_up':
+            lines.append(
+                f"  S{node['session']:03d} ┃ ↑ Level {node['from_level']}"
+                f" → {node['to_level']}  "
+                f"(avg: {node['avg_at_time']}%)")
+
+        elif node['event'] == 'milestone':
+            lines.append(
+                f"  S{node['session']:03d} ┃ ★ {node['milestone']}  "
+                f"({node['score']}%)")
+
+        elif node['event'] == 'current':
+            lines.append(
+                f"  S{node['session']:03d} ┃ ● Current: L{node['level']} "
+                f"(avg: {node['avg']}%)")
+
+    # ASCII path line
+    lines.append("")
+    n = len(path)
+    line_str = "  "
+    for i, node in enumerate(path):
+        if node['event'] == 'level_up':
+            line_str += "↑"
+        elif node['event'] == 'milestone':
+            line_str += "★"
+        elif node['event'] == 'current':
+            line_str += "●"
+        if i < n - 1:
+            line_str += "───"
+    lines.append(line_str)
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# HEATMAP ANALYSIS (v33)
+# ═══════════════════════════════════════════════════════════
+
+def session_heatmap(student, metric='score'):
+    """
+    Generate a heatmap grid of session performance.
+
+    Organizes sessions into rows of 10 for visual scanning.
+    Each cell shows a heat symbol based on metric value.
+    """
+    sessions = student.sessions
+    if not sessions:
+        return {'grid': [], 'legend': {}}
+
+    values = []
+    for s in sessions:
+        if metric == 'score':
+            values.append(s['pct'])
+        elif metric == 'violations':
+            values.append(len(s.get('violations', [])))
+        else:
+            values.append(s.get(metric, 0))
+
+    # Normalize to heat levels 0-4
+    if not values:
+        return {'grid': [], 'legend': {}}
+
+    vmin = min(values)
+    vmax = max(values)
+    rng = vmax - vmin if vmax > vmin else 1
+
+    heat_chars = ['░', '▒', '▓', '█', '█']
+    heat_labels = ['low', 'below avg', 'average', 'above avg', 'high']
+
+    grid = []
+    row_size = 10
+    for start in range(0, len(values), row_size):
+        row = []
+        for v in values[start:start + row_size]:
+            level = int((v - vmin) / rng * 3.99)
+            level = max(0, min(4, level))
+            row.append({
+                'value': round(v, 1),
+                'heat': level,
+                'char': heat_chars[level],
+            })
+        grid.append(row)
+
+    legend = {i: f"{heat_chars[i]} {heat_labels[i]}"
+              for i in range(5)}
+
+    return {
+        'grid': grid,
+        'n_sessions': len(values),
+        'min': round(vmin, 1),
+        'max': round(vmax, 1),
+        'legend': legend,
+    }
+
+
+def format_session_heatmap(heatmap_data, title='Session Heatmap'):
+    """Format session heatmap as ASCII art."""
+    grid = heatmap_data['grid']
+    if not grid:
+        return f"{title}: no data"
+
+    lines = [title]
+    lines.append("─" * 45)
+
+    for row_idx, row in enumerate(grid):
+        start = row_idx * 10 + 1
+        end = start + len(row) - 1
+        cells = ' '.join(cell['char'] for cell in row)
+        lines.append(f"  S{start:03d}-{end:03d}: {cells}")
+
+    lines.append("")
+    lines.append(f"  Range: {heatmap_data['min']} — {heatmap_data['max']}")
+    legend = heatmap_data['legend']
+    lines.append(f"  Legend: {legend[0]}  {legend[2]}  {legend[4]}")
+
+    return '\n'.join(lines)
+
+
+def group_usage_heatmap(student):
+    """
+    Heatmap of Kryukov group usage across sessions.
+
+    Each row = session, columns = groups 1-7.
+    Value = count of symbols from that group.
+    """
+    sessions = student.sessions
+    rows = []
+
+    for s in sessions:
+        group_counts = {g: 0 for g in range(1, 8)}
+        # Count symbols by group from session data
+        for v in s.get('violations', []):
+            rule = v.get('rule', '')
+            if 'Group' in rule or 'group' in str(v):
+                g = v.get('group', 1)
+                group_counts[min(max(g, 1), 7)] += 1
+
+        rows.append(group_counts)
+
+    return rows
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -12743,3 +13142,32 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v32: Training templates, correlation analysis, config manager.")
+
+    # 108. Feedback Loop
+    print("\n--- Feedback Loop ---")
+    fl = FeedbackLoop(sim_school.students['Anna'], lookback=5)
+    cycle1 = fl.run_cycle()
+    print(fl.format_cycle(cycle1))
+
+    fl_ivan = FeedbackLoop(sim_school.students['Ivan'], lookback=5)
+    cycle2 = fl_ivan.run_cycle()
+    print(fl_ivan.format_cycle(cycle2))
+
+    # 109. Progression Path
+    print("\n--- Progression Path ---")
+    path = compute_progression_path(sim_school.students['Anna'])
+    print(format_progression_path(path))
+
+    path_ivan = compute_progression_path(sim_school.students['Ivan'])
+    print(format_progression_path(path_ivan))
+
+    # 110. Heatmap Analysis
+    print("\n--- Heatmap Analysis ---")
+    hm = session_heatmap(sim_school.students['Anna'], metric='score')
+    print(format_session_heatmap(hm, title='Anna: Score Heatmap'))
+
+    hm_ivan = session_heatmap(sim_school.students['Ivan'], metric='score')
+    print(format_session_heatmap(hm_ivan, title='Ivan: Score Heatmap'))
+
+    print("\n" + "=" * 60)
+    print("v33: Feedback loop, progression path, heatmap analysis.")
