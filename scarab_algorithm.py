@@ -23371,6 +23371,396 @@ def version_history_v60():
     return '\n'.join(lines)
 
 
+# ══════════════════════════════════════════════════════════════
+# v61: Event Store, Command Handler, Query Engine
+# ══════════════════════════════════════════════════════════════
+
+class EventStore:
+    """Event sourcing store for the Scarab system.
+
+    Records all state changes as immutable events, enabling
+    full audit trail, replay, and temporal queries.
+    """
+
+    def __init__(self):
+        self.events = []
+        self._counter = 0
+        self._snapshots = {}
+        self._subscribers = {}
+
+    def append(self, event_type, aggregate_id, data,
+               user='system', version=None):
+        """Append an event to the store."""
+        self._counter += 1
+        event = {
+            'id': self._counter,
+            'type': event_type,
+            'aggregate_id': aggregate_id,
+            'data': data,
+            'user': user,
+            'version': version or self._counter
+        }
+        self.events.append(event)
+
+        # Notify subscribers
+        for sub_type, callbacks in self._subscribers.items():
+            if sub_type == event_type or sub_type == '*':
+                for cb in callbacks:
+                    cb(event)
+
+        return event
+
+    def get_events(self, aggregate_id=None, event_type=None,
+                   since_version=None):
+        """Query events with optional filters."""
+        result = self.events
+
+        if aggregate_id is not None:
+            result = [e for e in result
+                      if e['aggregate_id'] == aggregate_id]
+        if event_type is not None:
+            result = [e for e in result if e['type'] == event_type]
+        if since_version is not None:
+            result = [e for e in result
+                      if e['version'] > since_version]
+
+        return result
+
+    def get_aggregate_state(self, aggregate_id, reducer_fn):
+        """Rebuild aggregate state by replaying events."""
+        events = self.get_events(aggregate_id=aggregate_id)
+        state = {}
+        for event in events:
+            state = reducer_fn(state, event)
+        return state
+
+    def save_snapshot(self, aggregate_id, state):
+        """Save a snapshot of aggregate state."""
+        self._snapshots[aggregate_id] = {
+            'state': state,
+            'version': self._counter
+        }
+
+    def get_snapshot(self, aggregate_id):
+        """Get the latest snapshot for an aggregate."""
+        return self._snapshots.get(aggregate_id)
+
+    def subscribe(self, event_type, callback):
+        """Subscribe to events of a specific type."""
+        if event_type not in self._subscribers:
+            self._subscribers[event_type] = []
+        self._subscribers[event_type].append(callback)
+
+    def replay(self, aggregate_id=None, up_to_version=None):
+        """Replay events for debugging or recovery."""
+        events = self.events
+        if aggregate_id is not None:
+            events = [e for e in events
+                      if e['aggregate_id'] == aggregate_id]
+        if up_to_version is not None:
+            events = [e for e in events
+                      if e['version'] <= up_to_version]
+        return events
+
+    def statistics(self):
+        """Get event store statistics."""
+        types = {}
+        aggregates = set()
+        for e in self.events:
+            types[e['type']] = types.get(e['type'], 0) + 1
+            aggregates.add(e['aggregate_id'])
+
+        return {
+            'total_events': len(self.events),
+            'event_types': types,
+            'aggregates': len(aggregates),
+            'snapshots': len(self._snapshots),
+            'subscribers': sum(len(v) for v in self._subscribers.values()),
+            'latest_version': self._counter
+        }
+
+
+def format_event_store(es):
+    """Format event store status."""
+    stats = es.statistics()
+    lines = ["=== Event Store ==="]
+    lines.append(f"Events: {stats['total_events']} "
+                 f"(version: {stats['latest_version']})")
+    lines.append(f"Aggregates: {stats['aggregates']}")
+    lines.append(f"Snapshots: {stats['snapshots']}")
+    lines.append(f"Subscribers: {stats['subscribers']}")
+
+    if stats['event_types']:
+        lines.append("\nEvent types:")
+        for t, c in sorted(stats['event_types'].items(),
+                           key=lambda x: -x[1]):
+            lines.append(f"  {t}: {c}")
+
+    recent = es.events[-5:] if es.events else []
+    if recent:
+        lines.append("\nRecent events:")
+        for e in recent:
+            lines.append(f"  #{e['id']} [{e['type']}] "
+                         f"agg={e['aggregate_id']} "
+                         f"by={e['user']}")
+
+    return '\n'.join(lines)
+
+
+class CommandHandler:
+    """CQRS Command Handler for the Scarab system.
+
+    Processes write commands, validates them, and emits events
+    to the event store. Separates write path from read path.
+    """
+
+    def __init__(self, event_store):
+        self.event_store = event_store
+        self._handlers = {}
+        self._validators = {}
+        self._history = []
+
+    def register(self, command_type, handler_fn, validator_fn=None):
+        """Register a command handler."""
+        self._handlers[command_type] = handler_fn
+        if validator_fn:
+            self._validators[command_type] = validator_fn
+
+    def execute(self, command_type, payload, user='system'):
+        """Execute a command."""
+        if command_type not in self._handlers:
+            result = {
+                'success': False,
+                'error': f'Unknown command: {command_type}'
+            }
+            self._history.append({
+                'command': command_type, 'result': result})
+            return result
+
+        # Validate
+        validator = self._validators.get(command_type)
+        if validator:
+            validation = validator(payload)
+            if not validation.get('valid', True):
+                result = {
+                    'success': False,
+                    'error': f"Validation failed: "
+                             f"{validation.get('error', 'unknown')}"
+                }
+                self._history.append({
+                    'command': command_type, 'result': result})
+                return result
+
+        # Execute handler
+        try:
+            handler = self._handlers[command_type]
+            events = handler(payload, user)
+            if isinstance(events, list):
+                for evt in events:
+                    self.event_store.append(
+                        evt.get('type', command_type),
+                        evt.get('aggregate_id', 'unknown'),
+                        evt.get('data', {}),
+                        user=user)
+            result = {
+                'success': True,
+                'events_emitted': len(events) if isinstance(
+                    events, list) else 0
+            }
+        except Exception as e:
+            result = {
+                'success': False,
+                'error': str(e)
+            }
+
+        self._history.append({
+            'command': command_type, 'result': result})
+        return result
+
+    def list_commands(self):
+        """List all registered commands."""
+        return [
+            {
+                'command': cmd,
+                'has_validator': cmd in self._validators
+            }
+            for cmd in self._handlers
+        ]
+
+    def get_history(self, limit=20):
+        """Get command execution history."""
+        return self._history[-limit:]
+
+    def statistics(self):
+        """Get command handler statistics."""
+        success = sum(1 for h in self._history
+                      if h['result'].get('success'))
+        return {
+            'registered_commands': len(self._handlers),
+            'validators': len(self._validators),
+            'total_executed': len(self._history),
+            'successful': success,
+            'failed': len(self._history) - success,
+            'success_rate': round(
+                success / max(1, len(self._history)) * 100, 1)
+        }
+
+
+def format_command_handler(ch):
+    """Format command handler status."""
+    stats = ch.statistics()
+    lines = ["=== Command Handler ==="]
+    lines.append(f"Commands: {stats['registered_commands']} "
+                 f"({stats['validators']} with validators)")
+    lines.append(f"Executed: {stats['total_executed']} "
+                 f"(success: {stats['success_rate']}%)")
+
+    cmds = ch.list_commands()
+    if cmds:
+        lines.append("\nRegistered commands:")
+        for c in cmds:
+            val = ' [validated]' if c['has_validator'] else ''
+            lines.append(f"  {c['command']}{val}")
+
+    history = ch.get_history(5)
+    if history:
+        lines.append("\nRecent history:")
+        for h in history:
+            status = '✓' if h['result'].get('success') else '✗'
+            err = h['result'].get('error', '')
+            extra = f" ({err})" if err else ''
+            lines.append(f"  {status} {h['command']}{extra}")
+
+    return '\n'.join(lines)
+
+
+class QueryEngine:
+    """CQRS Query Engine for the Scarab system.
+
+    Provides optimized read-only queries against materialized views
+    built from the event store. Separates read from write path.
+    """
+
+    def __init__(self, event_store):
+        self.event_store = event_store
+        self._views = {}
+        self._queries = {}
+        self._cache = {}
+        self._query_count = 0
+
+    def register_view(self, name, builder_fn):
+        """Register a materialized view builder."""
+        self._views[name] = {
+            'builder': builder_fn,
+            'data': None,
+            'version': 0
+        }
+
+    def refresh_view(self, name):
+        """Rebuild a materialized view from events."""
+        if name not in self._views:
+            return None
+
+        view = self._views[name]
+        events = self.event_store.events
+        view['data'] = view['builder'](events)
+        view['version'] = self.event_store._counter
+        self._cache.pop(name, None)
+        return view['data']
+
+    def refresh_all_views(self):
+        """Rebuild all materialized views."""
+        results = {}
+        for name in self._views:
+            results[name] = self.refresh_view(name)
+        return results
+
+    def query(self, view_name, filter_fn=None):
+        """Query a materialized view."""
+        self._query_count += 1
+
+        if view_name not in self._views:
+            return {'error': f'Unknown view: {view_name}'}
+
+        view = self._views[view_name]
+        if view['data'] is None:
+            self.refresh_view(view_name)
+
+        data = view['data']
+        if filter_fn and isinstance(data, list):
+            data = [item for item in data if filter_fn(item)]
+        elif filter_fn and isinstance(data, dict):
+            data = {k: v for k, v in data.items() if filter_fn(v)}
+
+        return data
+
+    def register_query(self, name, view_name, filter_fn=None,
+                       transform_fn=None):
+        """Register a named query for reuse."""
+        self._queries[name] = {
+            'view': view_name,
+            'filter': filter_fn,
+            'transform': transform_fn
+        }
+
+    def execute_query(self, query_name, **kwargs):
+        """Execute a registered named query."""
+        self._query_count += 1
+
+        if query_name not in self._queries:
+            return {'error': f'Unknown query: {query_name}'}
+
+        q = self._queries[query_name]
+        data = self.query(q['view'], q.get('filter'))
+
+        if q.get('transform'):
+            data = q['transform'](data, **kwargs)
+
+        return data
+
+    def list_views(self):
+        """List all registered views."""
+        return [
+            {
+                'name': name,
+                'has_data': view['data'] is not None,
+                'version': view['version']
+            }
+            for name, view in self._views.items()
+        ]
+
+    def statistics(self):
+        """Get query engine statistics."""
+        return {
+            'views': len(self._views),
+            'named_queries': len(self._queries),
+            'total_queries': self._query_count,
+            'views_with_data': sum(
+                1 for v in self._views.values()
+                if v['data'] is not None),
+            'cache_size': len(self._cache)
+        }
+
+
+def format_query_engine(qe):
+    """Format query engine status."""
+    stats = qe.statistics()
+    lines = ["=== Query Engine ==="]
+    lines.append(f"Views: {stats['views']} "
+                 f"({stats['views_with_data']} populated)")
+    lines.append(f"Named queries: {stats['named_queries']}")
+    lines.append(f"Total queries: {stats['total_queries']}")
+
+    views = qe.list_views()
+    if views:
+        lines.append("\nViews:")
+        for v in views:
+            status = '●' if v['has_data'] else '○'
+            lines.append(f"  {status} {v['name']} (v{v['version']})")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -26084,3 +26474,171 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v60: Dashboard aggregator, widget system, 35K milestone.")
+
+    # ── v61: Event Store, Command Handler, Query Engine ──
+
+    # 207. Event Store
+    print("\n" + "=" * 60)
+    print("--- Event Store ---")
+
+    es = EventStore()
+
+    # Subscribe to events
+    enrollment_log = []
+    es.subscribe('student_enrolled',
+                 lambda e: enrollment_log.append(e['data'].get('name')))
+
+    # Record events
+    es.append('student_enrolled', 'school_1',
+              {'name': 'Anna', 'level': 1}, user='admin')
+    es.append('student_enrolled', 'school_1',
+              {'name': 'Ivan', 'level': 1}, user='admin')
+    es.append('session_completed', 'student_anna',
+              {'pct': 75.0, 'session': 1}, user='anna')
+    es.append('session_completed', 'student_anna',
+              {'pct': 82.5, 'session': 2}, user='anna')
+    es.append('mastery_changed', 'student_anna',
+              {'old': 1, 'new': 2}, user='system')
+    es.append('session_completed', 'student_ivan',
+              {'pct': 70.0, 'session': 1}, user='ivan')
+    es.append('config_updated', 'system',
+              {'key': 'session_length', 'value': 20}, user='admin')
+
+    print(format_event_store(es))
+    print(f"\nEnrollment subscriber captured: {enrollment_log}")
+
+    # Query events
+    anna_events = es.get_events(aggregate_id='student_anna')
+    print(f"Anna's events: {len(anna_events)}")
+
+    # Rebuild state
+    def student_reducer(state, event):
+        if event['type'] == 'session_completed':
+            sessions = state.get('sessions', [])
+            sessions.append(event['data']['pct'])
+            state['sessions'] = sessions
+        elif event['type'] == 'mastery_changed':
+            state['mastery'] = event['data']['new']
+        return state
+
+    anna_state = es.get_aggregate_state('student_anna', student_reducer)
+    print(f"Anna's state from events: {anna_state}")
+
+    # Snapshot
+    es.save_snapshot('student_anna', anna_state)
+    snap = es.get_snapshot('student_anna')
+    print(f"Snapshot at version {snap['version']}: {snap['state']}")
+
+    # Replay
+    replay = es.replay(up_to_version=3)
+    print(f"Replay to v3: {len(replay)} events")
+
+    # 208. Command Handler
+    print("\n--- Command Handler ---")
+
+    ch = CommandHandler(es)
+
+    # Register commands
+    def enroll_handler(payload, user):
+        return [{
+            'type': 'student_enrolled',
+            'aggregate_id': 'school_1',
+            'data': {'name': payload['name'], 'level': 1}
+        }]
+
+    def enroll_validator(payload):
+        if 'name' not in payload:
+            return {'valid': False, 'error': 'name required'}
+        if len(payload['name']) < 2:
+            return {'valid': False, 'error': 'name too short'}
+        return {'valid': True}
+
+    ch.register('enroll_student', enroll_handler, enroll_validator)
+
+    def score_handler(payload, user):
+        return [{
+            'type': 'session_completed',
+            'aggregate_id': f"student_{payload['student']}",
+            'data': {'pct': payload['score'], 'session': payload.get('n', 0)}
+        }]
+
+    ch.register('record_score', score_handler)
+
+    # Execute commands
+    r1 = ch.execute('enroll_student', {'name': 'Lena'}, user='admin')
+    print(f"Enroll Lena: {r1}")
+
+    r2 = ch.execute('enroll_student', {'name': 'X'}, user='admin')
+    print(f"Enroll X (invalid): {r2}")
+
+    r3 = ch.execute('record_score',
+                     {'student': 'lena', 'score': 88.5, 'n': 1},
+                     user='lena')
+    print(f"Record score: {r3}")
+
+    r4 = ch.execute('unknown_command', {})
+    print(f"Unknown command: {r4}")
+
+    print(f"\n{format_command_handler(ch)}")
+
+    # 209. Query Engine
+    print("\n--- Query Engine ---")
+
+    qe = QueryEngine(es)
+
+    # Register views
+    def student_list_view(events):
+        students = {}
+        for e in events:
+            if e['type'] == 'student_enrolled':
+                name = e['data'].get('name', '')
+                students[name] = {
+                    'name': name,
+                    'enrolled_by': e['user'],
+                    'level': e['data'].get('level', 1)
+                }
+        return students
+
+    def session_summary_view(events):
+        sessions = []
+        for e in events:
+            if e['type'] == 'session_completed':
+                sessions.append({
+                    'aggregate': e['aggregate_id'],
+                    'score': e['data'].get('pct', 0),
+                    'session_num': e['data'].get('session', 0),
+                    'user': e['user']
+                })
+        return sessions
+
+    qe.register_view('students', student_list_view)
+    qe.register_view('sessions', session_summary_view)
+    qe.refresh_all_views()
+
+    # Query views
+    all_students = qe.query('students')
+    print(f"Students view: {len(all_students)} students")
+    for name, info in all_students.items():
+        print(f"  {name}: level={info['level']}, by={info['enrolled_by']}")
+
+    all_sessions = qe.query('sessions')
+    print(f"\nSessions view: {len(all_sessions)} sessions")
+    for s in all_sessions:
+        print(f"  {s['aggregate']}: {s['score']}% "
+              f"(#{s['session_num']})")
+
+    # Filtered query
+    high_scores = qe.query('sessions',
+                           filter_fn=lambda s: s['score'] >= 80)
+    print(f"\nHigh scores (>=80%): {len(high_scores)}")
+
+    # Named query
+    qe.register_query('anna_sessions', 'sessions',
+                       filter_fn=lambda s: 'anna' in s['aggregate'])
+    anna_sess = qe.execute_query('anna_sessions')
+    print(f"Anna's sessions (named query): {len(anna_sess)}")
+
+    print(f"\n{format_query_engine(qe)}")
+
+    print("\n" + "=" * 60)
+    print("v61: Event store, command handler, query engine.")
