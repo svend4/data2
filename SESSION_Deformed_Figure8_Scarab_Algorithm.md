@@ -3925,3 +3925,90 @@ Session Comparison: #0 vs #11
 ```
 
 Анализ по каждому правилу: delta, improved/declined/stable.
+
+---
+
+## Часть 41: Ритм, марковские переходы, рубрики (v26)
+
+### 41.1 Ритм-анализ
+
+```python
+rhy = analyze_rhythm(kata)
+print(format_rhythm(rhy))
+```
+
+Метрики:
+```
+complexity_seq   — последовательность сложности [0,3,4,4,6,2,4,6]
+acceleration     — первая производная [+3,+1,+0,+2,-4,+2,+2]
+contour          — ascending / descending / plateau
+periodicity      — автокорреляция (лучший lag)
+syncopation      — доля пиков на слабых долях
+flow_score       — штраф за Hamming > 3 между тактами (0-100)
+```
+
+Визуализация waveform:
+```
+T 1:                      0
+T 2: ██████████           3
+T 5: ████████████████████ 6
+T 8: ████████████████████ 6
+```
+
+### 41.2 Марковская цепь переходов
+
+```python
+mc = build_markov_chain(student, hand='left')
+print(format_markov(mc))
+```
+
+Матрица 7×7 переходов P(G_j | G_i):
+```
+From\To  G1    G2    G3    G5    G6
+G1      0.07  [0.50] [0.43]
+G2     [0.53]  0.23         0.23
+G3            [0.43]  0.14  0.14  0.29
+G5     [0.33] [0.50]        0.17
+```
+
+[x.xx] = вероятность ≥ 0.30 (выделенная).
+
+Стационарное распределение (power iteration, 50 итераций):
+```
+G1=0.28  G2=0.38  G3=0.14  G5=0.13  G6=0.06
+```
+
+Энтропия по состояниям (бит):
+```
+G1=1.3  G2=1.5  G3=1.8  G5=1.5  G6=1.6
+```
+
+### 41.3 Система рубрик оценивания
+
+5 измерений × 4 уровня (0-3) с весами:
+
+```python
+rs = score_with_rubric(kata, rule_pct=85.0)
+print(format_rubric_score(rs))
+```
+
+```
+Technical Accuracy       ★★☆  w=3.0
+  Passes most rules (60-85%)
+Complexity Management    ★☆☆  w=2.0
+  Low variety (mean 1-2)
+Flow & Transitions       ★★★  w=2.5
+  Seamless transitions (flow > 85)
+Group Diversity          ★★☆  w=1.5
+  Moderate diversity (3-4 unique)
+Structural Coherence     ★★☆  w=1.0
+  Clear structure (contour detected)
+────────────────────
+Weighted: 20.5/30.0 = 68.3% → C
+```
+
+Шкала оценок:
+```
+A+ ≥ 90%   A ≥ 80%   B ≥ 70%
+C  ≥ 60%   D ≥ 50%   F < 50%
+```

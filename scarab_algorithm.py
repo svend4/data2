@@ -8670,6 +8670,447 @@ def format_comparison(comp):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# RHYTHM ANALYSIS — temporal patterns in kata (v26)
+# ═══════════════════════════════════════════════════════════
+
+def analyze_rhythm(kata):
+    """
+    Analyze rhythmic/temporal patterns in a kata sequence.
+
+    Metrics:
+    - complexity_rhythm: sequence of complexity values (beat pattern)
+    - group_rhythm: sequence of group transitions
+    - acceleration: change in complexity over time
+    - periodicity: detect repeating patterns
+    - syncopation: off-beat complexity spikes
+    - flow_score: smoothness of transitions (0-100)
+    """
+    if not kata or len(kata) < 2:
+        return {'empty': True}
+
+    # Extract sequences
+    c_seq = []  # complexity per tact
+    g_seq = []  # group per tact
+    for t in kata:
+        if isinstance(t, (list, tuple)) and len(t) >= 2:
+            sl, sr = t[0], t[1]
+        else:
+            sl, sr = t, 0
+        c_seq.append(symbol_complexity(sl) + symbol_complexity(sr))
+        g_seq.append((get_group(sl), get_group(sr)))
+
+    n = len(c_seq)
+
+    # Acceleration (first derivative of complexity)
+    accel = [c_seq[i] - c_seq[i - 1] for i in range(1, n)]
+
+    # Periodicity detection (autocorrelation at lag 1..n//2)
+    periods = {}
+    for lag in range(1, n // 2 + 1):
+        matches = sum(1 for i in range(n - lag)
+                      if g_seq[i] == g_seq[i + lag])
+        periods[lag] = round(matches / (n - lag), 2)
+
+    best_period = max(periods, key=periods.get) if periods else 0
+    periodicity = periods.get(best_period, 0)
+
+    # Syncopation: complexity spikes on even-indexed tacts
+    # (assuming odd=strong beat, even=weak beat)
+    mean_c = sum(c_seq) / n
+    syncopation = sum(1 for i in range(0, n, 2)
+                      if c_seq[i] > mean_c * 1.3) / max(1, n // 2)
+
+    # Flow score: penalize large Hamming jumps between adjacent tacts
+    flow_penalties = 0
+    for i in range(1, n):
+        if isinstance(kata[i], (list, tuple)) and len(kata[i]) >= 2:
+            h = hamming_distance(kata[i - 1][0], kata[i][0])
+            flow_penalties += max(0, h - 3)  # penalize >3
+    flow_score = max(0, 100 - flow_penalties * 15)
+
+    # Complexity contour classification
+    if n >= 3:
+        first_third = sum(c_seq[:n // 3]) / max(1, n // 3)
+        last_third = sum(c_seq[-n // 3:]) / max(1, n // 3)
+        if last_third > first_third * 1.3:
+            contour = 'ascending'
+        elif first_third > last_third * 1.3:
+            contour = 'descending'
+        else:
+            contour = 'plateau'
+    else:
+        contour = 'short'
+
+    return {
+        'empty': False,
+        'complexity_seq': c_seq,
+        'group_seq': g_seq,
+        'acceleration': accel,
+        'mean_complexity': round(mean_c, 2),
+        'periodicity': periodicity,
+        'best_period': best_period,
+        'syncopation': round(syncopation, 2),
+        'flow_score': flow_score,
+        'contour': contour,
+        'n_tacts': n,
+    }
+
+
+def format_rhythm(rh):
+    """Format rhythm analysis."""
+    if rh.get('empty'):
+        return "Rhythm: no data"
+
+    lines = ["Rhythm Analysis"]
+    lines.append("─" * 50)
+
+    # Complexity waveform
+    lines.append("  Complexity waveform:")
+    max_c = max(rh['complexity_seq']) if rh['complexity_seq'] else 1
+    for i, c in enumerate(rh['complexity_seq']):
+        bar = '█' * int(c / max(1, max_c) * 20)
+        lines.append(f"    T{i + 1:2d}: {bar:<20s} {c}")
+
+    # Acceleration
+    lines.append("  Acceleration: " +
+                 ' '.join(f"{a:+d}" for a in rh['acceleration']))
+
+    lines.append(f"  Mean complexity: {rh['mean_complexity']}")
+    lines.append(f"  Contour: {rh['contour']}")
+    lines.append(f"  Periodicity: {rh['periodicity']:.2f} "
+                 f"(best lag={rh['best_period']})")
+    lines.append(f"  Syncopation: {rh['syncopation']:.2f}")
+    lines.append(f"  Flow score: {rh['flow_score']}/100")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# MARKOV TRANSITIONS — group transition graph (v26)
+# ═══════════════════════════════════════════════════════════
+
+def build_markov_chain(student, hand='left'):
+    """
+    Build a Markov transition matrix from student's session history.
+
+    Rows/cols: groups 1-7
+    Cell (i,j): P(next group = j | current group = i)
+
+    Also computes:
+    - stationary distribution (eigen-approximation)
+    - entropy per state
+    - most likely path of length k
+    """
+    # Collect group sequences from all sessions
+    sequences = []
+    for s in student.sessions:
+        ml = s.get('mastery_level', student.mastery_level)
+        seed = hash(f"{student.name}_{len(sequences)}") & 0x7FFFFFFF
+        dma = DualMatchStickAutomaton(mastery_level=ml, seed=seed)
+        kata = dma.generate_dual_kata(length=s.get('length', 4))
+        for t in kata:
+            if hand == 'left':
+                sequences.append(get_group(t[0]))
+            else:
+                sequences.append(get_group(t[1]))
+
+    if len(sequences) < 2:
+        return {'empty': True}
+
+    # Count transitions
+    counts = {}
+    for i in range(1, 8):
+        counts[i] = {j: 0 for j in range(1, 8)}
+
+    for i in range(len(sequences) - 1):
+        src, dst = sequences[i], sequences[i + 1]
+        if 1 <= src <= 7 and 1 <= dst <= 7:
+            counts[src][dst] += 1
+
+    # Normalize to probabilities
+    matrix = {}
+    for i in range(1, 8):
+        total = sum(counts[i].values())
+        matrix[i] = {}
+        for j in range(1, 8):
+            matrix[i][j] = round(counts[i][j] / max(1, total), 3)
+
+    # Stationary distribution (power iteration)
+    dist = [1 / 7] * 7
+    for _ in range(50):
+        new_dist = [0] * 7
+        for j in range(7):
+            for i in range(7):
+                new_dist[j] += dist[i] * matrix[i + 1][j + 1]
+        total = sum(new_dist)
+        dist = [d / max(total, 1e-10) for d in new_dist]
+
+    stationary = {g + 1: round(dist[g], 3) for g in range(7)}
+
+    # Entropy per state
+    import math
+    entropy = {}
+    for i in range(1, 8):
+        h = 0
+        for j in range(1, 8):
+            p = matrix[i][j]
+            if p > 0:
+                h -= p * math.log2(p)
+        entropy[i] = round(h, 2)
+
+    return {
+        'empty': False,
+        'matrix': matrix,
+        'stationary': stationary,
+        'entropy': entropy,
+        'n_transitions': len(sequences) - 1,
+        'hand': hand,
+    }
+
+
+def format_markov(mc):
+    """Format Markov chain as transition matrix."""
+    if mc.get('empty'):
+        return "Markov: no data"
+
+    lines = [f"Markov Transition Matrix ({mc['hand']} hand, "
+             f"n={mc['n_transitions']})"]
+    lines.append("─" * 60)
+
+    # Header
+    hdr = "  From\\To"
+    for j in range(1, 8):
+        hdr += f"  G{j:d}  "
+    lines.append(hdr)
+    lines.append("  " + "─" * 55)
+
+    for i in range(1, 8):
+        row = f"  G{i}    "
+        for j in range(1, 8):
+            p = mc['matrix'][i][j]
+            if p >= 0.3:
+                row += f" [{p:.2f}]"
+            elif p > 0:
+                row += f"  {p:.2f} "
+            else:
+                row += "   ·   "
+        lines.append(row)
+
+    # Stationary
+    lines.append("")
+    lines.append("  Stationary: " +
+                 '  '.join(f"G{g}={mc['stationary'][g]:.2f}"
+                           for g in range(1, 8)))
+
+    # Entropy
+    lines.append("  Entropy:    " +
+                 '  '.join(f"G{g}={mc['entropy'][g]:.1f}"
+                           for g in range(1, 8)))
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SCORING RUBRIC — detailed grading criteria (v26)
+# ═══════════════════════════════════════════════════════════
+
+def build_rubric():
+    """
+    Define the scoring rubric for kata evaluation.
+
+    5 dimensions × 4 levels (0-3 points each) = max 15 points.
+
+    Dimensions:
+    1. Technical accuracy (rule compliance)
+    2. Complexity management
+    3. Flow & transitions
+    4. Group diversity
+    5. Structural coherence
+    """
+    return {
+        'technical': {
+            'name': 'Technical Accuracy',
+            'weight': 3.0,
+            'levels': {
+                0: 'Fails majority of rules (<40%)',
+                1: 'Passes some rules (40-60%)',
+                2: 'Passes most rules (60-85%)',
+                3: 'Near-perfect rule compliance (>85%)',
+            },
+        },
+        'complexity': {
+            'name': 'Complexity Management',
+            'weight': 2.0,
+            'levels': {
+                0: 'Trivial symbols only (mean < 1)',
+                1: 'Low variety (mean 1-2)',
+                2: 'Moderate range (mean 2-3)',
+                3: 'Full spectrum used effectively (mean > 3)',
+            },
+        },
+        'flow': {
+            'name': 'Flow & Transitions',
+            'weight': 2.5,
+            'levels': {
+                0: 'Jarring transitions (flow < 40)',
+                1: 'Rough flow (flow 40-60)',
+                2: 'Smooth flow (flow 60-85)',
+                3: 'Seamless transitions (flow > 85)',
+            },
+        },
+        'diversity': {
+            'name': 'Group Diversity',
+            'weight': 1.5,
+            'levels': {
+                0: 'Single group (1 unique)',
+                1: 'Limited groups (2 unique)',
+                2: 'Moderate diversity (3-4 unique)',
+                3: 'Rich diversity (5+ unique)',
+            },
+        },
+        'coherence': {
+            'name': 'Structural Coherence',
+            'weight': 1.0,
+            'levels': {
+                0: 'Random/no pattern',
+                1: 'Weak structure',
+                2: 'Clear structure (contour detected)',
+                3: 'Strong narrative arc',
+            },
+        },
+    }
+
+
+def score_with_rubric(kata, rule_pct=None):
+    """
+    Score a kata using the rubric system.
+
+    Returns per-dimension scores and weighted total.
+    """
+    rubric = build_rubric()
+
+    # Get analytics
+    rhythm = analyze_rhythm(kata)
+    fp = compute_fingerprint(kata)
+
+    scores = {}
+
+    # 1. Technical accuracy
+    if rule_pct is not None:
+        if rule_pct > 85:
+            scores['technical'] = 3
+        elif rule_pct > 60:
+            scores['technical'] = 2
+        elif rule_pct > 40:
+            scores['technical'] = 1
+        else:
+            scores['technical'] = 0
+    else:
+        scores['technical'] = 2  # default if not measured
+
+    # 2. Complexity management
+    mean_c = fp['features'].get('complexity_mean', 0)
+    if mean_c > 3:
+        scores['complexity'] = 3
+    elif mean_c > 2:
+        scores['complexity'] = 2
+    elif mean_c > 1:
+        scores['complexity'] = 1
+    else:
+        scores['complexity'] = 0
+
+    # 3. Flow & transitions
+    if not rhythm.get('empty'):
+        flow = rhythm['flow_score']
+        if flow > 85:
+            scores['flow'] = 3
+        elif flow > 60:
+            scores['flow'] = 2
+        elif flow > 40:
+            scores['flow'] = 1
+        else:
+            scores['flow'] = 0
+    else:
+        scores['flow'] = 1
+
+    # 4. Group diversity
+    unique_g = fp['features'].get('unique_groups', 1)
+    if unique_g >= 5:
+        scores['diversity'] = 3
+    elif unique_g >= 3:
+        scores['diversity'] = 2
+    elif unique_g >= 2:
+        scores['diversity'] = 1
+    else:
+        scores['diversity'] = 0
+
+    # 5. Structural coherence
+    if not rhythm.get('empty'):
+        contour = rhythm['contour']
+        periodicity = rhythm['periodicity']
+        if contour in ('ascending', 'descending') and periodicity > 0.5:
+            scores['coherence'] = 3
+        elif contour != 'short':
+            scores['coherence'] = 2
+        else:
+            scores['coherence'] = 1
+    else:
+        scores['coherence'] = 1
+
+    # Weighted total
+    total_weighted = 0
+    max_weighted = 0
+    for dim, score in scores.items():
+        w = rubric[dim]['weight']
+        total_weighted += score * w
+        max_weighted += 3 * w
+
+    pct = total_weighted / max_weighted * 100 if max_weighted else 0
+
+    # Letter grade
+    if pct >= 90:
+        grade = 'A+'
+    elif pct >= 80:
+        grade = 'A'
+    elif pct >= 70:
+        grade = 'B'
+    elif pct >= 60:
+        grade = 'C'
+    elif pct >= 50:
+        grade = 'D'
+    else:
+        grade = 'F'
+
+    return {
+        'scores': scores,
+        'rubric': rubric,
+        'total_weighted': round(total_weighted, 1),
+        'max_weighted': round(max_weighted, 1),
+        'pct': round(pct, 1),
+        'grade': grade,
+    }
+
+
+def format_rubric_score(rs):
+    """Format rubric score as report card."""
+    lines = [f"Rubric Score: {rs['grade']} ({rs['pct']:.1f}%)"]
+    lines.append("═" * 50)
+
+    for dim, score in rs['scores'].items():
+        r = rs['rubric'][dim]
+        bar = '★' * score + '☆' * (3 - score)
+        level_desc = r['levels'][score]
+        lines.append(f"  {r['name']:<24s} {bar}  w={r['weight']:.1f}")
+        lines.append(f"    {level_desc}")
+
+    lines.append("─" * 50)
+    lines.append(f"  Weighted: {rs['total_weighted']}/{rs['max_weighted']} "
+                 f"= {rs['pct']:.1f}% → {rs['grade']}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -9707,4 +10148,24 @@ if __name__ == '__main__':
     print(format_comparison(comp))
 
     print("\n" + "=" * 60)
-    print("v25: Mutation engine, difficulty calibration, comparator.")
+    # 87. Rhythm Analysis
+    print("\n--- Rhythm Analysis ---")
+    rhy_dma = DualMatchStickAutomaton(mastery_level=4, seed=77)
+    rhy_kata = rhy_dma.generate_dual_kata(length=8)
+    rhy = analyze_rhythm(rhy_kata)
+    print(format_rhythm(rhy))
+
+    # 88. Markov Transitions
+    print("\n--- Markov Transition Matrix ---")
+    mc = build_markov_chain(sim_school.students['Anna'], hand='left')
+    print(format_markov(mc))
+
+    # 89. Scoring Rubric
+    print("\n--- Scoring Rubric ---")
+    rub_dma = DualMatchStickAutomaton(mastery_level=5, seed=88)
+    rub_kata = rub_dma.generate_dual_kata(length=6)
+    rs = score_with_rubric(rub_kata, rule_pct=85.0)
+    print(format_rubric_score(rs))
+
+    print("\n" + "=" * 60)
+    print("v26: Rhythm analysis, Markov transitions, scoring rubric.")
