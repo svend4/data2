@@ -1264,6 +1264,173 @@ def animate_kata_text(kata_sequence):
 
 
 # ═══════════════════════════════════════════════════════════
+# DUAL STICK-FIGURE VISUALIZATION
+# ═══════════════════════════════════════════════════════════
+
+# ChVS/Mudra hand markers for the stick figure
+HAND_MARKERS = {
+    CHVS_FIST:  '*',   # Clenched fist
+    CHVS_PALM:  '=',   # Open palm
+    CHVS_POINT: '>',   # Pointing
+    CHVS_GRAB:  '~',   # Relaxed/grab
+}
+MUDRA_MARKERS = {
+    MUDRA_FIST:  '*',   MUDRA_PALM:  '=',
+    MUDRA_POINT: '>',   MUDRA_GRAB:  '~',
+    MUDRA_BLADE: '/',   MUDRA_HOOK:  'J',
+    MUDRA_SPEAR: '|',   MUDRA_CUP:   'U',
+}
+
+
+def dual_stick_figure(sym_left, sym_right, chvs_left=0, chvs_right=0,
+                      use_mudras=False):
+    """
+    Generate ASCII art of TWO stick figures side by side.
+
+    Left figure shows the left-hand MSA state.
+    Right figure shows the right-hand MSA state (mirrored).
+    Hand tips show ChVS/Mudra markers.
+
+    Returns: list of strings (9 lines)
+    """
+    la_L, ra_L = symbol_to_arms(sym_left)
+    la_R, ra_R = symbol_to_arms(sym_right)
+
+    markers = MUDRA_MARKERS if use_mudras else HAND_MARKERS
+    mk_L = markers.get(chvs_left, '?')
+    mk_R = markers.get(chvs_right, '?')
+
+    fig_L = stick_figure_frame(la_L, ra_L)
+    fig_R = stick_figure_frame(la_R, ra_R)
+
+    # Build symbol boxes
+    sym_art_L = symbol_to_ascii(sym_left, size=5).split('\n')
+    sym_art_R = symbol_to_ascii(sym_right, size=5).split('\n')
+
+    # Compose: [sym_L] figure_L <-> figure_R [sym_R]
+    lines = []
+    max_rows = max(len(fig_L), len(fig_R), len(sym_art_L), len(sym_art_R))
+    for i in range(max_rows):
+        sL = sym_art_L[i] if i < len(sym_art_L) else '     '
+        fL = fig_L[i] if i < len(fig_L) else '         '
+        fR = fig_R[i] if i < len(fig_R) else '         '
+        sR = sym_art_R[i] if i < len(sym_art_R) else '     '
+        lines.append(f"  [{sL}] {fL}  <->  {fR} [{sR}]")
+
+    # Add hand marker annotation
+    lines.append(f"  L-hand: {mk_L}({markers.__class__.__name__[0]})"
+                 f"                    "
+                 f"R-hand: {mk_R}")
+
+    return lines
+
+
+def animate_dual_kata(dual_kata, use_mudras=False):
+    """
+    Generate text animation frames for a dual-hand kata.
+
+    Args:
+        dual_kata: list of (L_sym, R_sym, L_chvs, R_chvs) tuples
+        use_mudras: if True, interpret chvs values as mudra IDs
+
+    Returns: list of frame strings
+    """
+    group_names = {1: 'Soft', 2: 'Hard', 3: 'MVS', 4: 'Rot',
+                   5: 'Wpn', 6: 'Mstr', 7: 'Peak'}
+    names_chvs = MUDRA_NAMES if use_mudras else CHVS_NAMES
+
+    frames = []
+    for i, (L, R, cL, cR) in enumerate(dual_kata):
+        gL, gR = get_group(L), get_group(R)
+        conflict = zones_conflict(L, R)
+        anti = is_anti_symmetric(L, R)
+        status = 'OK' if not conflict else 'COLLISION!'
+
+        header = (f"=== Tact {i} | "
+                  f"L:{L:06b}(G{gL}/{group_names[gL]}) "
+                  f"R:{R:06b}(G{gR}/{group_names[gR]}) | "
+                  f"{status} ===")
+
+        fig_lines = dual_stick_figure(L, R, cL, cR, use_mudras)
+
+        cL_name = names_chvs.get(cL, '?')
+        cR_name = names_chvs.get(cR, '?')
+        footer = f"  ChVS/Mudra: L={cL_name}, R={cR_name}"
+
+        frame = [header] + fig_lines + [footer, ""]
+        frames.append('\n'.join(frame))
+
+    return frames
+
+
+def export_training_session(session, mastery_level=1, filename=None):
+    """
+    Export a training session to human-readable text format.
+
+    Can be printed or saved to file for use during actual training.
+    """
+    group_names = {1: 'Soft base', 2: 'Hard base', 3: 'MVS (wrist)',
+                   4: 'Rotational', 5: 'Weapon', 6: 'Master', 7: 'Peak defense'}
+    lines = []
+    lines.append("=" * 60)
+    lines.append(f"TRAINING SESSION — Mastery Level {mastery_level}")
+    lines.append(f"Date: ____________  Duration: 45 min")
+    lines.append("=" * 60)
+
+    for block_name, block_data in session.items():
+        dur = block_data.get('duration', '?')
+        instr = block_data.get('instruction', '')
+        lines.append(f"\n--- [{dur}] {block_name.upper()} ---")
+        lines.append(f"  {instr}")
+
+        if 'symbols' in block_data:
+            lines.append("  Positions:")
+            for j, s in enumerate(block_data['symbols']):
+                grp = get_group(s)
+                art = symbol_to_ascii(s, size=3).split('\n')
+                lines.append(f"    {j+1}. {s:06b} (G{grp}/{group_names[grp]})")
+                for a_line in art:
+                    lines.append(f"       {a_line}")
+
+        if 'pairs' in block_data:
+            lines.append("  Transition Pairs:")
+            for j, (a, b) in enumerate(block_data['pairs']):
+                gA, gB = get_group(a), get_group(b)
+                lines.append(f"    {j+1}. {a:06b}(G{gA}) -> {b:06b}(G{gB})")
+
+        if 'sequences' in block_data:
+            lines.append("  Kata Sequences:")
+            for j, seq in enumerate(block_data['sequences']):
+                syms = ' -> '.join(f'{s:06b}' for s in seq)
+                lines.append(f"    Kata {j+1}: {syms}")
+                # Show stick figures for this kata
+                for k, s in enumerate(seq):
+                    la, ra = symbol_to_arms(s)
+                    fig = stick_figure_frame(la, ra)
+                    lines.append(f"      Tact {k+1}:")
+                    for f_line in fig:
+                        lines.append(f"        {f_line}")
+
+        if 'challenges' in block_data:
+            lines.append("  Challenges (automaton shows, you respond):")
+            for j, ch in enumerate(block_data['challenges']):
+                grp = get_group(ch['symbol'])
+                lines.append(f"    {j+1}. Target: {ch['symbol']:06b} G{grp} "
+                             f"— respond in {ch['response_time']:.1f}s")
+
+    lines.append("\n" + "=" * 60)
+    lines.append("END OF SESSION")
+
+    text = '\n'.join(lines)
+
+    if filename:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    return text
+
+
+# ═══════════════════════════════════════════════════════════
 # ANNUAL TRAINING PLAN MAPPING
 # ═══════════════════════════════════════════════════════════
 
@@ -1486,7 +1653,28 @@ if __name__ == '__main__':
         print(f"  {q}: {info['name']:35s}")
         print(f"       {pd['desc']:45s} | {states_str}")
 
-    # 13. Graph statistics (summary)
+    # 13. Dual stick-figure animation
+    print("\n--- Dual Kata Visualization (3 tacts) ---")
+    dual_viz = DualMatchStickAutomaton(mastery_level=3, seed=77)
+    dkata_viz = dual_viz.generate_dual_kata(length=3)
+    anim_frames = animate_dual_kata(dkata_viz)
+    for frame in anim_frames:
+        print(frame)
+
+    # 14. Export training session to file
+    msa_export = MatchStickAutomaton(mastery_level=2, seed=42)
+    session_export = msa_export.generate_training_session()
+    export_text = export_training_session(session_export, mastery_level=2,
+                                          filename='training_session_L2.txt')
+    line_count = len(export_text.split('\n'))
+    print(f"--- Exported Training Session (Level 2) ---")
+    print(f"  Saved to: training_session_L2.txt ({line_count} lines)")
+    # Show first 10 lines as preview
+    for line in export_text.split('\n')[:10]:
+        print(f"  {line}")
+    print("  ...")
+
+    # 15. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0

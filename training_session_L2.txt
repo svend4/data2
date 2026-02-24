@@ -1,0 +1,264 @@
+============================================================
+TRAINING SESSION — Mastery Level 2
+Date: ____________  Duration: 45 min
+============================================================
+
+--- [0-5 min] WARMUP ---
+  Hold each position 30 sec. ChVS: FIST only.
+  Positions:
+    1. 001100 (G2/Hard base)
+       │ │
+       │ │
+       │ │
+    2. 000001 (G2/Hard base)
+       ───
+          
+          
+    3. 000000 (G1/Soft base)
+          
+          
+          
+    4. 010000 (G1/Soft base)
+       ╲  
+        ╲ 
+         ╲
+    5. 000100 (G2/Hard base)
+       │  
+       │  
+       │  
+    6. 000011 (G2/Hard base)
+       ───
+          
+       ───
+    7. 000011 (G2/Hard base)
+       ───
+          
+       ───
+    8. 000010 (G2/Hard base)
+          
+          
+       ───
+    9. 010000 (G1/Soft base)
+       ╲  
+        ╲ 
+         ╲
+    10. 000001 (G2/Hard base)
+       ───
+          
+          
+
+--- [5-15 min] TECHNIQUE ---
+  Transition between pairs. 1 min per pair.
+  Transition Pairs:
+    1. 100001(G3) -> 000001(G2)
+    2. 100010(G3) -> 100000(G1)
+    3. 000001(G2) -> 000000(G1)
+    4. 000010(G2) -> 000100(G2)
+    5. 001000(G2) -> 011000(G3)
+    6. 100100(G3) -> 000000(G1)
+    7. 100001(G3) -> 000101(G2)
+    8. 101000(G3) -> 100010(G3)
+
+--- [15-30 min] KATA ---
+  Execute kata of 5 tacts. All ChVS modes.
+  Kata Sequences:
+    Kata 1: 000000 -> 100000 -> 001000 -> 000010 -> 100010
+      Tact 1:
+            O    
+            │    
+          ──│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 2:
+            O    
+          ╱ │    
+           ╱│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 3:
+            O    
+            │    
+          ──│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 4:
+            O    
+            │    
+           ╲│╱   
+          ╲ │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 5:
+            O    
+            │    
+           ╲│╱   
+          ╲ │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+    Kata 2: 000000 -> 000101 -> 001001 -> 000001 -> 100000
+      Tact 1:
+            O    
+            │    
+          ──│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 2:
+            O│   
+            ││   
+          ──│    
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 3:
+           │O    
+           ││    
+            │──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 4:
+           │O│   
+           │││   
+            │    
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 5:
+            O    
+          ╱ │    
+           ╱│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+    Kata 3: 000000 -> 000110 -> 010010 -> 000010 -> 000011
+      Tact 1:
+            O    
+            │    
+          ──│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 2:
+            O    
+            │    
+          ──│╱   
+            │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 3:
+            O    
+            │    
+           ╲│╱   
+          ╲ │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 4:
+            O    
+            │    
+           ╲│╱   
+          ╲ │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 5:
+            O    
+            │    
+           ╲│╱   
+          ╲ │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+    Kata 4: 000000 -> 000110 -> 001010 -> 000010 -> 100000
+      Tact 1:
+            O    
+            │    
+          ──│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 2:
+            O    
+            │    
+          ──│╱   
+            │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 3:
+            O    
+            │    
+           ╲│──  
+          ╲ │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 4:
+            O    
+            │    
+           ╲│╱   
+          ╲ │ ╱  
+            │    
+           ╱ ╲   
+          ╱   ╲  
+      Tact 5:
+            O    
+          ╱ │    
+           ╱│──  
+            │    
+            │    
+           ╱ ╲   
+          ╱   ╲  
+
+--- [30-40 min] IMPROVISATION ---
+  Automaton shows target → execute within time limit.
+  Challenges (automaton shows, you respond):
+    1. Target: 000011 G2 — respond in 3.0s
+    2. Target: 010000 G1 — respond in 3.0s
+    3. Target: 010000 G1 — respond in 3.0s
+    4. Target: 100100 G3 — respond in 3.0s
+    5. Target: 001001 G2 — respond in 3.0s
+
+--- [40-45 min] COOLDOWN ---
+  Slow transitions. Deep breathing. ChVS: GRAB (relaxed).
+  Positions:
+    1. 100000 (G1/Soft base)
+         ╱
+        ╱ 
+       ╱  
+    2. 000000 (G1/Soft base)
+          
+          
+          
+    3. 010000 (G1/Soft base)
+       ╲  
+        ╲ 
+         ╲
+    4. 001000 (G2/Hard base)
+         │
+         │
+         │
+    5. 001001 (G2/Hard base)
+       ──┐
+         │
+         │
+
+============================================================
+END OF SESSION
