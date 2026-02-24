@@ -20991,6 +20991,341 @@ def format_sequence_score(result):
     return '\n'.join(lines)
 
 
+# ── v58: Student Clustering, Cohort Analyzer, Peer Recommender ──
+
+
+class StudentClustering:
+    """Clusters students based on performance similarity.
+
+    Uses a simple distance-based approach to group students
+    into clusters with similar performance profiles.
+    """
+
+    def __init__(self, school):
+        self.school = school
+        self.clusters = {}
+        self.features = {}
+
+    def extract_features(self):
+        """Extract feature vectors for all students."""
+        self.features = {}
+        for name, st in self.school.students.items():
+            scores = [s.get('pct', 0) for s in st.sessions]
+            if not scores:
+                continue
+            avg = sum(scores) / len(scores)
+            std = (sum((s - avg) ** 2 for s in scores) / len(scores)) ** 0.5
+            recent = scores[-3:] if len(scores) >= 3 else scores
+            recent_avg = sum(recent) / len(recent)
+            ml = getattr(st, 'mastery_level', 1)
+
+            self.features[name] = {
+                'avg_score': avg,
+                'std_score': std,
+                'recent_avg': recent_avg,
+                'mastery': ml,
+                'session_count': len(scores),
+                'trend': recent_avg - avg
+            }
+        return self.features
+
+    def distance(self, name_a, name_b):
+        """Compute distance between two students."""
+        fa = self.features.get(name_a)
+        fb = self.features.get(name_b)
+        if not fa or not fb:
+            return float('inf')
+        d = 0
+        d += (fa['avg_score'] - fb['avg_score']) ** 2
+        d += (fa['std_score'] - fb['std_score']) ** 2
+        d += (fa['recent_avg'] - fb['recent_avg']) ** 2
+        d += (fa['mastery'] - fb['mastery']) ** 2 * 25
+        return round(d ** 0.5, 2)
+
+    def cluster(self, n_clusters=3):
+        """Simple k-means-like clustering."""
+        if not self.features:
+            self.extract_features()
+
+        names = list(self.features.keys())
+        if len(names) <= n_clusters:
+            self.clusters = {i: [n] for i, n in enumerate(names)}
+            return self.clusters
+
+        # Sort by avg_score and divide into n clusters
+        sorted_names = sorted(
+            names, key=lambda n: self.features[n]['avg_score'])
+        chunk_size = max(1, len(sorted_names) // n_clusters)
+
+        self.clusters = {}
+        for i in range(n_clusters):
+            start = i * chunk_size
+            if i == n_clusters - 1:
+                self.clusters[i] = sorted_names[start:]
+            else:
+                self.clusters[i] = sorted_names[start:start + chunk_size]
+
+        return self.clusters
+
+    def cluster_summary(self):
+        """Generate summary for each cluster."""
+        summaries = {}
+        for cid, members in self.clusters.items():
+            if not members:
+                continue
+            avgs = [self.features[n]['avg_score'] for n in members
+                    if n in self.features]
+            masteries = [self.features[n]['mastery'] for n in members
+                         if n in self.features]
+            summaries[cid] = {
+                'members': members,
+                'size': len(members),
+                'avg_score': round(sum(avgs) / max(len(avgs), 1), 2),
+                'avg_mastery': round(
+                    sum(masteries) / max(len(masteries), 1), 1),
+                'label': self._label_cluster(
+                    sum(avgs) / max(len(avgs), 1))
+            }
+        return summaries
+
+    def _label_cluster(self, avg_score):
+        """Label a cluster based on avg score."""
+        if avg_score >= 85:
+            return 'Advanced'
+        elif avg_score >= 70:
+            return 'Intermediate'
+        elif avg_score >= 55:
+            return 'Developing'
+        return 'Beginner'
+
+
+def format_clustering(clustering):
+    """Format clustering results."""
+    lines = ["=== Student Clustering ==="]
+    summary = clustering.cluster_summary()
+    for cid in sorted(summary.keys()):
+        cs = summary[cid]
+        lines.append(f"\n  Cluster {cid} ({cs['label']}): "
+                     f"{cs['size']} students")
+        lines.append(f"    Avg score: {cs['avg_score']}%, "
+                     f"Avg mastery: {cs['avg_mastery']}")
+        lines.append(f"    Members: {', '.join(cs['members'])}")
+    return '\n'.join(lines)
+
+
+class CohortAnalyzer:
+    """Analyzes student cohorts for group-level insights.
+
+    Cohorts can be defined by enrollment time, mastery level,
+    cluster membership, or custom criteria.
+    """
+
+    def __init__(self, school):
+        self.school = school
+
+    def by_mastery(self):
+        """Group students by mastery level."""
+        cohorts = {}
+        for name, st in self.school.students.items():
+            ml = getattr(st, 'mastery_level', 1)
+            if ml not in cohorts:
+                cohorts[ml] = []
+            cohorts[ml].append(name)
+        return cohorts
+
+    def by_performance_tier(self):
+        """Group students by performance tier."""
+        tiers = {'top': [], 'middle': [], 'bottom': []}
+        scored = []
+        for name, st in self.school.students.items():
+            scores = [s.get('pct', 0) for s in st.sessions]
+            avg = sum(scores) / max(len(scores), 1)
+            scored.append((name, avg))
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        n = len(scored)
+        third = max(1, n // 3)
+        for i, (name, _) in enumerate(scored):
+            if i < third:
+                tiers['top'].append(name)
+            elif i < 2 * third:
+                tiers['middle'].append(name)
+            else:
+                tiers['bottom'].append(name)
+        return tiers
+
+    def cohort_comparison(self, cohort_a, cohort_b, label_a='A',
+                          label_b='B'):
+        """Compare two cohorts."""
+        def _cohort_stats(names):
+            all_scores = []
+            for n in names:
+                st = self.school.students.get(n)
+                if st:
+                    for s in st.sessions:
+                        all_scores.append(s.get('pct', 0))
+            if not all_scores:
+                return {'avg': 0, 'count': 0}
+            return {
+                'avg': round(sum(all_scores) / len(all_scores), 2),
+                'count': len(all_scores),
+                'min': round(min(all_scores), 2),
+                'max': round(max(all_scores), 2)
+            }
+
+        stats_a = _cohort_stats(cohort_a)
+        stats_b = _cohort_stats(cohort_b)
+        diff = stats_b['avg'] - stats_a['avg']
+
+        return {
+            label_a: {'members': len(cohort_a), **stats_a},
+            label_b: {'members': len(cohort_b), **stats_b},
+            'difference': round(diff, 2),
+            'significant': abs(diff) > 5
+        }
+
+    def retention_analysis(self):
+        """Analyze student retention (session engagement)."""
+        retention = {}
+        for name, st in self.school.students.items():
+            n = len(st.sessions)
+            if n >= 10:
+                retention[name] = 'active'
+            elif n >= 5:
+                retention[name] = 'regular'
+            elif n >= 1:
+                retention[name] = 'occasional'
+            else:
+                retention[name] = 'inactive'
+
+        summary = {}
+        for status in ['active', 'regular', 'occasional', 'inactive']:
+            summary[status] = sum(
+                1 for v in retention.values() if v == status)
+        return {'details': retention, 'summary': summary}
+
+
+def format_cohort_analysis(ca):
+    """Format cohort analysis."""
+    lines = ["=== Cohort Analysis ==="]
+
+    # By mastery
+    by_ml = ca.by_mastery()
+    lines.append("\nBy Mastery Level:")
+    for ml in sorted(by_ml.keys()):
+        lines.append(f"  Level {ml}: {', '.join(by_ml[ml])}")
+
+    # By tier
+    tiers = ca.by_performance_tier()
+    lines.append("\nBy Performance Tier:")
+    for tier in ['top', 'middle', 'bottom']:
+        lines.append(f"  {tier.title()}: {', '.join(tiers[tier])}")
+
+    # Retention
+    ret = ca.retention_analysis()
+    lines.append(f"\nRetention: {ret['summary']}")
+
+    return '\n'.join(lines)
+
+
+class PeerRecommender:
+    """Recommends peer partnerships for collaborative learning.
+
+    Pairs students based on complementary strengths/weaknesses
+    or similar performance levels.
+    """
+
+    def __init__(self, school):
+        self.school = school
+
+    def recommend_partner(self, student_name, mode='complementary'):
+        """Recommend a learning partner.
+
+        Modes:
+        - complementary: partner with different strengths
+        - similar: partner with similar level
+        - mentor: find a more advanced student
+        """
+        st = self.school.students.get(student_name)
+        if not st:
+            return None
+
+        my_scores = [s.get('pct', 0) for s in st.sessions]
+        my_avg = sum(my_scores) / max(len(my_scores), 1)
+        my_ml = getattr(st, 'mastery_level', 1)
+
+        candidates = []
+        for name, other in self.school.students.items():
+            if name == student_name:
+                continue
+            o_scores = [s.get('pct', 0) for s in other.sessions]
+            o_avg = sum(o_scores) / max(len(o_scores), 1)
+            o_ml = getattr(other, 'mastery_level', 1)
+
+            if mode == 'similar':
+                score = 100 - abs(my_avg - o_avg)
+            elif mode == 'mentor':
+                if o_ml > my_ml:
+                    score = o_ml - my_ml + (o_avg - my_avg) / 10
+                else:
+                    score = -100
+            else:  # complementary
+                diff = abs(my_avg - o_avg)
+                score = min(diff, 30)  # Some difference is good
+
+            candidates.append({
+                'name': name,
+                'score': round(score, 2),
+                'avg': round(o_avg, 2),
+                'mastery': o_ml
+            })
+
+        candidates.sort(key=lambda x: x['score'], reverse=True)
+        return candidates[:3] if candidates else []
+
+    def recommend_study_groups(self, group_size=2):
+        """Recommend study group pairings."""
+        students = list(self.school.students.keys())
+        groups = []
+
+        # Sort by average score
+        scored = []
+        for name in students:
+            st = self.school.students[name]
+            scores = [s.get('pct', 0) for s in st.sessions]
+            avg = sum(scores) / max(len(scores), 1)
+            scored.append((name, avg))
+        scored.sort(key=lambda x: x[1])
+
+        # Pair top with bottom for complementary groups
+        used = set()
+        while len(used) < len(scored):
+            remaining = [s for s in scored if s[0] not in used]
+            if len(remaining) < group_size:
+                break
+            group = [remaining[0][0], remaining[-1][0]]
+            groups.append({
+                'members': group,
+                'avg_scores': [remaining[0][1], remaining[-1][1]],
+                'spread': round(abs(remaining[0][1] - remaining[-1][1]), 1)
+            })
+            used.update(group)
+
+        return groups
+
+
+def format_peer_recommendations(recs, student_name=''):
+    """Format peer recommendations."""
+    lines = [f"=== Peer Recommendations"
+             f"{': ' + student_name if student_name else ''} ==="]
+    if not recs:
+        lines.append("  No recommendations available")
+    for r in recs:
+        lines.append(f"  {r['name']}: score={r['score']}, "
+                     f"avg={r['avg']}%, mastery={r['mastery']}")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -23301,3 +23636,47 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v57: Symbol frequency, n-gram model, sequence scorer.")
+
+    # ── v58 demos ────────────────────────────────────────
+
+    # 193. Student Clustering
+    print("\n--- Student Clustering ---")
+    sc = StudentClustering(sim_school)
+    sc.extract_features()
+    sc.cluster(n_clusters=2)
+    print(format_clustering(sc))
+
+    # Distance between students
+    dist = sc.distance('Anna', 'Ivan')
+    print(f"\nDistance Anna↔Ivan: {dist}")
+    dist2 = sc.distance('Anna', 'Lena')
+    print(f"Distance Anna↔Lena: {dist2}")
+
+    # 194. Cohort Analyzer
+    print("\n--- Cohort Analyzer ---")
+    ca = CohortAnalyzer(sim_school)
+    print(format_cohort_analysis(ca))
+
+    # Compare cohorts
+    tiers = ca.by_performance_tier()
+    if tiers['top'] and tiers['bottom']:
+        comp = ca.cohort_comparison(tiers['top'], tiers['bottom'],
+                                    'Top', 'Bottom')
+        print(f"\nTop vs Bottom: diff={comp['difference']}%, "
+              f"significant={comp['significant']}")
+
+    # 195. Peer Recommender
+    print("\n--- Peer Recommender ---")
+    pr = PeerRecommender(sim_school)
+    for mode in ['similar', 'complementary', 'mentor']:
+        recs = pr.recommend_partner('Anna', mode=mode)
+        print(f"\n{mode.title()} partners for Anna:")
+        print(format_peer_recommendations(recs, f'Anna ({mode})'))
+
+    groups = pr.recommend_study_groups(group_size=2)
+    print(f"\nStudy groups: {len(groups)}")
+    for g in groups:
+        print(f"  {g['members']} (spread={g['spread']}%)")
+
+    print("\n" + "=" * 60)
+    print("v58: Student clustering, cohort analyzer, peer recommender.")
