@@ -434,6 +434,295 @@ def get_neighbors(symbol, max_changes=2):
     return list(set(neighbors))
 
 
+# ═══════════════════════════════════════════════════════════
+# ChVS GEARBOX — micro-correction state machine
+# ═══════════════════════════════════════════════════════════
+
+# Contact feedback types (input to ChVS gearbox)
+CONTACT_HARD  = 0   # Hit solid target
+CONTACT_SOFT  = 1   # Hit soft target
+CONTACT_EMPTY = 2   # Missed / no contact
+CONTACT_BLOCK = 3   # Hit opponent's block
+
+# ChVS response vectors: (force, spread, penetration)
+CHVS_VECTORS = {
+    CHVS_FIST:  (1.0, 0.0, 0.0),   # Maximum force, no spread
+    CHVS_PALM:  (0.5, 0.5, 0.0),   # Distributed contact
+    CHVS_POINT: (0.0, 0.0, 1.0),   # Maximum penetration
+    CHVS_GRAB:  (0.3, 0.3, 0.4),   # Adaptive contact
+}
+
+# ChVS transition table: contact_type → optimal ChVS response
+CHVS_TRANSITION = {
+    CONTACT_HARD:  CHVS_FIST,    # Reinforce strike
+    CONTACT_SOFT:  CHVS_GRAB,    # Capture / redirect
+    CONTACT_EMPTY: CHVS_POINT,   # Extend to reach (thrust)
+    CONTACT_BLOCK: CHVS_PALM,    # Redirect force (deflect)
+}
+
+
+def chvs_gearbox(contact_type, current_chvs=None):
+    """
+    ChVS micro-correction gearbox.
+    Switches finger mode based on tactile feedback in ~10ms.
+
+    Like a car gearbox:
+    - Does NOT change route (BVS)
+    - Does NOT change lane (SVS)
+    - Does NOT turn wheel (MVS)
+    - But changes the CHARACTER of contact at the moment of impact
+
+    Args:
+        contact_type: CONTACT_HARD/SOFT/EMPTY/BLOCK
+        current_chvs: current finger mode (for hysteresis)
+
+    Returns:
+        new ChVS mode (CHVS_FIST/PALM/POINT/GRAB)
+    """
+    optimal = CHVS_TRANSITION.get(contact_type, CHVS_FIST)
+
+    # Hysteresis: if already in a compatible mode, don't switch
+    # (switching has a 10ms cost — avoid unnecessary switches)
+    if current_chvs is not None and current_chvs == optimal:
+        return current_chvs
+
+    return optimal
+
+
+# ═══════════════════════════════════════════════════════════
+# MATCH-STICK AUTOMATON (MSA) — full state machine
+# ═══════════════════════════════════════════════════════════
+
+class MatchStickAutomaton:
+    """
+    Finite state automaton modeling all 76 hand positions.
+
+    MSA = (Q, Sigma, delta, q0, F)
+      Q     = 76 states (movement symbols)
+      Sigma = {add_line, remove_line, swap_line, switch_chvs}
+      delta = transition function (graph with ~670 edges)
+      q0    = 0 (empty = ready position)
+      F     = Q (all states are accepting)
+
+    Four decision levels:
+      BVS: strategy (attack/defend/feint) → selects target group
+      SVS: tactics (group 1-7) → selects target symbol neighborhood
+      MVS: technique (specific symbol) → selects exact target
+      ChVS: gearbox (fist/palm/point/grab) → modulates contact
+    """
+
+    def __init__(self, mastery_level=1, seed=None):
+        self.state = 0          # Current symbol (empty)
+        self.chvs = CHVS_FIST   # Current finger mode
+        self.mastery = mastery_level
+        self.history = [0]      # State history
+        self.chvs_history = [CHVS_FIST]
+        self.rng = random.Random(seed)
+
+        # Precompute adjacency for all 64 base symbols
+        self._adj = {}
+        for s in range(64):
+            self._adj[s] = get_neighbors(s, max_changes=2)
+
+        # Groups available at current mastery level
+        self._update_available_groups()
+
+    def _update_available_groups(self):
+        """Update which groups are available based on mastery level."""
+        level_groups = {
+            1: [1, 2],
+            2: [1, 2, 3],
+            3: [1, 2, 3, 4, 5],
+            4: [1, 2, 3, 4, 5, 6, 7],
+            5: [1, 2, 3, 4, 5, 6, 7],
+        }
+        self.available_groups = level_groups.get(self.mastery, [1, 2])
+        self.available_symbols = [
+            s for s in range(64) if get_group(s) in self.available_groups
+        ]
+
+    def bfs_path(self, target):
+        """Find shortest path from current state to target (≤3 steps)."""
+        if self.state == target:
+            return [self.state]
+        from collections import deque
+        visited = {self.state: None}
+        queue = deque([self.state])
+        while queue:
+            node = queue.popleft()
+            for nb in self._adj.get(node, []):
+                if nb not in visited and 0 <= nb < 64:
+                    visited[nb] = node
+                    if nb == target:
+                        # Reconstruct path
+                        path = [nb]
+                        while visited[path[-1]] is not None:
+                            path.append(visited[path[-1]])
+                        return list(reversed(path))
+                    queue.append(nb)
+        return [self.state, target]  # fallback: direct jump
+
+    def transition(self, target_symbol, contact_type=None):
+        """
+        Execute transition from current state to target symbol.
+        Returns list of intermediate states traversed.
+        """
+        path = self.bfs_path(target_symbol)
+
+        traversed = []
+        for sym in path[1:]:  # skip current state
+            self.state = sym
+            self.history.append(sym)
+            traversed.append(sym)
+
+            # ChVS gearbox: react to contact feedback
+            if contact_type is not None:
+                self.chvs = chvs_gearbox(contact_type, self.chvs)
+            self.chvs_history.append(self.chvs)
+
+        return traversed
+
+    def generate_kata(self, length=7):
+        """
+        Generate a kata (movement sequence) respecting Scarab rules.
+
+        Rules:
+        1. Change ≤2 lines per tact
+        2. Anti-circle: no return to same symbol within 4 tacts
+        3. Odd series: {1, 3, 5, 7}
+        4. Camouflage/threat: alternate dominant side
+        5. Stay within mastery-level symbols
+        """
+        self.state = 0  # Reset to ready
+        kata = [0]
+        recent = [0]
+
+        for _ in range(length - 1):
+            neighbors = self._adj.get(self.state, [])
+
+            # Filter by mastery level
+            candidates = [n for n in neighbors
+                          if n in self.available_symbols]
+
+            # Anti-circle: no return to last 4
+            filtered = [n for n in candidates if n not in recent[-4:]]
+            if not filtered:
+                filtered = candidates if candidates else neighbors
+
+            # Camouflage: prefer switching dominant side
+            current_left = bool(self.state & LEFT) or bool(self.state & DIAG2)
+            preferred = []
+            for c in filtered:
+                c_right = bool(c & RIGHT) or bool(c & DIAG1)
+                if current_left != c_right:
+                    continue
+                preferred.append(c)
+
+            if preferred:
+                next_sym = self.rng.choice(preferred)
+            elif filtered:
+                next_sym = self.rng.choice(filtered)
+            else:
+                next_sym = self.rng.choice(list(range(64)))
+
+            self.transition(next_sym)
+            kata.append(self.state)
+            recent.append(self.state)
+            if len(recent) > 7:
+                recent.pop(0)
+
+        return kata
+
+    def generate_training_session(self, duration_minutes=45):
+        """
+        Generate a complete training session plan.
+
+        Format:
+          0-5 min:   Warmup (random level-1 symbols)
+          5-15 min:  Technique (pairs of transitions)
+          15-30 min: Kata (sequences of 5-7 tacts)
+          30-40 min: Improvisation (automaton as opponent)
+          40-45 min: Cooldown (slow transitions)
+
+        Returns: dict with blocks, each containing symbol sequences
+        """
+        session = {}
+
+        # Warmup: single symbols from groups 1-2
+        warmup_syms = [s for s in range(64) if get_group(s) in [1, 2]]
+        session['warmup'] = {
+            'duration': '0-5 min',
+            'symbols': [self.rng.choice(warmup_syms)
+                        for _ in range(10)],
+            'instruction': 'Hold each position 30 sec. ChVS: FIST only.',
+        }
+
+        # Technique: pairs
+        pairs = []
+        for _ in range(8):
+            a = self.rng.choice(self.available_symbols)
+            nbs = [n for n in self._adj.get(a, [])
+                   if n in self.available_symbols]
+            if nbs:
+                b = self.rng.choice(nbs)
+                pairs.append((a, b))
+        session['technique'] = {
+            'duration': '5-15 min',
+            'pairs': pairs,
+            'instruction': 'Transition between pairs. 1 min per pair.',
+        }
+
+        # Kata: sequences
+        katas = []
+        kata_len = min(3 + self.mastery, 7)  # 4 at level 1, 7 at level 4+
+        for _ in range(4):
+            k = self.generate_kata(length=kata_len)
+            katas.append(k)
+        session['kata'] = {
+            'duration': '15-30 min',
+            'sequences': katas,
+            'instruction': f'Execute kata of {kata_len} tacts. All ChVS modes.',
+        }
+
+        # Improvisation: automaton-opponent generates challenges
+        challenges = []
+        for _ in range(5):
+            target = self.rng.choice(self.available_symbols)
+            grp = get_group(target)
+            challenges.append({
+                'symbol': target,
+                'group': grp,
+                'response_time': max(1.0, 4.0 - self.mastery * 0.5),
+            })
+        session['improvisation'] = {
+            'duration': '30-40 min',
+            'challenges': challenges,
+            'instruction': 'Automaton shows target → execute within time limit.',
+        }
+
+        # Cooldown: slow level-1 transitions
+        session['cooldown'] = {
+            'duration': '40-45 min',
+            'symbols': [self.rng.choice(warmup_syms)
+                        for _ in range(5)],
+            'instruction': 'Slow transitions. Deep breathing. ChVS: GRAB (relaxed).',
+        }
+
+        return session
+
+    def describe_state(self):
+        """Human-readable description of current state."""
+        grp = get_group(self.state)
+        cplx = symbol_complexity(self.state)
+        group_names = {
+            1: 'Soft base', 2: 'Hard base', 3: 'MVS (wrist)',
+            4: 'Rotational', 5: 'Weapon', 6: 'Master', 7: 'Peak defense'
+        }
+        return (f"Symbol: {self.state:06b} | Group {grp} ({group_names[grp]}) | "
+                f"Complexity: {cplx} | ChVS: {CHVS_NAMES[self.chvs]} | "
+                f"Mastery: {self.mastery}")
+
+
 def symbol_to_ascii(sym, size=5):
     """Convert a 6-bit symbol to ASCII art."""
     grid = [[' ' for _ in range(size)] for _ in range(size)]
@@ -677,35 +966,20 @@ TRAINING_PLAN = {
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("SCARAB ALGORITHM v2 — Four-Sphere Movement Generator")
-    print("Based on Kryukov's ETD / Deformed Figure-8")
+    print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
+    print("Match-Stick Automaton + ChVS Gearbox")
     print("BVS(3D) + SVS(2D) + MVS(1D) + ChVS(0D) = π")
     print("=" * 60)
 
-    # 1. Four-level Scarab at different mastery levels
-    print("\n--- Four-Level Scarab: Mastery Progression ---")
-    level_names = {1: 'Linear (BVS only)', 2: 'Loops (BVS+SVS)',
-                   3: 'Volume (BVS+SVS+MVS)', 4: 'Satellite (all 4 spheres)',
-                   5: 'Master (RESONANCE)'}
-    for level in [1, 2, 3, 4, 5]:
-        traj = four_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5,
-                                  k_mvs=1.0, k_chvs=1.0,
-                                  mastery_level=level, steps=100, seed=42)
-        # Calculate trajectory complexity (path length)
-        path_len = sum(math.sqrt((traj[i+1][0]-traj[i][0])**2 +
-                                  (traj[i+1][1]-traj[i][1])**2)
-                       for i in range(len(traj)-1))
-        print(f"  Level {level} ({level_names[level]}): path_length={path_len:.1f}")
-
-    # 2. Alphabet: 76 symbols overview
+    # 1. Alphabet overview
     print("\n--- Movement Alphabet: 76 Symbols ---")
     print(f"  Base symbols (6-bit):  {len(BASE_SYMBOLS)} (= 2^6 = 64)")
     print(f"  Half-line symbols:     {len(HALF_SYMBOLS)} (= 76 - 64 = 12)")
     print(f"  Total:                 {len(BASE_SYMBOLS) + len(HALF_SYMBOLS)}")
-    print(f"  × 4 ChVS modifiers:   {(len(BASE_SYMBOLS) + len(HALF_SYMBOLS)) * 4}"
-          f" (≈ 310 ETD volumes)")
+    print(f"  x 4 ChVS modifiers:   {(len(BASE_SYMBOLS) + len(HALF_SYMBOLS)) * 4}"
+          f" (= 304 ~ 310 ETD volumes)")
 
-    # 3. Group distribution
+    # 2. Group distribution
     print("\n--- Kryukov's 7 Groups Distribution ---")
     group_counts = {g: 0 for g in range(1, 8)}
     for sym in range(64):
@@ -717,56 +991,112 @@ if __name__ == '__main__':
         print(f"  Group {g} ({group_names[g]}): {group_counts[g]} symbols")
     print(f"  Total: {sum(group_counts.values())}")
 
-    # 4. Symbol examples with ChVS modifiers
-    print("\n--- Symbol Examples with ChVS (finger) Modifiers ---")
-    examples = ['empty', 'diag1', 'cross_d', 'K_shape', 'square', 'sq_full']
-    for name in examples:
-        sym = SYMBOLS[name]
-        grp = get_group(sym)
-        cplx = symbol_complexity(sym)
-        print(f"\n  {name} (group {grp}, complexity {cplx}):")
-        for line in symbol_to_ascii(sym).split('\n'):
-            print(f"    {line}")
-        print(f"    ChVS variants: fist(strike), palm(block), point(thrust), grab(capture)")
+    # 3. ChVS Gearbox demonstration
+    print("\n--- ChVS Gearbox (Micro-Correction) ---")
+    contacts = [
+        (CONTACT_HARD, "Hit solid target"),
+        (CONTACT_SOFT, "Hit soft target"),
+        (CONTACT_EMPTY, "Missed / no contact"),
+        (CONTACT_BLOCK, "Hit opponent's block"),
+    ]
+    for ct, desc in contacts:
+        response = chvs_gearbox(ct)
+        vec = CHVS_VECTORS[response]
+        print(f"  Contact: {desc:25s} -> ChVS: {CHVS_NAMES[response]:5s} "
+              f"(force={vec[0]:.1f}, spread={vec[1]:.1f}, penetr={vec[2]:.1f})")
 
-    # 5. Generate kata with group annotation
-    print("\n--- Generated Kata (7 tacts) with Groups ---")
-    kata = generate_kata(length=7, seed=42)
-    for i, sym in enumerate(kata):
-        grp = get_group(sym)
-        cplx = symbol_complexity(sym)
-        print(f"  Tact {i+1}: {sym:06b} → Group {grp} ({group_names[grp]})"
-              f", complexity={cplx}")
+    # 4. Match-Stick Automaton at each mastery level
+    print("\n--- Match-Stick Automaton: Mastery Progression ---")
+    for level in [1, 2, 3, 4, 5]:
+        msa = MatchStickAutomaton(mastery_level=level, seed=42)
+        kata = msa.generate_kata(length=7)
+        groups_used = set(get_group(s) for s in kata)
+        print(f"  Level {level}: {len(msa.available_symbols)} symbols available | "
+              f"kata groups: {sorted(groups_used)} | "
+              f"kata: {' -> '.join(f'{s:06b}' for s in kata)}")
 
-    # 6. Training plan with symbol counts per quarter
+    # 5. Full attack cycle example
+    print("\n--- Full Attack Cycle (MSA + ChVS) ---")
+    msa = MatchStickAutomaton(mastery_level=4, seed=7)
+    attack_sequence = [
+        (0,           CONTACT_EMPTY, "Ready position"),
+        (DIAG1,       CONTACT_EMPTY, "Wind-up (diagonal)"),
+        (LEFT|DIAG1|DIAG2, CONTACT_HARD, "Strike with cover (K-shape)"),
+        (DIAG1|DIAG2, CONTACT_BLOCK, "Double block (X)"),
+        (BOTTOM|RIGHT, CONTACT_SOFT, "Intercept (corner)"),
+        (DIAG2,       CONTACT_EMPTY, "Thrust (anti-diagonal)"),
+        (0,           None,          "Return to ready"),
+    ]
+    for target, contact, desc in attack_sequence:
+        msa.transition(target, contact)
+        grp = get_group(msa.state)
+        print(f"  {desc:35s} | {msa.state:06b} | G{grp} | "
+              f"ChVS: {CHVS_NAMES[msa.chvs]}")
+    print(f"  Cycle: {len(attack_sequence)} tacts (ODD!)")
+
+    # 6. Four-level Scarab trajectory comparison
+    print("\n--- Four-Level Scarab: Trajectory Complexity ---")
+    level_names = {1: 'Linear (BVS)', 2: 'Loops (+SVS)',
+                   3: 'Volume (+MVS)', 4: 'Satellite (+ChVS)',
+                   5: 'RESONANCE'}
+    for level in [1, 2, 3, 4, 5]:
+        traj = four_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5,
+                                  k_mvs=1.0, k_chvs=1.0,
+                                  mastery_level=level, steps=100, seed=42)
+        path_len = sum(math.sqrt((traj[i+1][0]-traj[i][0])**2 +
+                                  (traj[i+1][1]-traj[i][1])**2)
+                       for i in range(len(traj)-1))
+        print(f"  Level {level} ({level_names[level]:20s}): path={path_len:.1f}")
+
+    # 7. Training session generation
+    print("\n--- Generated Training Session (Level 3) ---")
+    msa3 = MatchStickAutomaton(mastery_level=3, seed=42)
+    session = msa3.generate_training_session(duration_minutes=45)
+    for block_name, block_data in session.items():
+        dur = block_data.get('duration', '?')
+        instr = block_data.get('instruction', '')
+        print(f"\n  [{dur}] {block_name.upper()}")
+        print(f"    {instr}")
+        if 'symbols' in block_data:
+            syms = block_data['symbols']
+            print(f"    Symbols: {', '.join(f'{s:06b}' for s in syms[:5])}...")
+        if 'pairs' in block_data:
+            for a, b in block_data['pairs'][:3]:
+                print(f"    Pair: {a:06b} -> {b:06b} "
+                      f"(G{get_group(a)} -> G{get_group(b)})")
+            if len(block_data['pairs']) > 3:
+                print(f"    ...and {len(block_data['pairs'])-3} more pairs")
+        if 'sequences' in block_data:
+            for i, k in enumerate(block_data['sequences'][:2]):
+                print(f"    Kata {i+1}: {' -> '.join(f'{s:06b}' for s in k)}")
+        if 'challenges' in block_data:
+            for ch in block_data['challenges'][:3]:
+                print(f"    Target: {ch['symbol']:06b} G{ch['group']} "
+                      f"(respond in {ch['response_time']:.1f}s)")
+
+    # 8. Training plan with symbol counts per quarter
     print("\n--- Annual Training Plan (Kryukov) ---")
     for q, info in TRAINING_PLAN.items():
-        # Count symbols available at this level
         available = sum(1 for s in range(64) if get_group(s) in info['groups'])
-        print(f"\n  {q}: {info['name']}")
-        print(f"    Kata length: {info['kata_length']} tacts (ODD!)")
-        print(f"    Deformation k: {info['k_range'][0]:.1f} - {info['k_range'][1]:.1f}")
-        print(f"    Groups: {info['groups']} → {available} symbols available")
-        print(f"    Sessions: {info['sessions']}")
-        print(f"    → {info['description']}")
+        print(f"  {q}: {info['name']:35s} | kata={info['kata_length']} "
+              f"| groups={info['groups']} | {available} symbols")
 
-    # 7. Graph statistics (76-symbol version)
-    print("\n--- Alphabet Graph Statistics (76 symbols) ---")
+    # 9. Graph statistics
+    print("\n--- Alphabet Graph Statistics ---")
     all_64 = list(range(64))
     total_edges = 0
     for sym in all_64:
         neighbors = get_neighbors(sym, max_changes=2)
         total_edges += len(neighbors)
     total_edges //= 2
-    print(f"  Base nodes (6-bit): {len(all_64)}")
-    print(f"  Half-line nodes:    {len(HALF_SYMBOLS)}")
-    print(f"  Total nodes:        {len(all_64) + len(HALF_SYMBOLS)}")
-    print(f"  Base edges (≤2 changes): {total_edges}")
-    print(f"  Avg degree: {2 * total_edges / len(all_64):.1f}")
-    # Diameter estimate via BFS from empty
-    from collections import deque
+    print(f"  Nodes: {len(all_64)} base + {len(HALF_SYMBOLS)} half = "
+          f"{len(all_64) + len(HALF_SYMBOLS)}")
+    print(f"  Edges (<=2 changes): {total_edges} | "
+          f"Avg degree: {2*total_edges/len(all_64):.1f} | "
+          f"Density: {2*total_edges/(64*63):.3f}")
+    from collections import deque as _deque
     visited = {0: 0}
-    queue = deque([0])
+    queue = _deque([0])
     while queue:
         node = queue.popleft()
         for nb in get_neighbors(node, max_changes=2):
@@ -774,8 +1104,8 @@ if __name__ == '__main__':
                 visited[nb] = visited[node] + 1
                 queue.append(nb)
     max_dist = max(visited.values())
-    print(f"  Diameter (from empty): {max_dist} steps")
-    print(f"  (Miller's law: 7±2 → {max_dist} is within range!)")
+    print(f"  Diameter (from empty): {max_dist} | "
+          f"Miller's law: 7+/-2 -> {max_dist} is within range!")
 
     print("\n" + "=" * 60)
-    print("Complete. 76 symbols × 4 ChVS = 304 states. ≈ 310 ETD volumes.")
+    print("Complete. MSA: 76 symbols x 4 ChVS = 304 states ~ 310 ETD volumes.")
