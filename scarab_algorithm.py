@@ -14516,6 +14516,242 @@ class SessionJournal:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# TRAINING PLAN OPTIMIZER (v43)
+# ═══════════════════════════════════════════════════════════
+
+class TrainingPlanOptimizer:
+    """
+    Generates optimized training plans based on student profile.
+
+    Considers weaknesses, goals, available time, and progression.
+    """
+
+    def __init__(self, student, sessions_per_week=4):
+        self.student = student
+        self.sessions_per_week = sessions_per_week
+
+    def optimize(self, n_weeks=4):
+        """Generate an optimized multi-week training plan."""
+        st = self.student
+        ml = st.mastery_level
+        scores = [s['pct'] for s in st.sessions]
+        avg = sum(scores) / len(scores) if scores else 50
+        prof = compute_group_proficiency(st)
+
+        plan = []
+        for week in range(1, n_weeks + 1):
+            week_plan = {
+                'week': week,
+                'sessions': [],
+                'focus': '',
+                'goal': '',
+            }
+
+            # Determine focus for the week
+            weak_groups = [g for g in range(1, 8)
+                          if prof[g]['avg'] < 70]
+
+            if week <= n_weeks // 2:
+                # First half: address weaknesses
+                if weak_groups:
+                    focus_g = weak_groups[week % len(weak_groups) - 1]
+                    week_plan['focus'] = f'Group {focus_g} strengthening'
+                else:
+                    week_plan['focus'] = 'Consolidation'
+            else:
+                # Second half: push boundaries
+                week_plan['focus'] = 'Advancement & challenge'
+
+            target = min(100, avg + week * 2)
+            week_plan['goal'] = f'Target avg: {target:.0f}%'
+
+            for day in range(1, self.sessions_per_week + 1):
+                if day == 1:
+                    tmpl = 'warmup'
+                elif day == self.sessions_per_week:
+                    tmpl = 'speed_run' if ml >= 3 else 'drill_zone'
+                elif weak_groups and day % 2 == 0:
+                    tmpl = 'drill_zone'
+                else:
+                    tmpl = 'group_flow' if ml >= 2 else 'warmup'
+
+                week_plan['sessions'].append({
+                    'day': day,
+                    'template': tmpl,
+                    'duration': 'standard',
+                })
+
+            plan.append(week_plan)
+
+        return plan
+
+    def format_plan(self, plan):
+        """Format training plan."""
+        lines = [f"Training Plan: {self.student.name}"]
+        lines.append("═" * 55)
+
+        for wp in plan:
+            lines.append(f"\n  Week {wp['week']}: {wp['focus']}")
+            lines.append(f"    Goal: {wp['goal']}")
+            for s in wp['sessions']:
+                lines.append(f"      Day {s['day']}: "
+                             f"[{s['template']}]")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SYMBOL SIMILARITY (v43)
+# ═══════════════════════════════════════════════════════════
+
+def symbol_similarity(sym_a, sym_b):
+    """
+    Compute similarity between two symbols (0-1 scale).
+
+    Based on: same group, binary hamming distance, zone proximity.
+    """
+    # Group similarity (0 or 0.4)
+    ga, gb = get_group(sym_a), get_group(sym_b)
+    group_sim = 0.4 if ga == gb else 0
+
+    # Binary hamming distance (6-bit)
+    xor = sym_a ^ sym_b
+    hamming = bin(xor).count('1')
+    hamming_sim = (6 - hamming) / 6 * 0.3
+
+    # Zone proximity
+    za, zb = get_zones(sym_a), get_zones(sym_b)
+    if isinstance(za, tuple) and isinstance(zb, tuple):
+        dist = abs(za[0] - zb[0]) + abs(za[1] - zb[1])
+        zone_sim = max(0, (6 - dist) / 6) * 0.3
+    elif za == zb:
+        zone_sim = 0.3
+    else:
+        zone_sim = 0
+
+    return round(group_sim + hamming_sim + zone_sim, 3)
+
+
+def find_similar_symbols(target_sym, top_n=5):
+    """Find the most similar symbols to the target."""
+    similarities = []
+    for sym in range(64):
+        if sym == target_sym:
+            continue
+        sim = symbol_similarity(target_sym, sym)
+        similarities.append((sym, sim))
+
+    similarities.sort(key=lambda x: x[1], reverse=True)
+    return similarities[:top_n]
+
+
+def format_similarity(target, similar):
+    """Format similarity results."""
+    lines = [f"Symbols similar to S{target:02d} "
+             f"(G{get_group(target)})"]
+    lines.append("─" * 40)
+
+    for sym, sim in similar:
+        bar_len = int(sim * 20)
+        bar = '▓' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  S{sym:02d} G{get_group(sym)}  "
+                     f"[{bar}] {sim:.3f}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# RANK SYSTEM (v43)
+# ═══════════════════════════════════════════════════════════
+
+RANKS = [
+    {'name': 'Initiate', 'min_score': 0, 'min_sessions': 0,
+     'min_mastery': 0, 'tier': 1},
+    {'name': 'Novice', 'min_score': 0, 'min_sessions': 3,
+     'min_mastery': 1, 'tier': 2},
+    {'name': 'Apprentice', 'min_score': 55, 'min_sessions': 5,
+     'min_mastery': 2, 'tier': 3},
+    {'name': 'Adept', 'min_score': 65, 'min_sessions': 10,
+     'min_mastery': 3, 'tier': 4},
+    {'name': 'Specialist', 'min_score': 72, 'min_sessions': 15,
+     'min_mastery': 3, 'tier': 5},
+    {'name': 'Veteran', 'min_score': 78, 'min_sessions': 20,
+     'min_mastery': 4, 'tier': 6},
+    {'name': 'Expert', 'min_score': 83, 'min_sessions': 25,
+     'min_mastery': 5, 'tier': 7},
+    {'name': 'Master', 'min_score': 88, 'min_sessions': 35,
+     'min_mastery': 6, 'tier': 8},
+    {'name': 'Grand Master', 'min_score': 93, 'min_sessions': 50,
+     'min_mastery': 7, 'tier': 9},
+    {'name': 'Legend', 'min_score': 97, 'min_sessions': 100,
+     'min_mastery': 7, 'tier': 10},
+]
+
+
+def compute_rank(student):
+    """Compute student's current rank."""
+    scores = [s['pct'] for s in student.sessions]
+    n = len(scores)
+    avg = sum(scores) / n if scores else 0
+    ml = student.mastery_level
+
+    current_rank = RANKS[0]
+    next_rank = RANKS[1] if len(RANKS) > 1 else None
+
+    for i, rank in enumerate(RANKS):
+        if (avg >= rank['min_score'] and
+                n >= rank['min_sessions'] and
+                ml >= rank['min_mastery']):
+            current_rank = rank
+            next_rank = RANKS[i + 1] if i + 1 < len(RANKS) else None
+        else:
+            break
+
+    # Progress to next rank
+    progress = 100
+    if next_rank:
+        reqs_met = 0
+        reqs_total = 3
+        if avg >= next_rank['min_score']:
+            reqs_met += 1
+        if n >= next_rank['min_sessions']:
+            reqs_met += 1
+        if ml >= next_rank['min_mastery']:
+            reqs_met += 1
+        progress = round(reqs_met / reqs_total * 100)
+
+    return {
+        'rank': current_rank,
+        'next_rank': next_rank,
+        'progress_to_next': progress,
+        'tier': current_rank['tier'],
+    }
+
+
+def format_rank(rank_result, student_name=''):
+    """Format rank display."""
+    name = f" — {student_name}" if student_name else ''
+    r = rank_result
+    lines = [f"Rank{name}"]
+    lines.append("─" * 40)
+    lines.append(f"  Current: {r['rank']['name']} "
+                 f"(Tier {r['tier']})")
+
+    if r['next_rank']:
+        bar_len = r['progress_to_next'] // 5
+        bar = '▓' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  Next: {r['next_rank']['name']} "
+                     f"[{bar}] {r['progress_to_next']}%")
+        lines.append(f"    Requires: score≥{r['next_rank']['min_score']}%  "
+                     f"sessions≥{r['next_rank']['min_sessions']}  "
+                     f"mastery≥L{r['next_rank']['min_mastery']}")
+    else:
+        lines.append("  MAX RANK ACHIEVED")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -16130,3 +16366,25 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v42: Adaptive quiz, group proficiency, session journal.")
+
+    # 138. Training Plan Optimizer
+    print("\n--- Training Plan Optimizer ---")
+    tpo = TrainingPlanOptimizer(sim_school.students['Anna'],
+                                sessions_per_week=4)
+    plan = tpo.optimize(n_weeks=4)
+    print(tpo.format_plan(plan))
+
+    # 139. Symbol Similarity
+    print("\n--- Symbol Similarity ---")
+    for target in [0, 15, 32, 63]:
+        sim_list = find_similar_symbols(target, top_n=4)
+        print(format_similarity(target, sim_list))
+
+    # 140. Rank System
+    print("\n--- Rank System ---")
+    for sname in ['Anna', 'Ivan', 'Lena', 'Max']:
+        rk = compute_rank(sim_school.students[sname])
+        print(format_rank(rk, student_name=sname))
+
+    print("\n" + "=" * 60)
+    print("v43: Training optimizer, symbol similarity, rank system.")

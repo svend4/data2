@@ -4877,3 +4877,38 @@ print(journal.format_journal())
 ```
 
 Настроение: 1-5 (😞→😊). Теги и фильтрация.
+
+---
+
+## Часть 58: Optimizer, similarity, ranks (v43)
+
+### 58.1 Оптимизатор плана
+
+```python
+tpo = TrainingPlanOptimizer(student, sessions_per_week=4)
+plan = tpo.optimize(n_weeks=4)
+print(tpo.format_plan(plan))
+```
+
+Первая половина = устранение слабостей, вторая = challenge.
+
+### 58.2 Похожесть символов
+
+```python
+sim = symbol_similarity(sym_a, sym_b)  # 0-1
+similar = find_similar_symbols(target, top_n=5)
+print(format_similarity(target, similar))
+```
+
+3 фактора: group match (0.4), hamming distance (0.3), zone proximity (0.3).
+
+### 58.3 Ранговая система
+
+10 рангов: Initiate → Legend (Tier 1-10).
+
+```python
+rk = compute_rank(student)
+print(format_rank(rk, student_name='Anna'))
+```
+
+Каждый ранг: min_score + min_sessions + min_mastery.
