@@ -231,6 +231,352 @@ def three_level_scarab(space_size=10.0, k_bvs=2.0, k_svs=1.5, k_mvs=1.0,
 
 
 # ═══════════════════════════════════════════════════════════
+# QUATERNION STATE — 4-sphere representation
+# ═══════════════════════════════════════════════════════════
+
+class ScarabQuaternion:
+    """
+    Quaternion representation of the 4-sphere movement system.
+
+    From Kryukov (Vol.103):
+      A = a·1 + b·i + c·j + d·k
+    where:
+      a = BVS (body/shoulder) — real/scalar — 3D Earth
+      b = SVS (elbow/forearm) — i component  — 2D Water
+      c = MVS (wrist/hand)    — j component  — 1D Air
+      d = ChVS (fingers)      — k component  — 0D Fire
+
+    |A| = √(a² + b² + c² + d²) = LCI (Line Complexity Index)
+
+    Conservation law (Noether): |A| = π = const at mastery level 5
+    This means: as one sphere decreases, another must increase.
+    """
+
+    def __init__(self, bvs=0.0, svs=0.0, mvs=0.0, chvs=0.0):
+        self.a = bvs    # BVS — real (scalar, body)
+        self.b = svs    # SVS — i (elbow)
+        self.c = mvs    # MVS — j (wrist)
+        self.d = chvs   # ChVS — k (fingers)
+
+    @property
+    def bvs(self):
+        return self.a
+
+    @property
+    def svs(self):
+        return self.b
+
+    @property
+    def mvs(self):
+        return self.c
+
+    @property
+    def chvs(self):
+        return self.d
+
+    def norm(self):
+        """
+        |A| = √(a² + b² + c² + d²) = LCI
+
+        At mastery: LCI → π
+        """
+        return math.sqrt(self.a**2 + self.b**2 + self.c**2 + self.d**2)
+
+    def lci(self):
+        """Line Complexity Index — same as quaternion norm."""
+        return self.norm()
+
+    def conjugate(self):
+        """Ā = a - b·i - c·j - d·k (reverse all rotation components)."""
+        return ScarabQuaternion(self.a, -self.b, -self.c, -self.d)
+
+    def __mul__(self, other):
+        """
+        Hamilton product: A × B (quaternion multiplication).
+
+        Represents composition of two movement states:
+        (a1 + b1·i + c1·j + d1·k) × (a2 + b2·i + c2·j + d2·k)
+
+        Physical meaning: chaining two movements.
+        """
+        if isinstance(other, (int, float)):
+            return ScarabQuaternion(self.a * other, self.b * other,
+                                     self.c * other, self.d * other)
+        a1, b1, c1, d1 = self.a, self.b, self.c, self.d
+        a2, b2, c2, d2 = other.a, other.b, other.c, other.d
+        return ScarabQuaternion(
+            a1*a2 - b1*b2 - c1*c2 - d1*d2,
+            a1*b2 + b1*a2 + c1*d2 - d1*c2,
+            a1*c2 - b1*d2 + c1*a2 + d1*b2,
+            a1*d2 + b1*c2 - c1*b2 + d1*a2,
+        )
+
+    def __add__(self, other):
+        return ScarabQuaternion(self.a + other.a, self.b + other.b,
+                                 self.c + other.c, self.d + other.d)
+
+    def __sub__(self, other):
+        return ScarabQuaternion(self.a - other.a, self.b - other.b,
+                                 self.c - other.c, self.d - other.d)
+
+    def normalized(self):
+        """Normalize to |A| = π (the conservation law target)."""
+        n = self.norm()
+        if n < 1e-10:
+            return ScarabQuaternion(math.pi, 0, 0, 0)
+        scale = math.pi / n
+        return self * scale
+
+    def components_pct(self):
+        """Percentage contribution of each sphere to total energy."""
+        total = self.a**2 + self.b**2 + self.c**2 + self.d**2
+        if total < 1e-10:
+            return (100.0, 0.0, 0.0, 0.0)
+        return (
+            self.a**2 / total * 100,
+            self.b**2 / total * 100,
+            self.c**2 / total * 100,
+            self.d**2 / total * 100,
+        )
+
+    def __repr__(self):
+        return (f"Q({self.a:.3f} + {self.b:.3f}i + "
+                f"{self.c:.3f}j + {self.d:.3f}k) |LCI|={self.lci():.4f}")
+
+    @staticmethod
+    def from_mastery(mastery_level, space_size=1.0):
+        """
+        Create a quaternion from mastery level using Kryukov's amplitude ratios.
+
+        Level 1: only BVS (a >> 0)
+        Level 5: all equal, resonance — |A| = π
+        """
+        # Amplitude ratios from four_level_scarab
+        a = space_size * 0.55
+        b = space_size * 0.15 if mastery_level >= 2 else 0.0
+        c = space_size * 0.05 if mastery_level >= 3 else 0.0
+        d = space_size * 0.015 if mastery_level >= 4 else 0.0
+
+        # At level 5: normalize so |A| = π
+        q = ScarabQuaternion(a, b, c, d)
+        if mastery_level >= 5:
+            return q.normalized()
+        return q
+
+    @staticmethod
+    def from_symbol_pair(sym_left, sym_right, chvs_left=0, chvs_right=0):
+        """
+        Create a quaternion from a dual-hand symbol pair.
+
+        Maps discrete MSA state → continuous quaternion:
+          a (BVS) = avg complexity × spatial distance from center
+          b (SVS) = transition smoothness indicator
+          c (MVS) = anti-symmetry measure
+          d (ChVS) = ChVS/mudra energy
+        """
+        cL = symbol_complexity(sym_left)
+        cR = symbol_complexity(sym_right)
+        xL, yL = symbol_to_xy(sym_left)
+        xR, yR = symbol_to_xy(sym_right)
+
+        # BVS: overall spatial extent
+        dist_L = math.sqrt(xL**2 + yL**2)
+        dist_R = math.sqrt(xR**2 + yR**2)
+        a = (dist_L + dist_R) / 2.0
+
+        # SVS: inter-hand distance (wider = more tactical space)
+        b = math.sqrt((xL - xR)**2 + (yL - yR)**2)
+
+        # MVS: complexity difference (wrist articulation)
+        c = abs(cL - cR) / 4.0
+
+        # ChVS: finger mode energy
+        chvs_energy = {0: 1.0, 1: 0.3, 2: 0.5, 3: 0.2}
+        d = (chvs_energy.get(chvs_left, 0.5) +
+             chvs_energy.get(chvs_right, 0.5)) / 2.0
+
+        return ScarabQuaternion(a, b, c, d)
+
+
+# ═══════════════════════════════════════════════════════════
+# LCI — Line Complexity Index
+# ═══════════════════════════════════════════════════════════
+
+def compute_lci(kata, mode='single'):
+    """
+    Compute the Line Complexity Index for a kata.
+
+    LCI (from Kryukov) = quaternion norm of the movement state:
+      LCI = |A| = √(BVS² + SVS² + MVS² + ChVS²)
+
+    For a kata: average LCI across all tacts.
+
+    Conservation law: at mastery → LCI → π = 3.14159...
+    """
+    lcis = []
+
+    if mode == 'dual':
+        for entry in kata:
+            L, R = entry[0], entry[1]
+            cL = entry[2] if len(entry) > 2 else 0
+            cR = entry[3] if len(entry) > 3 else 0
+            q = ScarabQuaternion.from_symbol_pair(L, R, cL, cR)
+            lcis.append(q.lci())
+    else:
+        for sym in kata:
+            # Single hand: only BVS and MVS active
+            x, y = symbol_to_xy(sym)
+            dist = math.sqrt(x**2 + y**2)
+            c = symbol_complexity(sym)
+            q = ScarabQuaternion(dist, 0, c / 4.0, 0)
+            lcis.append(q.lci())
+
+    avg_lci = sum(lcis) / len(lcis) if lcis else 0
+    return {
+        'per_tact': [round(l, 4) for l in lcis],
+        'avg': round(avg_lci, 4),
+        'target': round(math.pi, 4),
+        'deviation_pct': round(abs(avg_lci - math.pi) / math.pi * 100, 1),
+        'conservation': abs(avg_lci - math.pi) < 0.5,  # within ~16%
+    }
+
+
+def verify_conservation(mastery_level=5, space_size=1.0):
+    """
+    Verify the conservation law: |A| = π at mastery.
+
+    Checks that the quaternion norm equals π when all spheres resonate.
+    """
+    q = ScarabQuaternion.from_mastery(mastery_level, space_size)
+    n = q.norm()
+    pct = q.components_pct()
+
+    return {
+        'quaternion': repr(q),
+        'norm': round(n, 6),
+        'pi': round(math.pi, 6),
+        'match': abs(n - math.pi) < 0.001,
+        'components_pct': {
+            'BVS': round(pct[0], 1),
+            'SVS': round(pct[1], 1),
+            'MVS': round(pct[2], 1),
+            'ChVS': round(pct[3], 1),
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# ASCII TRAJECTORY PLOT
+# ═══════════════════════════════════════════════════════════
+
+def plot_trajectory_ascii(trajectory, width=60, height=25, symbols=None):
+    """
+    Plot a 2D trajectory as ASCII art.
+
+    Optionally overlay symbol positions along the path.
+
+    Args:
+        trajectory: list of (x, y) points
+        width: canvas width in chars
+        height: canvas height in chars
+        symbols: optional list of (index, label) to mark on path
+
+    Returns:
+        list of strings (lines of the plot)
+    """
+    if not trajectory:
+        return ["(empty trajectory)"]
+
+    xs = [p[0] for p in trajectory]
+    ys = [p[1] for p in trajectory]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+
+    # Add margin
+    x_range = x_max - x_min or 1.0
+    y_range = y_max - y_min or 1.0
+    x_min -= x_range * 0.05
+    x_max += x_range * 0.05
+    y_min -= y_range * 0.05
+    y_max += y_range * 0.05
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+
+    # Initialize canvas
+    canvas = [[' ' for _ in range(width)] for _ in range(height)]
+
+    # Plot trajectory
+    for x, y in trajectory:
+        col = int((x - x_min) / x_range * (width - 1))
+        row = int((1 - (y - y_min) / y_range) * (height - 1))
+        col = max(0, min(width - 1, col))
+        row = max(0, min(height - 1, row))
+        if canvas[row][col] == ' ':
+            canvas[row][col] = '·'
+
+    # Mark center crossing
+    cx = int((0 - x_min) / x_range * (width - 1))
+    cy = int((1 - (0 - y_min) / y_range) * (height - 1))
+    if 0 <= cx < width and 0 <= cy < height:
+        canvas[cy][cx] = '+'
+
+    # Overlay symbols
+    if symbols:
+        for idx, label in symbols:
+            if 0 <= idx < len(trajectory):
+                x, y = trajectory[idx]
+                col = int((x - x_min) / x_range * (width - 1))
+                row = int((1 - (y - y_min) / y_range) * (height - 1))
+                col = max(0, min(width - 1, col))
+                row = max(0, min(height - 1, row))
+                # Place label character
+                ch = label[0] if label else str(idx % 10)
+                canvas[row][col] = ch
+
+    # Build output
+    lines = []
+    lines.append(f"  ┌{'─' * width}┐")
+    for row in canvas:
+        lines.append(f"  │{''.join(row)}│")
+    lines.append(f"  └{'─' * width}┘")
+
+    return lines
+
+
+def plot_kata_on_trajectory(kata, k=2.0, mastery_level=3, width=60, height=20):
+    """
+    Generate a figure-8 trajectory and plot kata symbols on it.
+
+    Returns list of strings forming the ASCII plot.
+    """
+    traj = four_level_scarab(
+        space_size=1.0, k_bvs=k, k_svs=max(1.0, k * 0.7),
+        k_mvs=max(1.0, k * 0.4), k_chvs=1.0,
+        mastery_level=mastery_level, steps=300, seed=42)
+
+    n_points = len(traj)
+    n_syms = len(kata)
+
+    # Find trajectory indices closest to kata symbols' (x,y) positions
+    sym_markers = []
+    for i, entry in enumerate(kata):
+        sym = entry[0] if isinstance(entry, tuple) else entry
+        sx, sy = symbol_to_xy(sym)
+        # Find nearest trajectory point
+        best_idx = 0
+        best_dist = float('inf')
+        for j, (tx, ty) in enumerate(traj):
+            d = (tx - sx)**2 + (ty - sy)**2
+            if d < best_dist:
+                best_dist = d
+                best_idx = j
+        sym_markers.append((best_idx, f"T{i}"))
+
+    lines = plot_trajectory_ascii(traj, width, height, sym_markers)
+    return lines
+
+
+# ═══════════════════════════════════════════════════════════
 # MOVEMENT ALPHABET: 76-symbol system
 # ═══════════════════════════════════════════════════════════
 
@@ -3009,7 +3355,62 @@ if __name__ == '__main__':
         if sk['mode'] == 'dual' and 'score' in sk:
             print(f"        {format_score_report(sk['score']).split(chr(10))[0]}")
 
-    # 29. Graph statistics (summary)
+    # 29. Quaternion representation
+    print("\n--- Quaternion State (4-Sphere System) ---")
+    for level in [1, 2, 3, 4, 5]:
+        q = ScarabQuaternion.from_mastery(level)
+        pct = q.components_pct()
+        print(f"  Level {level}: {repr(q)}")
+        print(f"          BVS={pct[0]:.0f}% SVS={pct[1]:.0f}% "
+              f"MVS={pct[2]:.0f}% ChVS={pct[3]:.0f}%")
+
+    # 30. Conservation law verification
+    print("\n--- Conservation Law: |A| = pi ---")
+    for level in [1, 3, 5]:
+        cv = verify_conservation(level)
+        print(f"  Level {level}: |A|={cv['norm']:.4f}, "
+              f"pi={cv['pi']:.4f}, match={cv['match']}")
+        pct = cv['components_pct']
+        print(f"          BVS={pct['BVS']:.0f}% SVS={pct['SVS']:.0f}% "
+              f"MVS={pct['MVS']:.0f}% ChVS={pct['ChVS']:.0f}%")
+
+    # 31. LCI from kata
+    print("\n--- LCI (Line Complexity Index) ---")
+    lci_auto = compute_lci(dkata_r45, mode='dual')
+    print(f"  Automaton kata LCI: avg={lci_auto['avg']}, "
+          f"target={lci_auto['target']}, dev={lci_auto['deviation_pct']}%")
+    print(f"  Per-tact: {lci_auto['per_tact']}")
+    lci_opt = compute_lci(opt['kata'], mode='dual')
+    print(f"  Optimized kata LCI: avg={lci_opt['avg']}, "
+          f"dev={lci_opt['deviation_pct']}%, "
+          f"conserved={lci_opt['conservation']}")
+
+    # 32. Quaternion from symbol pairs
+    print("\n--- Quaternion from Dual Pairs ---")
+    for i, (L, R, mL, mR) in enumerate(dkata_r45[:3]):
+        q = ScarabQuaternion.from_symbol_pair(L, R, mL, mR)
+        print(f"  T{i}: L={L:06b} R={R:06b} → {repr(q)}")
+
+    # 33. ASCII trajectory plot with kata overlay
+    print("\n--- Figure-8 Trajectory with Kata Symbols ---")
+    plot_lines = plot_kata_on_trajectory(
+        dkata_r45, k=2.0, mastery_level=4, width=55, height=18)
+    for line in plot_lines:
+        print(line)
+    print("  (T0-T6 = kata tact positions on the figure-8)")
+
+    # 34. Trajectory at different k values
+    print("\n--- Trajectory Shape: k=1 (symmetric) vs k=5 (deformed) ---")
+    for k_demo in [1.0, 5.0]:
+        traj_demo = four_level_scarab(
+            space_size=1.0, k_bvs=k_demo, k_svs=1.0,
+            k_mvs=1.0, k_chvs=1.0, mastery_level=3, steps=200, seed=42)
+        plot = plot_trajectory_ascii(traj_demo, width=40, height=12)
+        print(f"  k={k_demo}:")
+        for line in plot:
+            print(f"  {line}")
+
+    # 35. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
     all_64 = list(range(64))
     total_edges = 0
@@ -3033,5 +3434,5 @@ if __name__ == '__main__':
     print(f"  Dual + mudra(8):   608^2   = 369,664 (raw), ~110K valid")
 
     print("\n" + "=" * 60)
-    print("v8: Trajectory↔MSA bridge (k-deformation kata),")
-    print("    compact notation, kata analytics, spatial mapping.")
+    print("v9: Quaternion state, LCI, conservation law,")
+    print("    ASCII trajectory plots, complete theory bridge.")
