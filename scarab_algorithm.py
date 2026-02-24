@@ -18119,6 +18119,345 @@ def format_flow_analysis(bottlenecks, density, group_flow, pred_score):
     return '\n'.join(lines)
 
 
+# ── v53: Training Calendar, Reminder System, Schedule Optimizer ──
+
+
+class TrainingCalendar:
+    """Calendar-based training management.
+
+    Organizes training sessions into weekly/daily slots,
+    tracks adherence, and manages training blocks.
+    """
+
+    DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+    def __init__(self):
+        self.schedule = {d: [] for d in self.DAYS}
+        self.history = []  # completed sessions
+
+    def add_slot(self, day, time_label, session_type='standard',
+                 duration_min=30):
+        """Add a training slot to the calendar."""
+        if day not in self.DAYS:
+            return None
+        slot = {
+            'day': day,
+            'time': time_label,
+            'type': session_type,
+            'duration': duration_min,
+            'status': 'scheduled'
+        }
+        self.schedule[day].append(slot)
+        return slot
+
+    def remove_slot(self, day, time_label):
+        """Remove a training slot."""
+        if day not in self.DAYS:
+            return False
+        self.schedule[day] = [
+            s for s in self.schedule[day]
+            if s['time'] != time_label
+        ]
+        return True
+
+    def get_day_schedule(self, day):
+        """Get all slots for a day."""
+        return self.schedule.get(day, [])
+
+    def get_weekly_summary(self):
+        """Get a summary of the entire week."""
+        total_slots = sum(len(v) for v in self.schedule.values())
+        total_minutes = sum(
+            s['duration']
+            for slots in self.schedule.values()
+            for s in slots
+        )
+        active_days = sum(
+            1 for d in self.DAYS if self.schedule[d]
+        )
+        types = {}
+        for slots in self.schedule.values():
+            for s in slots:
+                t = s['type']
+                types[t] = types.get(t, 0) + 1
+
+        return {
+            'total_slots': total_slots,
+            'total_minutes': total_minutes,
+            'active_days': active_days,
+            'rest_days': 7 - active_days,
+            'session_types': types
+        }
+
+    def mark_completed(self, day, time_label, score=0):
+        """Mark a slot as completed."""
+        for s in self.schedule.get(day, []):
+            if s['time'] == time_label:
+                s['status'] = 'completed'
+                self.history.append({
+                    'day': day, 'time': time_label,
+                    'score': score
+                })
+                return True
+        return False
+
+    def adherence_rate(self):
+        """Calculate schedule adherence rate."""
+        total = sum(len(v) for v in self.schedule.values())
+        completed = sum(
+            1 for slots in self.schedule.values()
+            for s in slots if s['status'] == 'completed'
+        )
+        if total == 0:
+            return 0.0
+        return round(completed / total * 100, 1)
+
+    def suggest_optimal_days(self, target_sessions=5):
+        """Suggest optimal training days for even distribution."""
+        # Prefer alternating days with rest
+        if target_sessions <= 3:
+            return ['Mon', 'Wed', 'Fri'][:target_sessions]
+        elif target_sessions <= 5:
+            return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'][:target_sessions]
+        elif target_sessions <= 6:
+            return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][:target_sessions]
+        return self.DAYS
+
+
+def format_calendar(calendar):
+    """Format training calendar for display."""
+    lines = ["=== Training Calendar ==="]
+    summary = calendar.get_weekly_summary()
+    lines.append(f"Slots: {summary['total_slots']}, "
+                 f"Minutes: {summary['total_minutes']}, "
+                 f"Active days: {summary['active_days']}/7")
+
+    for day in TrainingCalendar.DAYS:
+        slots = calendar.get_day_schedule(day)
+        if slots:
+            slot_str = ', '.join(
+                f"{s['time']}({s['type']},{s['status'][0]})"
+                for s in slots
+            )
+            lines.append(f"  {day}: {slot_str}")
+        else:
+            lines.append(f"  {day}: — rest —")
+
+    lines.append(f"Adherence: {calendar.adherence_rate()}%")
+    return '\n'.join(lines)
+
+
+class ReminderSystem:
+    """Automated reminder system for training sessions.
+
+    Generates reminders based on schedule, streak status,
+    and student performance patterns.
+    """
+
+    REMINDER_TYPES = {
+        'session_due': 'Scheduled training session is due',
+        'streak_risk': 'Your streak is at risk!',
+        'review_due': 'Spaced repetition review cards are due',
+        'milestone_close': 'You are close to a milestone!',
+        'rest_day': 'Today is a rest day. Recovery matters!',
+        'weekly_review': 'Time for your weekly progress review'
+    }
+
+    def __init__(self):
+        self.reminders = []
+        self.dismissed = set()
+
+    def generate_reminders(self, calendar, student=None,
+                           current_day='Mon'):
+        """Generate reminders based on current state."""
+        self.reminders = []
+
+        # Session reminders
+        slots = calendar.get_day_schedule(current_day)
+        if slots:
+            for s in slots:
+                if s['status'] != 'completed':
+                    self.reminders.append({
+                        'type': 'session_due',
+                        'priority': 'high',
+                        'message': f"Training at {s['time']} "
+                                   f"({s['type']}, {s['duration']}min)",
+                        'day': current_day
+                    })
+        else:
+            self.reminders.append({
+                'type': 'rest_day',
+                'priority': 'low',
+                'message': self.REMINDER_TYPES['rest_day'],
+                'day': current_day
+            })
+
+        # Streak risk (if student provided)
+        if student:
+            sessions = student.sessions
+            if len(sessions) >= 2:
+                last_pct = sessions[-1].get('pct', 0)
+                if last_pct < 60:
+                    self.reminders.append({
+                        'type': 'streak_risk',
+                        'priority': 'high',
+                        'message': f"Last score was {last_pct:.0f}% — "
+                                   f"focus on fundamentals!",
+                        'day': current_day
+                    })
+
+            # Milestone proximity
+            n_sessions = len(sessions)
+            milestones = [10, 25, 50, 100]
+            for m in milestones:
+                if n_sessions >= m - 2 and n_sessions < m:
+                    self.reminders.append({
+                        'type': 'milestone_close',
+                        'priority': 'medium',
+                        'message': f"Only {m - n_sessions} sessions "
+                                   f"to {m}-session milestone!",
+                        'day': current_day
+                    })
+
+        # Weekly review (on Sunday)
+        if current_day == 'Sun':
+            self.reminders.append({
+                'type': 'weekly_review',
+                'priority': 'medium',
+                'message': self.REMINDER_TYPES['weekly_review'],
+                'day': current_day
+            })
+
+        return self.reminders
+
+    def dismiss(self, reminder_idx):
+        """Dismiss a reminder by index."""
+        if 0 <= reminder_idx < len(self.reminders):
+            self.dismissed.add(reminder_idx)
+            return True
+        return False
+
+    def active_reminders(self):
+        """Get non-dismissed reminders."""
+        return [r for i, r in enumerate(self.reminders)
+                if i not in self.dismissed]
+
+
+def format_reminders(reminders):
+    """Format reminders for display."""
+    lines = ["=== Reminders ==="]
+    if not reminders:
+        lines.append("  No reminders!")
+        return '\n'.join(lines)
+
+    priority_icons = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}
+    for r in reminders:
+        icon = priority_icons.get(r['priority'], '○')
+        lines.append(f"  {icon} [{r['type']}] {r['message']}")
+    return '\n'.join(lines)
+
+
+class ScheduleOptimizer:
+    """Optimizes training schedules based on student data.
+
+    Considers performance patterns, recovery needs, and
+    session type variety to create balanced schedules.
+    """
+
+    SESSION_TYPES = [
+        {'name': 'standard', 'duration': 30, 'intensity': 'medium'},
+        {'name': 'drill', 'duration': 15, 'intensity': 'high'},
+        {'name': 'review', 'duration': 20, 'intensity': 'low'},
+        {'name': 'assessment', 'duration': 45, 'intensity': 'high'},
+        {'name': 'exploration', 'duration': 25, 'intensity': 'low'}
+    ]
+
+    def __init__(self, student=None):
+        self.student = student
+
+    def optimize(self, sessions_per_week=5, focus='balanced'):
+        """Generate an optimized weekly schedule.
+
+        Focus modes: balanced, intensive, recovery, assessment.
+        """
+        calendar = TrainingCalendar()
+        days = calendar.suggest_optimal_days(sessions_per_week)
+
+        if focus == 'intensive':
+            type_mix = ['drill', 'standard', 'drill',
+                        'standard', 'assessment']
+        elif focus == 'recovery':
+            type_mix = ['review', 'exploration', 'review',
+                        'standard', 'review']
+        elif focus == 'assessment':
+            type_mix = ['standard', 'assessment', 'review',
+                        'assessment', 'standard']
+        else:  # balanced
+            type_mix = ['standard', 'drill', 'review',
+                        'exploration', 'standard']
+
+        times = ['09:00', '10:00', '14:00', '15:00', '16:00']
+
+        for i, day in enumerate(days):
+            idx = i % len(type_mix)
+            stype = type_mix[idx]
+            duration = next(
+                (t['duration'] for t in self.SESSION_TYPES
+                 if t['name'] == stype), 30
+            )
+            time = times[i % len(times)]
+            calendar.add_slot(day, time, stype, duration)
+
+        plan = {
+            'calendar': calendar,
+            'focus': focus,
+            'sessions_per_week': sessions_per_week,
+            'total_minutes': sum(
+                s['duration']
+                for slots in calendar.schedule.values()
+                for s in slots
+            ),
+            'type_distribution': {}
+        }
+
+        for slots in calendar.schedule.values():
+            for s in slots:
+                t = s['type']
+                plan['type_distribution'][t] = \
+                    plan['type_distribution'].get(t, 0) + 1
+
+        return plan
+
+    def suggest_focus(self, student=None):
+        """Suggest optimal focus based on student data."""
+        st = student or self.student
+        if not st or not st.sessions:
+            return 'balanced'
+
+        scores = [s.get('pct', 0) for s in st.sessions]
+        avg = sum(scores) / len(scores)
+        recent = scores[-3:] if len(scores) >= 3 else scores
+        recent_avg = sum(recent) / len(recent)
+
+        if recent_avg < 50:
+            return 'recovery'
+        elif recent_avg > 85:
+            return 'assessment'
+        elif recent_avg > avg + 5:
+            return 'intensive'
+        return 'balanced'
+
+
+def format_schedule_plan(plan):
+    """Format an optimized schedule plan."""
+    lines = [f"=== Optimized Schedule ({plan['focus']}) ==="]
+    lines.append(f"Sessions/week: {plan['sessions_per_week']}, "
+                 f"Total: {plan['total_minutes']}min")
+    lines.append(f"Types: {plan['type_distribution']}")
+    lines.append(format_calendar(plan['calendar']))
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -20112,3 +20451,46 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v52: Symbol graph, transition matrix, flow analyzer.")
+
+    # ── v53 demos ────────────────────────────────────────
+
+    # 170. Training Calendar
+    print("\n--- Training Calendar ---")
+    cal = TrainingCalendar()
+    cal.add_slot('Mon', '09:00', 'standard', 30)
+    cal.add_slot('Mon', '15:00', 'drill', 15)
+    cal.add_slot('Tue', '10:00', 'review', 20)
+    cal.add_slot('Wed', '09:00', 'standard', 30)
+    cal.add_slot('Thu', '14:00', 'exploration', 25)
+    cal.add_slot('Fri', '09:00', 'assessment', 45)
+    cal.mark_completed('Mon', '09:00', score=85)
+    cal.mark_completed('Mon', '15:00', score=90)
+    print(format_calendar(cal))
+
+    # 171. Reminder System
+    print("\n--- Reminder System ---")
+    rs = ReminderSystem()
+    anna_st = sim_school.students['Anna']
+    reminders_mon = rs.generate_reminders(cal, anna_st, 'Mon')
+    print(format_reminders(reminders_mon))
+    reminders_tue = rs.generate_reminders(cal, anna_st, 'Tue')
+    print(format_reminders(reminders_tue))
+    reminders_sun = rs.generate_reminders(cal, anna_st, 'Sun')
+    print(format_reminders(reminders_sun))
+
+    # 172. Schedule Optimizer
+    print("\n--- Schedule Optimizer ---")
+    so = ScheduleOptimizer(student=anna_st)
+    suggested = so.suggest_focus()
+    print(f"Suggested focus for Anna: {suggested}")
+
+    plan_balanced = so.optimize(sessions_per_week=5, focus='balanced')
+    print(format_schedule_plan(plan_balanced))
+
+    plan_intensive = so.optimize(sessions_per_week=4, focus='intensive')
+    print(f"\nIntensive plan: {plan_intensive['sessions_per_week']}x/wk, "
+          f"{plan_intensive['total_minutes']}min, "
+          f"types={plan_intensive['type_distribution']}")
+
+    print("\n" + "=" * 60)
+    print("v53: Training calendar, reminder system, schedule optimizer.")

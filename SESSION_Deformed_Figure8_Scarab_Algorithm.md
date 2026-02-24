@@ -5970,3 +5970,47 @@ pred = fa.predictability_score(sessions)
 
 print(format_flow_analysis(bottlenecks, density, gf, pred))
 ```
+
+---
+
+## Часть 68: Training Calendar, Reminder System, Schedule Optimizer (v53)
+
+### 68.1 TrainingCalendar
+
+Календарное управление тренировками — недельное расписание, слоты, adherence.
+
+```python
+cal = TrainingCalendar()
+cal.add_slot('Mon', '09:00', 'standard', 30)
+cal.add_slot('Wed', '09:00', 'drill', 15)
+cal.mark_completed('Mon', '09:00', score=85)
+
+summary = cal.get_weekly_summary()
+adherence = cal.adherence_rate()
+print(format_calendar(cal))
+```
+
+5 типов сессий: standard (30мин), drill (15мин), review (20мин),
+assessment (45мин), exploration (25мин).
+
+### 68.2 ReminderSystem
+
+Автоматические напоминания: session_due, streak_risk, milestone_close,
+rest_day, weekly_review.
+
+```python
+rs = ReminderSystem()
+reminders = rs.generate_reminders(calendar, student, current_day='Mon')
+print(format_reminders(reminders))
+```
+
+### 68.3 ScheduleOptimizer
+
+Оптимизация расписания на основе данных студента.
+
+```python
+so = ScheduleOptimizer(student=student)
+focus = so.suggest_focus()    # balanced/intensive/recovery/assessment
+plan = so.optimize(sessions_per_week=5, focus=focus)
+print(format_schedule_plan(plan))
+```
