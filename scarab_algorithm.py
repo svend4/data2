@@ -14752,6 +14752,248 @@ def format_rank(rank_result, student_name=''):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# EVENT-DRIVEN HOOKS (v44)
+# ═══════════════════════════════════════════════════════════
+
+class EventBus:
+    """
+    Publish-subscribe event bus for the Scarab system.
+
+    Components register handlers for events and get notified
+    when events are fired.
+    """
+
+    def __init__(self):
+        self._handlers = {}  # event_name → [handlers]
+        self._history = []
+
+    def on(self, event_name, handler):
+        """Register a handler for an event."""
+        self._handlers.setdefault(event_name, []).append(handler)
+
+    def off(self, event_name, handler=None):
+        """Remove handler(s) for an event."""
+        if handler is None:
+            self._handlers.pop(event_name, None)
+        elif event_name in self._handlers:
+            self._handlers[event_name] = [
+                h for h in self._handlers[event_name]
+                if h != handler]
+
+    def emit(self, event_name, data=None):
+        """Fire an event, notifying all registered handlers."""
+        event = {
+            'name': event_name,
+            'data': data or {},
+            'seq': len(self._history),
+        }
+        self._history.append(event)
+
+        results = []
+        for handler in self._handlers.get(event_name, []):
+            try:
+                result = handler(event)
+                results.append(result)
+            except Exception as e:
+                results.append({'error': str(e)})
+
+        return results
+
+    def events(self):
+        """List all registered event types."""
+        return list(self._handlers.keys())
+
+    def history(self, last_n=10):
+        """Recent event history."""
+        return self._history[-last_n:]
+
+    def format_bus(self):
+        """Format bus info."""
+        lines = ["EventBus"]
+        lines.append("─" * 40)
+        for name, handlers in self._handlers.items():
+            lines.append(f"  {name}: {len(handlers)} handler(s)")
+        lines.append(f"  Total events fired: {len(self._history)}")
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SESSION COMPARISON (v44)
+# ═══════════════════════════════════════════════════════════
+
+def compare_sessions(student, idx_a, idx_b):
+    """
+    Compare two sessions of the same student.
+
+    Returns detailed comparison with delta analysis.
+    """
+    sessions = student.sessions
+    if idx_a >= len(sessions) or idx_b >= len(sessions):
+        return None
+
+    sa, sb = sessions[idx_a], sessions[idx_b]
+
+    comparison = {
+        'student': student.name,
+        'session_a': idx_a + 1,
+        'session_b': idx_b + 1,
+        'score_a': sa['pct'],
+        'score_b': sb['pct'],
+        'delta_score': round(sb['pct'] - sa['pct'], 1),
+        'violations_a': len(sa.get('violations', [])),
+        'violations_b': len(sb.get('violations', [])),
+        'improved': sb['pct'] > sa['pct'],
+    }
+
+    return comparison
+
+
+def compare_first_last(student):
+    """Compare first and most recent session."""
+    n = len(student.sessions)
+    if n < 2:
+        return None
+    return compare_sessions(student, 0, n - 1)
+
+
+def format_session_comparison(cmp):
+    """Format session comparison."""
+    if cmp is None:
+        return "Insufficient sessions to compare."
+
+    lines = [f"Session Comparison: {cmp['student']}"]
+    lines.append("─" * 45)
+
+    arrow = '↑' if cmp['improved'] else '↓'
+    lines.append(f"  Session #{cmp['session_a']}: "
+                 f"{cmp['score_a']}%")
+    lines.append(f"  Session #{cmp['session_b']}: "
+                 f"{cmp['score_b']}%")
+    lines.append(f"  Delta: {cmp['delta_score']:+.1f}% {arrow}")
+    lines.append(f"  Violations: {cmp['violations_a']} → "
+                 f"{cmp['violations_b']}")
+
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# COACHING ENGINE (v44)
+# ═══════════════════════════════════════════════════════════
+
+class CoachingEngine:
+    """
+    AI coaching engine that generates personalized coaching messages.
+
+    Combines data from multiple analyzers to produce contextual,
+    motivating, and actionable coaching.
+    """
+
+    TEMPLATES = {
+        'encouragement': [
+            "Great work, {name}! Your {metric} is improving.",
+            "Keep it up, {name}! You've maintained {streak} strong sessions.",
+            "{name}, you're on track for the next mastery level!",
+        ],
+        'correction': [
+            "{name}, let's focus on improving your {area}.",
+            "Your {area} needs attention. Try {suggestion}.",
+            "{name}, consider reviewing {area} fundamentals.",
+        ],
+        'milestone': [
+            "Congratulations, {name}! You've reached {milestone}!",
+            "{name} achieves a new milestone: {milestone}!",
+        ],
+        'challenge': [
+            "{name}, ready for a challenge? Try the {template} template.",
+            "Push your limits, {name}! Aim for {target}% this session.",
+        ],
+    }
+
+    def __init__(self, student):
+        self.student = student
+
+    def generate_message(self):
+        """Generate a contextual coaching message."""
+        st = self.student
+        scores = [s['pct'] for s in st.sessions]
+        n = len(scores)
+
+        if n == 0:
+            return f"Welcome, {st.name}! Start with a warmup session."
+
+        avg = sum(scores) / n
+        recent = scores[-3:] if n >= 3 else scores
+        recent_avg = sum(recent) / len(recent)
+
+        import random as _rnd_coach
+        _rnd_coach.seed(n)  # Deterministic per session count
+
+        # Choose category
+        if recent_avg >= 85:
+            if st.mastery_level < 7:
+                cat = 'challenge'
+            else:
+                cat = 'encouragement'
+        elif recent_avg >= 70:
+            cat = 'encouragement'
+        else:
+            cat = 'correction'
+
+        templates = self.TEMPLATES[cat]
+        template = _rnd_coach.choice(templates)
+
+        # Fill template
+        message = template.format(
+            name=st.name,
+            metric='score average',
+            streak=n,
+            area='consistency' if avg < 75 else 'advanced groups',
+            suggestion='the drill_zone template',
+            milestone=f'L{st.mastery_level}',
+            template='peak_challenge' if st.mastery_level >= 5
+                     else 'endurance',
+            target=int(min(100, avg + 5)),
+        )
+
+        return message
+
+    def generate_session_brief(self):
+        """Generate pre-session briefing."""
+        st = self.student
+        msg = self.generate_message()
+
+        prof = compute_group_proficiency(st)
+        weakest = min(range(1, 8), key=lambda g: prof[g]['avg'])
+
+        rank = compute_rank(st)
+
+        brief = {
+            'greeting': msg,
+            'rank': rank['rank']['name'],
+            'weakest_group': weakest,
+            'suggested_template': (
+                'peak_challenge' if st.mastery_level >= 5 else
+                'endurance' if st.mastery_level >= 3 else
+                'group_flow' if st.mastery_level >= 2 else
+                'warmup'),
+            'focus_tip': f'Pay attention to Group {weakest} symbols.',
+        }
+
+        return brief
+
+    def format_brief(self, brief=None):
+        """Format session briefing."""
+        b = brief or self.generate_session_brief()
+        lines = [f"Coach's Brief for {self.student.name}"]
+        lines.append("═" * 50)
+        lines.append(f"  {b['greeting']}")
+        lines.append(f"  Rank: {b['rank']}")
+        lines.append(f"  Suggested: [{b['suggested_template']}]")
+        lines.append(f"  Focus: {b['focus_tip']}")
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -16388,3 +16630,37 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v43: Training optimizer, symbol similarity, rank system.")
+
+    # 141. Event Bus
+    print("\n--- Event Bus ---")
+    bus = EventBus()
+    log_msgs = []
+    bus.on('session_complete', lambda e: log_msgs.append(
+        f"Session done: {e['data'].get('student', '?')}"))
+    bus.on('level_up', lambda e: log_msgs.append(
+        f"Level up: {e['data'].get('student', '?')}"))
+    bus.on('session_complete', lambda e: log_msgs.append(
+        f"Score: {e['data'].get('score', 0)}%"))
+
+    bus.emit('session_complete', {'student': 'Anna', 'score': 88})
+    bus.emit('level_up', {'student': 'Anna', 'new_level': 6})
+    bus.emit('session_complete', {'student': 'Ivan', 'score': 92})
+
+    print(bus.format_bus())
+    print(f"  Log messages: {log_msgs}")
+    print(f"  History: {len(bus.history())} events")
+
+    # 142. Session Comparison
+    print("\n--- Session Comparison ---")
+    for sname in ['Anna', 'Ivan']:
+        cmp = compare_first_last(sim_school.students[sname])
+        print(format_session_comparison(cmp))
+
+    # 143. Coaching Engine
+    print("\n--- Coaching Engine ---")
+    for sname in ['Anna', 'Ivan', 'Lena']:
+        coach = CoachingEngine(sim_school.students[sname])
+        print(coach.format_brief())
+
+    print("\n" + "=" * 60)
+    print("v44: Event hooks, session comparison, coaching engine.")

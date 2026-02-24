@@ -4912,3 +4912,35 @@ print(format_rank(rk, student_name='Anna'))
 ```
 
 Каждый ранг: min_score + min_sessions + min_mastery.
+
+---
+
+## Часть 59: Event bus, comparison, coaching (v44)
+
+### 59.1 Event Bus (pub/sub)
+
+```python
+bus = EventBus()
+bus.on('session_complete', handler_fn)
+bus.emit('session_complete', {'student': 'Anna', 'score': 88})
+print(bus.format_bus())
+```
+
+### 59.2 Сравнение сессий
+
+```python
+cmp = compare_sessions(student, idx_a=0, idx_b=11)
+cmp = compare_first_last(student)
+print(format_session_comparison(cmp))
+```
+
+### 59.3 Coaching Engine
+
+```python
+coach = CoachingEngine(student)
+brief = coach.generate_session_brief()
+print(coach.format_brief())
+```
+
+Категории: encouragement, correction, milestone, challenge.
+Pre-session brief: rank, suggested template, focus tip.
