@@ -11065,6 +11065,393 @@ class SessionPlayback:
                 f"markers={len(self.markers)}")
 
 
+# ═══════════════════════════════════════════════════════════
+# TRAINING TEMPLATES (v32)
+# ═══════════════════════════════════════════════════════════
+
+TRAINING_TEMPLATES = {
+    'warmup': {
+        'name': 'Warm-Up',
+        'description': 'Light session, low difficulty, general practice',
+        'n_tacts': 8,
+        'difficulty': 'easy',
+        'focus': 'general',
+        'groups_allowed': [1, 2, 3],
+        'min_mastery': 1,
+    },
+    'drill_zone': {
+        'name': 'Zone Drill',
+        'description': 'Focused on zone accuracy (R1)',
+        'n_tacts': 14,
+        'difficulty': 'medium',
+        'focus': 'zone_accuracy',
+        'groups_allowed': [1, 2, 3, 4],
+        'min_mastery': 2,
+    },
+    'group_flow': {
+        'name': 'Group Flow',
+        'description': 'Practice smooth group transitions (R2)',
+        'n_tacts': 14,
+        'difficulty': 'medium',
+        'focus': 'group_transitions',
+        'groups_allowed': [1, 2, 3, 4, 5],
+        'min_mastery': 2,
+    },
+    'endurance': {
+        'name': 'Endurance',
+        'description': 'Long session, all groups, sustained focus',
+        'n_tacts': 24,
+        'difficulty': 'hard',
+        'focus': 'general',
+        'groups_allowed': [1, 2, 3, 4, 5, 6],
+        'min_mastery': 3,
+    },
+    'peak_challenge': {
+        'name': 'Peak Challenge',
+        'description': 'All groups including peak defense (G7)',
+        'n_tacts': 20,
+        'difficulty': 'hard',
+        'focus': 'peak_defense',
+        'groups_allowed': [1, 2, 3, 4, 5, 6, 7],
+        'min_mastery': 5,
+    },
+    'speed_run': {
+        'name': 'Speed Run',
+        'description': 'Short but intense, high accuracy required',
+        'n_tacts': 10,
+        'difficulty': 'hard',
+        'focus': 'speed',
+        'groups_allowed': [1, 2, 3, 4, 5],
+        'min_mastery': 3,
+    },
+}
+
+
+def get_available_templates(student):
+    """Return templates the student has unlocked based on mastery."""
+    ml = student.mastery_level
+    available = {}
+    for tid, tmpl in TRAINING_TEMPLATES.items():
+        if ml >= tmpl['min_mastery']:
+            available[tid] = tmpl
+    return available
+
+
+def apply_template(template_id, student):
+    """
+    Apply a template to generate session parameters.
+
+    Returns a config dict for running a session.
+    """
+    tmpl = TRAINING_TEMPLATES.get(template_id)
+    if not tmpl:
+        raise ValueError(f"Unknown template: {template_id}")
+
+    if student.mastery_level < tmpl['min_mastery']:
+        raise ValueError(
+            f"Mastery level {tmpl['min_mastery']} required, "
+            f"student is at {student.mastery_level}")
+
+    # Build symbol pool from allowed groups
+    sym_pool = []
+    for sym in range(64):
+        if get_group(sym) in tmpl['groups_allowed']:
+            sym_pool.append(sym)
+
+    return {
+        'template': template_id,
+        'name': tmpl['name'],
+        'n_tacts': tmpl['n_tacts'],
+        'difficulty': tmpl['difficulty'],
+        'focus': tmpl['focus'],
+        'symbol_pool': sym_pool,
+        'pool_size': len(sym_pool),
+    }
+
+
+def format_template_catalog(student=None):
+    """Format template catalog, marking available/locked."""
+    lines = ["Training Templates"]
+    lines.append("═" * 55)
+    for tid, tmpl in TRAINING_TEMPLATES.items():
+        locked = ''
+        if student and student.mastery_level < tmpl['min_mastery']:
+            locked = f' 🔒 (L{tmpl["min_mastery"]}+)'
+
+        lines.append(f"  [{tid}] {tmpl['name']}{locked}")
+        lines.append(f"    {tmpl['description']}")
+        lines.append(f"    Tacts: {tmpl['n_tacts']}  |  "
+                     f"Difficulty: {tmpl['difficulty']}  |  "
+                     f"Groups: {tmpl['groups_allowed']}")
+    return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# CORRELATION ANALYSIS (v32)
+# ═══════════════════════════════════════════════════════════
+
+def compute_correlation(xs, ys):
+    """
+    Pearson correlation coefficient between two lists.
+
+    Returns r in [-1, 1], or 0 if insufficient data.
+    """
+    n = min(len(xs), len(ys))
+    if n < 3:
+        return 0.0
+
+    xs, ys = xs[:n], ys[:n]
+    mx = sum(xs) / n
+    my = sum(ys) / n
+
+    num = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    dx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    dy = sum((y - my) ** 2 for y in ys) ** 0.5
+
+    if dx == 0 or dy == 0:
+        return 0.0
+    return round(num / (dx * dy), 4)
+
+
+def correlation_matrix(student):
+    """
+    Compute correlation matrix across session metrics.
+
+    Metrics: score, length, violations, session_index (time).
+    Returns dict of (metric_a, metric_b) → r.
+    """
+    sessions = student.sessions
+    if len(sessions) < 3:
+        return {}
+
+    scores = [s['pct'] for s in sessions]
+    lengths = [s.get('length', 0) for s in sessions]
+    viols = [len(s.get('violations', [])) for s in sessions]
+    indices = list(range(len(sessions)))
+
+    metrics = {
+        'score': scores,
+        'length': lengths,
+        'violations': viols,
+        'time': indices,
+    }
+
+    matrix = {}
+    names = list(metrics.keys())
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            r = compute_correlation(metrics[a], metrics[b])
+            matrix[(a, b)] = r
+
+    return matrix
+
+
+def format_correlation_matrix(matrix):
+    """Format correlation matrix."""
+    if not matrix:
+        return "Insufficient data for correlation analysis."
+
+    lines = ["Correlation Matrix"]
+    lines.append("─" * 45)
+
+    for (a, b), r in sorted(matrix.items()):
+        strength = 'strong' if abs(r) > 0.7 else (
+            'moderate' if abs(r) > 0.4 else 'weak')
+        direction = '+' if r > 0 else '-' if r < 0 else ' '
+        bar_r = int(abs(r) * 20)
+        bar = '█' * bar_r + '░' * (20 - bar_r)
+        lines.append(f"  {a:>11s} × {b:<11s} "
+                     f"r={direction}{abs(r):.3f} [{bar}] {strength}")
+
+    return '\n'.join(lines)
+
+
+def find_insights(student):
+    """
+    Discover data insights from correlation analysis.
+
+    Returns list of human-readable insight strings.
+    """
+    matrix = correlation_matrix(student)
+    insights = []
+
+    r_time_score = matrix.get(('score', 'time'), 0)
+    if r_time_score > 0.5:
+        insights.append(
+            f"Strong improvement over time (r={r_time_score:.3f})")
+    elif r_time_score < -0.3:
+        insights.append(
+            f"Scores declining over time (r={r_time_score:.3f})")
+
+    r_score_viols = matrix.get(('score', 'violations'), 0)
+    if r_score_viols < -0.4:
+        insights.append(
+            f"Violations strongly reduce scores (r={r_score_viols:.3f})")
+
+    r_len_score = matrix.get(('length', 'score'), 0)
+    if abs(r_len_score) > 0.4:
+        if r_len_score > 0:
+            insights.append("Longer sessions correlate with higher scores")
+        else:
+            insights.append("Longer sessions correlate with lower scores "
+                           "(fatigue?)")
+
+    if not insights:
+        insights.append("No strong correlations detected — performance is "
+                       "well-balanced.")
+
+    return insights
+
+
+# ═══════════════════════════════════════════════════════════
+# SYSTEM CONFIGURATION MANAGER (v32)
+# ═══════════════════════════════════════════════════════════
+
+class ScarabConfig:
+    """
+    Central configuration for the Scarab algorithm.
+
+    Manages all tunable parameters with defaults, validation,
+    and save/load to dict.
+    """
+
+    DEFAULTS = {
+        # Core
+        'n_symbols': 64,
+        'n_groups': 7,
+        'max_mastery': 7,
+        'default_elo': 1200,
+
+        # Sessions
+        'default_session_length': 14,
+        'min_session_length': 4,
+        'max_session_length': 32,
+
+        # Scoring
+        'passing_score': 70,
+        'grade_a_threshold': 90,
+        'grade_b_threshold': 70,
+        'grade_c_threshold': 50,
+
+        # Streaks
+        'streak_win_threshold': 70,
+        'max_streak_bonus': 5,
+
+        # Analytics
+        'analytics_window': 10,
+        'momentum_window': 5,
+        'trend_improving_threshold': 0.5,
+        'trend_declining_threshold': -0.5,
+
+        # Scheduler
+        'default_sessions_per_week': 4,
+        'max_sessions_per_week': 7,
+        'min_rest_days': 1,
+
+        # Notifications
+        'session_milestones': [1, 5, 10, 25, 50, 100],
+        'score_drop_alert_threshold': 15,
+
+        # Display
+        'progress_bar_width': 20,
+        'history_display_count': 10,
+    }
+
+    def __init__(self, overrides=None):
+        self._values = dict(self.DEFAULTS)
+        if overrides:
+            for k, v in overrides.items():
+                if k in self.DEFAULTS:
+                    self._values[k] = v
+
+    def get(self, key, default=None):
+        """Get a config value."""
+        return self._values.get(key, default)
+
+    def set(self, key, value):
+        """Set a config value (must be a known key)."""
+        if key not in self.DEFAULTS:
+            raise KeyError(f"Unknown config key: {key}")
+        self._values[key] = value
+
+    def reset(self, key=None):
+        """Reset one or all keys to default."""
+        if key:
+            if key in self.DEFAULTS:
+                self._values[key] = self.DEFAULTS[key]
+        else:
+            self._values = dict(self.DEFAULTS)
+
+    def diff_from_defaults(self):
+        """Return dict of values that differ from defaults."""
+        return {k: v for k, v in self._values.items()
+                if v != self.DEFAULTS.get(k)}
+
+    def to_dict(self):
+        """Export all config as dict."""
+        return dict(self._values)
+
+    def validate(self):
+        """Validate configuration consistency. Returns list of issues."""
+        issues = []
+        v = self._values
+
+        if v['min_session_length'] > v['max_session_length']:
+            issues.append("min_session_length > max_session_length")
+
+        if v['grade_a_threshold'] <= v['grade_b_threshold']:
+            issues.append("grade_a must be > grade_b")
+
+        if v['grade_b_threshold'] <= v['grade_c_threshold']:
+            issues.append("grade_b must be > grade_c")
+
+        if v['default_sessions_per_week'] > v['max_sessions_per_week']:
+            issues.append("default_sessions > max_sessions per week")
+
+        if v['analytics_window'] < 3:
+            issues.append("analytics_window must be >= 3")
+
+        return issues
+
+    def format_config(self, only_changed=False):
+        """Format configuration for display."""
+        items = (self.diff_from_defaults() if only_changed
+                 else self._values)
+
+        lines = ["Scarab Configuration"]
+        lines.append("═" * 50)
+
+        sections = {
+            'Core': ['n_symbols', 'n_groups', 'max_mastery', 'default_elo'],
+            'Sessions': ['default_session_length', 'min_session_length',
+                        'max_session_length'],
+            'Scoring': ['passing_score', 'grade_a_threshold',
+                       'grade_b_threshold', 'grade_c_threshold'],
+            'Analytics': ['analytics_window', 'momentum_window',
+                         'trend_improving_threshold',
+                         'trend_declining_threshold'],
+            'Scheduler': ['default_sessions_per_week',
+                         'max_sessions_per_week', 'min_rest_days'],
+        }
+
+        for section, keys in sections.items():
+            relevant = {k: items[k] for k in keys if k in items}
+            if relevant:
+                lines.append(f"\n  [{section}]")
+                for k, val in relevant.items():
+                    default = self.DEFAULTS.get(k)
+                    marker = ' *' if val != default else ''
+                    lines.append(f"    {k}: {val}{marker}")
+
+        issues = self.validate()
+        if issues:
+            lines.append(f"\n  ⚠ Validation issues: {len(issues)}")
+            for iss in issues:
+                lines.append(f"    - {iss}")
+
+        return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -12317,3 +12704,42 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v31: Goal tracking, peer comparison, session playback.")
+
+    # 105. Training Templates
+    print("\n--- Training Templates ---")
+    anna = sim_school.students['Anna']
+    print(format_template_catalog(anna))
+    avail = get_available_templates(anna)
+    print(f"\n  Available for Anna (L{anna.mastery_level}): "
+          f"{len(avail)}/{len(TRAINING_TEMPLATES)}")
+    cfg105 = apply_template('endurance', anna)
+    print(f"  Applied 'endurance': {cfg105['n_tacts']} tacts, "
+          f"pool={cfg105['pool_size']} symbols, "
+          f"focus={cfg105['focus']}")
+
+    # 106. Correlation Analysis
+    print("\n--- Correlation Analysis ---")
+    cm = correlation_matrix(anna)
+    print(format_correlation_matrix(cm))
+    insights = find_insights(anna)
+    print("\n  Insights:")
+    for ins in insights:
+        print(f"    → {ins}")
+
+    # 107. System Configuration
+    print("\n--- System Configuration ---")
+    config = ScarabConfig()
+    config.set('passing_score', 75)
+    config.set('analytics_window', 8)
+    config.set('default_sessions_per_week', 5)
+    print(config.format_config(only_changed=True))
+    issues = config.validate()
+    print(f"  Validation: {'OK' if not issues else f'{len(issues)} issues'}")
+    print(f"  Changed keys: {config.diff_from_defaults()}")
+
+    # Reset and show default
+    config.reset('passing_score')
+    print(f"  After reset passing_score: {config.get('passing_score')}")
+
+    print("\n" + "=" * 60)
+    print("v32: Training templates, correlation analysis, config manager.")

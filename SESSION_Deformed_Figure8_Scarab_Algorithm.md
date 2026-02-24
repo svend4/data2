@@ -4386,4 +4386,55 @@ Momentum:
   [001] ▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪ 81.9
 ```
 
-Структура возврата: `{title, profile, history, skill_tree, badges, diagnostic, ranking}`
+---
+
+## Часть 47: Шаблоны, корреляции, конфигурация (v32)
+
+### 47.1 Шаблоны тренировок
+
+6 встроенных шаблонов:
+| Шаблон | Такты | Сложность | Группы | Min ML |
+|--------|-------|-----------|--------|--------|
+| warmup | 8 | easy | 1-3 | 1 |
+| drill_zone | 14 | medium | 1-4 | 2 |
+| group_flow | 14 | medium | 1-5 | 2 |
+| endurance | 24 | hard | 1-6 | 3 |
+| peak_challenge | 20 | hard | 1-7 | 5 |
+| speed_run | 10 | hard | 1-5 | 3 |
+
+```python
+available = get_available_templates(student)
+config = apply_template('endurance', student)
+# → {template, name, n_tacts, difficulty, focus, symbol_pool, pool_size}
+print(format_template_catalog(student))
+```
+
+### 47.2 Корреляционный анализ
+
+```python
+r = compute_correlation(xs, ys)  # Pearson r ∈ [-1, 1]
+matrix = correlation_matrix(student)
+# → {(score, time): 0.898, (score, violations): -0.3, ...}
+print(format_correlation_matrix(matrix))
+insights = find_insights(student)
+# → ['Strong improvement over time (r=0.898)']
+```
+
+Метрики: score × time, score × length, score × violations, length × time.
+
+Сила: |r| > 0.7 = strong, > 0.4 = moderate, else weak.
+
+### 47.3 Конфигурация системы (ScarabConfig)
+
+```python
+config = ScarabConfig({'passing_score': 75})
+config.set('analytics_window', 8)
+config.get('passing_score')       # → 75
+config.diff_from_defaults()       # → {'passing_score': 75, ...}
+config.validate()                 # → [] (OK) или список проблем
+config.reset('passing_score')     # → default 70
+config.format_config(only_changed=True)
+```
+
+Секции: Core, Sessions, Scoring, Analytics, Scheduler, Notifications, Display.
+Валидация: min < max, grade_a > grade_b > grade_c, window >= 3.
