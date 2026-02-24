@@ -13712,6 +13712,290 @@ def format_weaknesses(weaknesses, student_name=''):
     return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# ADVANCED STATISTICS ENGINE (v40)
+# ═══════════════════════════════════════════════════════════
+
+class StatisticsEngine:
+    """
+    Comprehensive statistics engine for Scarab data.
+
+    Computes descriptive stats, percentiles, confidence intervals,
+    and comparative metrics.
+    """
+
+    @staticmethod
+    def descriptive(values):
+        """Full descriptive statistics for a list of values."""
+        if not values:
+            return {'n': 0}
+
+        n = len(values)
+        values_sorted = sorted(values)
+        mean = sum(values) / n
+        variance = sum((v - mean) ** 2 for v in values) / n
+        std = variance ** 0.5
+
+        # Median
+        if n % 2 == 0:
+            median = (values_sorted[n // 2 - 1] + values_sorted[n // 2]) / 2
+        else:
+            median = values_sorted[n // 2]
+
+        # Mode (most frequent)
+        freq = {}
+        for v in values:
+            rv = round(v, 1)
+            freq[rv] = freq.get(rv, 0) + 1
+        mode = max(freq, key=freq.get)
+
+        # Skewness
+        if std > 0 and n >= 3:
+            skew = sum((v - mean) ** 3 for v in values) / (n * std ** 3)
+        else:
+            skew = 0
+
+        return {
+            'n': n,
+            'mean': round(mean, 2),
+            'median': round(median, 2),
+            'mode': mode,
+            'std': round(std, 2),
+            'variance': round(variance, 2),
+            'min': round(values_sorted[0], 2),
+            'max': round(values_sorted[-1], 2),
+            'range': round(values_sorted[-1] - values_sorted[0], 2),
+            'skew': round(skew, 3),
+            'p25': round(values_sorted[n // 4], 2),
+            'p75': round(values_sorted[3 * n // 4], 2),
+            'iqr': round(values_sorted[3 * n // 4] -
+                         values_sorted[n // 4], 2),
+        }
+
+    @staticmethod
+    def confidence_interval(values, confidence=0.95):
+        """Compute confidence interval for the mean."""
+        n = len(values)
+        if n < 2:
+            return (0, 0)
+        mean = sum(values) / n
+        std = (sum((v - mean) ** 2 for v in values) / (n - 1)) ** 0.5
+        # z-values for common confidence levels
+        z_map = {0.90: 1.645, 0.95: 1.96, 0.99: 2.576}
+        z = z_map.get(confidence, 1.96)
+        margin = z * std / (n ** 0.5)
+        return (round(mean - margin, 2), round(mean + margin, 2))
+
+    @staticmethod
+    def effect_size(group_a, group_b):
+        """Cohen's d effect size between two groups."""
+        na, nb = len(group_a), len(group_b)
+        if na < 2 or nb < 2:
+            return 0
+        ma = sum(group_a) / na
+        mb = sum(group_b) / nb
+        va = sum((v - ma) ** 2 for v in group_a) / (na - 1)
+        vb = sum((v - mb) ** 2 for v in group_b) / (nb - 1)
+        pooled = ((va * (na - 1) + vb * (nb - 1)) / (na + nb - 2)) ** 0.5
+        if pooled == 0:
+            return 0
+        return round((ma - mb) / pooled, 3)
+
+    def student_report(self, student):
+        """Full statistical report for a student."""
+        scores = [s['pct'] for s in student.sessions]
+        desc = self.descriptive(scores)
+        ci = self.confidence_interval(scores)
+
+        return {
+            'name': student.name,
+            'descriptive': desc,
+            'confidence_interval_95': ci,
+            'mastery': student.mastery_level,
+        }
+
+    def format_report(self, report):
+        """Format statistical report."""
+        d = report['descriptive']
+        ci = report['confidence_interval_95']
+
+        lines = [f"Statistical Report: {report['name']}"]
+        lines.append("═" * 55)
+
+        if d['n'] == 0:
+            lines.append("  No data available.")
+            return '\n'.join(lines)
+
+        lines.append(f"  N={d['n']}  Mean={d['mean']}  "
+                     f"Median={d['median']}  Mode={d['mode']}")
+        lines.append(f"  Std={d['std']}  Var={d['variance']}  "
+                     f"Range=[{d['min']}—{d['max']}]={d['range']}")
+        lines.append(f"  Q1={d['p25']}  Q3={d['p75']}  "
+                     f"IQR={d['iqr']}  Skew={d['skew']}")
+        lines.append(f"  95% CI: [{ci[0]} — {ci[1]}]")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# ACHIEVEMENT GALLERY (v40)
+# ═══════════════════════════════════════════════════════════
+
+ACHIEVEMENT_CATALOG = {
+    # Tier 1: Bronze
+    'first_session': {
+        'name': 'First Steps', 'tier': 'bronze',
+        'description': 'Complete your first session',
+        'condition': lambda st: len(st.sessions) >= 1,
+    },
+    'five_sessions': {
+        'name': 'Getting Started', 'tier': 'bronze',
+        'description': 'Complete 5 sessions',
+        'condition': lambda st: len(st.sessions) >= 5,
+    },
+    'score_60': {
+        'name': 'Passing Grade', 'tier': 'bronze',
+        'description': 'Score 60% or higher',
+        'condition': lambda st: any(
+            s['pct'] >= 60 for s in st.sessions),
+    },
+
+    # Tier 2: Silver
+    'ten_sessions': {
+        'name': 'Dedicated', 'tier': 'silver',
+        'description': 'Complete 10 sessions',
+        'condition': lambda st: len(st.sessions) >= 10,
+    },
+    'score_80': {
+        'name': 'High Achiever', 'tier': 'silver',
+        'description': 'Score 80% or higher',
+        'condition': lambda st: any(
+            s['pct'] >= 80 for s in st.sessions),
+    },
+    'mastery_3': {
+        'name': 'Skilled', 'tier': 'silver',
+        'description': 'Reach mastery level 3',
+        'condition': lambda st: st.mastery_level >= 3,
+    },
+    'streak_5': {
+        'name': 'On Fire', 'tier': 'silver',
+        'description': '5 consecutive sessions above 70%',
+        'condition': lambda st: _check_streak(st, 5),
+    },
+
+    # Tier 3: Gold
+    'score_90': {
+        'name': 'Excellence', 'tier': 'gold',
+        'description': 'Score 90% or higher',
+        'condition': lambda st: any(
+            s['pct'] >= 90 for s in st.sessions),
+    },
+    'twenty_sessions': {
+        'name': 'Veteran', 'tier': 'gold',
+        'description': 'Complete 20 sessions',
+        'condition': lambda st: len(st.sessions) >= 20,
+    },
+    'mastery_5': {
+        'name': 'Expert', 'tier': 'gold',
+        'description': 'Reach mastery level 5',
+        'condition': lambda st: st.mastery_level >= 5,
+    },
+
+    # Tier 4: Platinum
+    'score_95': {
+        'name': 'Near Perfect', 'tier': 'platinum',
+        'description': 'Score 95% or higher',
+        'condition': lambda st: any(
+            s['pct'] >= 95 for s in st.sessions),
+    },
+    'mastery_7': {
+        'name': 'Grand Master', 'tier': 'platinum',
+        'description': 'Reach mastery level 7',
+        'condition': lambda st: st.mastery_level >= 7,
+    },
+    'fifty_sessions': {
+        'name': 'Centurion', 'tier': 'platinum',
+        'description': 'Complete 50 sessions',
+        'condition': lambda st: len(st.sessions) >= 50,
+    },
+}
+
+
+def _check_streak(student, target):
+    """Check if student has a streak of target sessions above 70%."""
+    scores = [s['pct'] for s in student.sessions]
+    streak = 0
+    for s in scores:
+        if s >= 70:
+            streak += 1
+            if streak >= target:
+                return True
+        else:
+            streak = 0
+    return False
+
+
+def check_achievement_gallery(student):
+    """Check all achievements for a student."""
+    earned = []
+    locked = []
+
+    for aid, ach in ACHIEVEMENT_CATALOG.items():
+        try:
+            if ach['condition'](student):
+                earned.append({
+                    'id': aid, 'name': ach['name'],
+                    'tier': ach['tier'],
+                    'description': ach['description'],
+                })
+            else:
+                locked.append({
+                    'id': aid, 'name': ach['name'],
+                    'tier': ach['tier'],
+                    'description': ach['description'],
+                })
+        except Exception:
+            locked.append({
+                'id': aid, 'name': ach['name'],
+                'tier': ach['tier'],
+                'description': ach['description'],
+            })
+
+    return {'earned': earned, 'locked': locked}
+
+
+def format_achievement_gallery(gallery, student_name=''):
+    """Format achievement gallery."""
+    name = f" — {student_name}" if student_name else ''
+    lines = [f"Achievement Gallery{name}"]
+    lines.append("═" * 55)
+
+    tier_icons = {
+        'bronze': '🥉', 'silver': '🥈',
+        'gold': '🥇', 'platinum': '💎',
+    }
+
+    for tier in ['bronze', 'silver', 'gold', 'platinum']:
+        earned = [a for a in gallery['earned'] if a['tier'] == tier]
+        locked = [a for a in gallery['locked'] if a['tier'] == tier]
+        icon = tier_icons.get(tier, '•')
+
+        lines.append(f"\n  {icon} {tier.upper()} "
+                     f"({len(earned)}/{len(earned) + len(locked)})")
+
+        for a in earned:
+            lines.append(f"    ✓ {a['name']}: {a['description']}")
+        for a in locked:
+            lines.append(f"    ○ {a['name']}: {a['description']}")
+
+    total = len(gallery['earned'])
+    total_all = total + len(gallery['locked'])
+    lines.append(f"\n  Total: {total}/{total_all} "
+                 f"({round(total / total_all * 100) if total_all else 0}%)")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -15214,3 +15498,29 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v39: Review queue, spaced repetition, weakness analyzer.")
+
+    # 129. Statistics Engine
+    print("\n--- Statistics Engine ---")
+    stat_engine = StatisticsEngine()
+    for sname in ['Anna', 'Ivan']:
+        report = stat_engine.student_report(sim_school.students[sname])
+        print(stat_engine.format_report(report))
+
+    # Effect size between students
+    anna_scores = [s['pct'] for s in sim_school.students['Anna'].sessions]
+    ivan_scores = [s['pct'] for s in sim_school.students['Ivan'].sessions]
+    d = StatisticsEngine.effect_size(anna_scores, ivan_scores)
+    print(f"\n  Cohen's d (Anna vs Ivan): {d}")
+
+    # 130. Achievement Gallery
+    print("\n--- Achievement Gallery ---")
+    for sname in ['Anna', 'Ivan']:
+        gallery = check_achievement_gallery(sim_school.students[sname])
+        print(format_achievement_gallery(gallery, student_name=sname))
+
+    # 131. Grand Summary v36-v40
+    print("\n" + "=" * 60)
+    print("v40: Statistics engine, achievement gallery.")
+    print(f"\n  Total: 131 demos, 55 parts, v1-v40.")
+    print(f"  Code: ~{15000} lines, Docs: ~{4800} lines")
+    print("  Scarab Algorithm: COMPLETE.")

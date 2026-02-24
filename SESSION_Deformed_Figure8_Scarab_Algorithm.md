@@ -4754,3 +4754,53 @@ print(format_weaknesses(ws, student_name='Anna'))
 
 Области: overall_score, consistency, trend, mastery_lag.
 Severity: high (🔴), medium (🟡), positive (🟢).
+
+---
+
+## Часть 55: Statistics engine, achievement gallery (v40)
+
+### 55.1 Статистический движок
+
+```python
+engine = StatisticsEngine()
+desc = StatisticsEngine.descriptive(scores)
+# → n, mean, median, mode, std, variance, min, max, range,
+#   skew, p25, p75, iqr
+
+ci = StatisticsEngine.confidence_interval(scores, confidence=0.95)
+d = StatisticsEngine.effect_size(group_a, group_b)  # Cohen's d
+
+report = engine.student_report(student)
+print(engine.format_report(report))
+```
+
+### 55.2 Галерея достижений
+
+13 достижений в 4 тирах:
+
+| Тир | Достижения |
+|-----|-----------|
+| 🥉 Bronze | First Steps, Getting Started, Passing Grade |
+| 🥈 Silver | Dedicated, High Achiever, Skilled, On Fire |
+| 🥇 Gold | Excellence, Veteran, Expert |
+| 💎 Platinum | Near Perfect, Grand Master, Centurion |
+
+```python
+gallery = check_achievement_gallery(student)
+print(format_achievement_gallery(gallery, student_name='Anna'))
+```
+
+---
+
+## Итоговая статистика проекта (v1-v40)
+
+```
+Код:           ~15200 строк Python
+Документация:  ~4800 строк Markdown
+Итого:         ~20000 строк
+Демо:          131 секция
+Части:         55
+Версии:        v1 — v40
+Компоненты:    55+
+Категории:     25+
+```
