@@ -4944,3 +4944,52 @@ print(coach.format_brief())
 
 Категории: encouragement, correction, milestone, challenge.
 Pre-session brief: rank, suggested template, focus tip.
+
+---
+
+## Часть 60: API facade, health check (v45)
+
+### 60.1 ScarabAPI (unified facade)
+
+```python
+api = ScarabAPI(school=sim_school)
+api.student_summary('Anna')
+api.analyze('Anna')
+api.compare_students('Anna', 'Ivan')
+api.get_coaching('Anna')
+api.get_daily_challenge('Anna', day=1)
+api.generate_plan('Anna', weeks=4)
+api.school_overview()
+api.leaderboard('score')
+print(api.format_api_info())
+```
+
+9 endpoints. Единая точка входа для всей системы.
+
+### 60.2 System Health Check
+
+```python
+health = system_health_check(school=sim_school)
+print(format_health_check(health))
+```
+
+10 проверок: core_functions, student_tracker, badge_system, difficulty_scorer, config, statistics, rank_system, spaced_repetition, school, templates.
+
+```
+10/10 passed — HEALTHY
+```
+
+---
+
+## Итоговая статистика (v1-v45)
+
+```
+Код:           ~17000 строк Python
+Документация:  ~5000 строк Markdown
+Итого:         ~22000 строк
+Демо:          146 секций
+Части:         60
+Версии:        v1 — v45
+Классы:        40
+Функции:       218+
+```

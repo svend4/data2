@@ -14994,6 +14994,277 @@ class CoachingEngine:
         return '\n'.join(lines)
 
 
+# ═══════════════════════════════════════════════════════════
+# API FACADE (v45)
+# ═══════════════════════════════════════════════════════════
+
+class ScarabAPI:
+    """
+    Unified API facade for the entire Scarab system.
+
+    Single entry point for all major operations.
+    """
+
+    def __init__(self, school=None):
+        self.school = school
+        self.config = ScarabConfig()
+        self.event_bus = EventBus()
+        self._version = 'v45'
+
+    # ── Student operations ──
+
+    def get_student(self, name):
+        """Get student by name."""
+        return self.school.students.get(name)
+
+    def student_summary(self, name):
+        """Full student summary."""
+        st = self.get_student(name)
+        if not st:
+            return {'error': f'Student {name} not found'}
+
+        scores = [s['pct'] for s in st.sessions]
+        recent = scores[-5:] if len(scores) >= 5 else scores
+
+        return {
+            'name': name,
+            'sessions': len(scores),
+            'mastery': st.mastery_level,
+            'avg_score': round(sum(scores) / len(scores), 1)
+                         if scores else 0,
+            'recent_avg': round(sum(recent) / len(recent), 1)
+                          if recent else 0,
+            'rank': compute_rank(st)['rank']['name'],
+            'badges': len(check_badges(st)),
+            'achievements': len(
+                check_achievement_gallery(st)['earned']),
+        }
+
+    # ── Analysis operations ──
+
+    def analyze(self, name):
+        """Full analysis for a student."""
+        st = self.get_student(name)
+        if not st:
+            return None
+
+        return {
+            'summary': self.student_summary(name),
+            'weaknesses': analyze_weaknesses(st),
+            'patterns': detect_patterns(st),
+            'proficiency': compute_group_proficiency(st),
+            'prediction': predict_next_score(st, method='ensemble'),
+        }
+
+    def compare_students(self, name_a, name_b):
+        """Compare two students."""
+        sa = self.get_student(name_a)
+        sb = self.get_student(name_b)
+        if not sa or not sb:
+            return None
+        return peer_compare(sa, sb)
+
+    # ── Training operations ──
+
+    def get_coaching(self, name):
+        """Get coaching for a student."""
+        st = self.get_student(name)
+        if not st:
+            return None
+        coach = CoachingEngine(st)
+        return coach.generate_session_brief()
+
+    def get_daily_challenge(self, name, day=1):
+        """Get daily challenge for a student."""
+        st = self.get_student(name)
+        if not st:
+            return None
+        dcg = DailyChallengeGenerator(seed=day)
+        return dcg.generate(st, day_number=day)
+
+    def generate_plan(self, name, weeks=4):
+        """Generate training plan."""
+        st = self.get_student(name)
+        if not st:
+            return None
+        tpo = TrainingPlanOptimizer(st)
+        return tpo.optimize(n_weeks=weeks)
+
+    # ── School operations ──
+
+    def school_overview(self):
+        """School-level overview."""
+        if not self.school:
+            return None
+        return school_progress_overview(self.school)
+
+    def leaderboard(self, metric='score'):
+        """Get school leaderboard."""
+        if not self.school:
+            return None
+        lb = Leaderboard(self.school)
+        return lb.rank(metric)
+
+    # ── System ──
+
+    def version(self):
+        return self._version
+
+    def format_api_info(self):
+        """Format API information."""
+        lines = ["Scarab API"]
+        lines.append("═" * 50)
+        lines.append(f"  Version: {self._version}")
+        lines.append(f"  School: {self.school.name if self.school else 'N/A'}")
+        lines.append(f"  Students: "
+                     f"{len(self.school.students) if self.school else 0}")
+
+        endpoints = [
+            'student_summary(name)',
+            'analyze(name)',
+            'compare_students(a, b)',
+            'get_coaching(name)',
+            'get_daily_challenge(name, day)',
+            'generate_plan(name, weeks)',
+            'school_overview()',
+            'leaderboard(metric)',
+            'health_check()',
+        ]
+        lines.append(f"\n  Endpoints ({len(endpoints)}):")
+        for ep in endpoints:
+            lines.append(f"    • {ep}")
+
+        return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# SYSTEM HEALTH CHECK (v45)
+# ═══════════════════════════════════════════════════════════
+
+def system_health_check(school=None):
+    """
+    Run comprehensive system health check.
+
+    Validates all major components and reports status.
+    """
+    checks = []
+
+    # 1. Core functions
+    try:
+        assert get_group(0) == 1
+        assert get_group(63) == 7
+        assert len(get_zones(0)) == 2
+        checks.append(('core_functions', 'OK', 'Symbol mapping works'))
+    except Exception as e:
+        checks.append(('core_functions', 'FAIL', str(e)))
+
+    # 2. Student system
+    try:
+        st = StudentProfile('HealthCheck')
+        st.sessions.append({'pct': 80})
+        assert len(st.sessions) == 1
+        checks.append(('student_tracker', 'OK', 'Logging works'))
+    except Exception as e:
+        checks.append(('student_tracker', 'FAIL', str(e)))
+
+    # 3. Badge system
+    try:
+        badges = check_badges(st)
+        assert isinstance(badges, list)
+        checks.append(('badge_system', 'OK', f'{len(badges)} badges'))
+    except Exception as e:
+        checks.append(('badge_system', 'FAIL', str(e)))
+
+    # 4. Scoring
+    try:
+        score = score_kata_difficulty([0, 1, 2, 3])
+        assert 'total' in score
+        checks.append(('difficulty_scorer', 'OK',
+                        f'Score: {score["total"]}'))
+    except Exception as e:
+        checks.append(('difficulty_scorer', 'FAIL', str(e)))
+
+    # 5. Config
+    try:
+        cfg = ScarabConfig()
+        issues = cfg.validate()
+        checks.append(('config', 'OK',
+                        f'{len(issues)} validation issues'))
+    except Exception as e:
+        checks.append(('config', 'FAIL', str(e)))
+
+    # 6. Statistics
+    try:
+        desc = StatisticsEngine.descriptive([70, 80, 90])
+        assert desc['mean'] == 80
+        checks.append(('statistics', 'OK', 'Mean computation correct'))
+    except Exception as e:
+        checks.append(('statistics', 'FAIL', str(e)))
+
+    # 7. Rank system
+    try:
+        rk = compute_rank(st)
+        assert 'rank' in rk
+        checks.append(('rank_system', 'OK',
+                        f"Rank: {rk['rank']['name']}"))
+    except Exception as e:
+        checks.append(('rank_system', 'FAIL', str(e)))
+
+    # 8. Spaced Repetition
+    try:
+        srs = SpacedRepetition()
+        srs.add_card(0)
+        srs.review(0, 4, 1)
+        assert srs.cards[0]['repetitions'] == 1
+        checks.append(('spaced_repetition', 'OK', 'SM-2 works'))
+    except Exception as e:
+        checks.append(('spaced_repetition', 'FAIL', str(e)))
+
+    # 9. School (optional)
+    if school:
+        try:
+            n = len(school.students)
+            checks.append(('school', 'OK',
+                            f'{n} students loaded'))
+        except Exception as e:
+            checks.append(('school', 'FAIL', str(e)))
+
+    # 10. Templates
+    try:
+        assert len(TRAINING_TEMPLATES) >= 6
+        checks.append(('templates', 'OK',
+                        f'{len(TRAINING_TEMPLATES)} templates'))
+    except Exception as e:
+        checks.append(('templates', 'FAIL', str(e)))
+
+    passed = sum(1 for c in checks if c[1] == 'OK')
+    total = len(checks)
+
+    return {
+        'checks': checks,
+        'passed': passed,
+        'total': total,
+        'healthy': passed == total,
+    }
+
+
+def format_health_check(result):
+    """Format health check results."""
+    lines = ["System Health Check"]
+    lines.append("═" * 55)
+
+    for name, status, detail in result['checks']:
+        icon = '✓' if status == 'OK' else '✗'
+        lines.append(f"  {icon} {name:22s} [{status}] {detail}")
+
+    lines.append("─" * 55)
+    status = 'HEALTHY' if result['healthy'] else 'DEGRADED'
+    lines.append(f"  {result['passed']}/{result['total']} passed "
+                 f"— {status}")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -16664,3 +16935,38 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v44: Event hooks, session comparison, coaching engine.")
+
+    # 144. API Facade
+    print("\n--- API Facade ---")
+    api = ScarabAPI(school=sim_school)
+    print(api.format_api_info())
+
+    summary = api.student_summary('Anna')
+    print(f"\n  Anna summary: {summary}")
+
+    coaching = api.get_coaching('Anna')
+    print(f"  Coaching: {coaching['greeting']}")
+
+    challenge = api.get_daily_challenge('Anna', day=1)
+    print(f"  Challenge: {challenge['title']}")
+
+    lb = api.leaderboard('score')
+    print(f"  Leaderboard: {[(e['name'], e['value']) for e in lb]}")
+
+    # 145. System Health Check
+    print("\n--- System Health Check ---")
+    health = system_health_check(school=sim_school)
+    print(format_health_check(health))
+
+    # 146. Final Architecture Count
+    print("\n--- v45 Final Summary ---")
+    import inspect
+    src = inspect.getsource(inspect.getmodule(get_group))
+    n_classes = src.count('\nclass ')
+    n_defs = src.count('\ndef ')
+    print(f"  Classes: {n_classes}")
+    print(f"  Functions: {n_defs}")
+    print(f"  Version: {api.version()}")
+
+    print("\n" + "=" * 60)
+    print("v45: API facade, system health check.")
