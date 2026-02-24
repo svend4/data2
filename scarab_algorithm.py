@@ -20646,6 +20646,351 @@ def format_annotations(am, entity_key=None):
     return '\n'.join(lines)
 
 
+# ── v57: Symbol Frequency Analyzer, N-Gram Model, Sequence Scorer ──
+
+
+class SymbolFrequencyAnalyzer:
+    """Analyzes symbol frequency distributions across sessions.
+
+    Computes frequency tables, identifies over/under-used symbols,
+    and detects distribution anomalies.
+    """
+
+    def __init__(self):
+        self.counts = {s: 0 for s in range(64)}
+        self.total = 0
+        self.session_count = 0
+
+    def feed(self, sessions):
+        """Feed sessions into the analyzer."""
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            self.session_count += 1
+            for sym in seq:
+                if 0 <= sym < 64:
+                    self.counts[sym] += 1
+                    self.total += 1
+
+    def frequency(self, sym):
+        """Get frequency of a symbol."""
+        if self.total == 0:
+            return 0.0
+        return round(self.counts[sym] / self.total, 6)
+
+    def top_symbols(self, n=10):
+        """Get the n most frequent symbols."""
+        sorted_syms = sorted(self.counts.items(),
+                             key=lambda x: x[1], reverse=True)
+        return sorted_syms[:n]
+
+    def bottom_symbols(self, n=10):
+        """Get the n least frequent symbols (non-zero)."""
+        non_zero = [(s, c) for s, c in self.counts.items() if c > 0]
+        sorted_syms = sorted(non_zero, key=lambda x: x[1])
+        return sorted_syms[:n]
+
+    def unused_symbols(self):
+        """Get symbols that have never appeared."""
+        return [s for s, c in self.counts.items() if c == 0]
+
+    def group_frequencies(self):
+        """Compute aggregate frequencies by Kryukov group."""
+        gf = {g: 0 for g in range(1, 8)}
+        for sym, cnt in self.counts.items():
+            g = get_group(sym)
+            gf[g] += cnt
+        # Normalize
+        result = {}
+        for g, cnt in gf.items():
+            result[g] = {
+                'count': cnt,
+                'frequency': round(cnt / max(self.total, 1), 4)
+            }
+        return result
+
+    def chi_squared_uniformity(self):
+        """Chi-squared test against uniform distribution."""
+        if self.total == 0:
+            return {'chi2': 0, 'expected': 0, 'assessment': 'no_data'}
+        expected = self.total / 64
+        chi2 = sum((self.counts[s] - expected) ** 2 / expected
+                   for s in range(64))
+        # df = 63, critical at 0.05 ≈ 82.53
+        return {
+            'chi2': round(chi2, 2),
+            'expected_per_symbol': round(expected, 2),
+            'assessment': 'uniform' if chi2 < 82.53 else 'non_uniform'
+        }
+
+    def entropy(self):
+        """Compute Shannon entropy of the frequency distribution."""
+        import math
+        if self.total == 0:
+            return 0.0
+        h = 0.0
+        for s in range(64):
+            p = self.counts[s] / self.total
+            if p > 0:
+                h -= p * math.log2(p)
+        max_h = math.log2(64)
+        return {
+            'entropy': round(h, 4),
+            'max_entropy': round(max_h, 4),
+            'normalized': round(h / max_h, 4)
+        }
+
+
+def format_frequency_analysis(fa):
+    """Format frequency analysis for display."""
+    lines = ["=== Symbol Frequency Analysis ==="]
+    lines.append(f"Total symbols: {fa.total} from "
+                 f"{fa.session_count} sessions")
+
+    # Top symbols
+    lines.append("\nMost frequent:")
+    for sym, cnt in fa.top_symbols(5):
+        g = get_group(sym)
+        freq = fa.frequency(sym)
+        bar = '█' * int(freq * 200)
+        lines.append(f"  S{sym:02d} (G{g}): {cnt:4d} "
+                     f"({freq:.4f}) {bar}")
+
+    # Unused
+    unused = fa.unused_symbols()
+    lines.append(f"\nUnused symbols: {len(unused)}")
+
+    # Group frequencies
+    gf = fa.group_frequencies()
+    lines.append("\nGroup frequencies:")
+    for g in range(1, 8):
+        d = gf[g]
+        bar = '█' * int(d['frequency'] * 50)
+        lines.append(f"  G{g}: {d['count']:4d} "
+                     f"({d['frequency']:.3f}) {bar}")
+
+    # Entropy
+    ent = fa.entropy()
+    lines.append(f"\nEntropy: {ent['entropy']} / "
+                 f"{ent['max_entropy']} bits "
+                 f"(normalized: {ent['normalized']})")
+
+    # Chi-squared
+    chi = fa.chi_squared_uniformity()
+    lines.append(f"Uniformity: χ²={chi['chi2']} → {chi['assessment']}")
+
+    return '\n'.join(lines)
+
+
+class NGramModel:
+    """N-gram language model for symbol sequences.
+
+    Builds frequency tables for n-grams of symbols and
+    enables prediction, scoring, and generation.
+    """
+
+    def __init__(self, n=2):
+        self.n = n
+        self.ngrams = {}  # tuple → count
+        self.context_totals = {}  # (n-1)-gram → total count
+        self.total_ngrams = 0
+
+    def train(self, sessions):
+        """Train the model on session sequences."""
+        for sess in sessions:
+            seq = sess.get('sequence', [])
+            for i in range(len(seq) - self.n + 1):
+                ngram = tuple(seq[i:i + self.n])
+                self.ngrams[ngram] = self.ngrams.get(ngram, 0) + 1
+                context = ngram[:-1]
+                self.context_totals[context] = \
+                    self.context_totals.get(context, 0) + 1
+                self.total_ngrams += 1
+
+    def probability(self, ngram):
+        """Get probability of an n-gram."""
+        context = tuple(ngram[:-1])
+        total = self.context_totals.get(context, 0)
+        if total == 0:
+            return 0.0
+        count = self.ngrams.get(tuple(ngram), 0)
+        return round(count / total, 6)
+
+    def predict_next(self, context, n=5):
+        """Predict most likely next symbols given context."""
+        ctx = tuple(context[-(self.n - 1):])
+        candidates = []
+        for ngram, count in self.ngrams.items():
+            if ngram[:-1] == ctx:
+                candidates.append((ngram[-1], count))
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        total = self.context_totals.get(ctx, 0)
+        return [(sym, round(cnt / max(total, 1), 4))
+                for sym, cnt in candidates[:n]]
+
+    def score_sequence(self, sequence):
+        """Score a sequence using the n-gram model (log-probability)."""
+        import math
+        log_prob = 0.0
+        count = 0
+        for i in range(len(sequence) - self.n + 1):
+            ngram = tuple(sequence[i:i + self.n])
+            p = self.probability(ngram)
+            if p > 0:
+                log_prob += math.log2(p)
+            else:
+                log_prob -= 10  # Penalty for unseen n-gram
+            count += 1
+        avg = log_prob / max(count, 1)
+        return {
+            'log_probability': round(log_prob, 4),
+            'avg_log_prob': round(avg, 4),
+            'perplexity': round(2 ** (-avg), 4) if avg != 0 else float('inf'),
+            'n_grams_evaluated': count
+        }
+
+    def top_ngrams(self, n=10):
+        """Get the most frequent n-grams."""
+        sorted_ng = sorted(self.ngrams.items(),
+                           key=lambda x: x[1], reverse=True)
+        return sorted_ng[:n]
+
+    def vocabulary_size(self):
+        """Get unique n-gram count."""
+        return len(self.ngrams)
+
+
+def format_ngram_model(model):
+    """Format n-gram model summary."""
+    lines = [f"=== {model.n}-Gram Model ==="]
+    lines.append(f"Unique {model.n}-grams: {model.vocabulary_size()}")
+    lines.append(f"Total: {model.total_ngrams}")
+    lines.append(f"Contexts: {len(model.context_totals)}")
+
+    lines.append(f"\nTop {model.n}-grams:")
+    for ngram, cnt in model.top_ngrams(5):
+        syms = '→'.join(f"S{s:02d}" for s in ngram)
+        lines.append(f"  {syms}: {cnt}")
+
+    return '\n'.join(lines)
+
+
+class SequenceScorer:
+    """Multi-criteria scorer for symbol sequences.
+
+    Evaluates sequences on zone compliance, group diversity,
+    transition smoothness, and pattern quality.
+    """
+
+    CRITERIA = [
+        'zone_compliance', 'group_diversity', 'transition_smoothness',
+        'no_repetition', 'length_quality', 'pattern_richness'
+    ]
+
+    WEIGHTS = {
+        'zone_compliance': 0.20,
+        'group_diversity': 0.20,
+        'transition_smoothness': 0.15,
+        'no_repetition': 0.15,
+        'length_quality': 0.15,
+        'pattern_richness': 0.15
+    }
+
+    def score(self, sequence):
+        """Score a sequence across all criteria."""
+        scores = {}
+        scores['zone_compliance'] = self._zone_compliance(sequence)
+        scores['group_diversity'] = self._group_diversity(sequence)
+        scores['transition_smoothness'] = self._smoothness(sequence)
+        scores['no_repetition'] = self._no_repetition(sequence)
+        scores['length_quality'] = self._length_quality(sequence)
+        scores['pattern_richness'] = self._pattern_richness(sequence)
+
+        weighted = sum(scores[c] * self.WEIGHTS[c]
+                       for c in self.CRITERIA)
+
+        return {
+            'criteria': scores,
+            'weighted_score': round(weighted * 100, 1),
+            'grade': self._grade(weighted * 100)
+        }
+
+    def _zone_compliance(self, seq):
+        """Check zone rule compliance."""
+        violations = 0
+        for i in range(len(seq) - 1):
+            z1 = get_zones(seq[i])
+            z2 = get_zones(seq[i + 1])
+            # Simple check: shared zone exists
+            if not set(z1) & set(z2):
+                violations += 1
+        total = max(len(seq) - 1, 1)
+        return round(1 - violations / total, 4)
+
+    def _group_diversity(self, seq):
+        """Measure group diversity (0-1)."""
+        groups = set(get_group(s) for s in seq)
+        return round(len(groups) / 7, 4)
+
+    def _smoothness(self, seq):
+        """Measure transition smoothness."""
+        if len(seq) < 2:
+            return 1.0
+        jumps = 0
+        for i in range(len(seq) - 1):
+            g1 = get_group(seq[i])
+            g2 = get_group(seq[i + 1])
+            if abs(g1 - g2) > 2:
+                jumps += 1
+        return round(1 - jumps / max(len(seq) - 1, 1), 4)
+
+    def _no_repetition(self, seq):
+        """Check for no immediate repetitions."""
+        reps = sum(1 for i in range(len(seq) - 1) if seq[i] == seq[i + 1])
+        return round(1 - reps / max(len(seq) - 1, 1), 4)
+
+    def _length_quality(self, seq):
+        """Score based on sequence length (16 is optimal)."""
+        optimal = 16
+        diff = abs(len(seq) - optimal)
+        return round(max(0, 1 - diff / optimal), 4)
+
+    def _pattern_richness(self, seq):
+        """Estimate pattern richness (unique bigrams / possible)."""
+        if len(seq) < 2:
+            return 0.0
+        bigrams = set()
+        for i in range(len(seq) - 1):
+            bigrams.add((seq[i], seq[i + 1]))
+        max_possible = len(seq) - 1
+        return round(len(bigrams) / max_possible, 4)
+
+    def _grade(self, score):
+        """Assign letter grade."""
+        if score >= 90:
+            return 'S'
+        elif score >= 80:
+            return 'A'
+        elif score >= 70:
+            return 'B'
+        elif score >= 60:
+            return 'C'
+        elif score >= 50:
+            return 'D'
+        return 'F'
+
+
+def format_sequence_score(result):
+    """Format sequence scoring result."""
+    lines = [f"=== Sequence Score: {result['weighted_score']}/100 "
+             f"(Grade: {result['grade']}) ==="]
+    for criterion, val in result['criteria'].items():
+        bar_len = int(val * 20)
+        bar = '█' * bar_len + '░' * (20 - bar_len)
+        lines.append(f"  {criterion:25s} {bar} {val*100:.1f}%")
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -22912,3 +23257,47 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v56: Session replay engine, diff analyzer, annotations.")
+
+    # ── v57 demos ────────────────────────────────────────
+
+    # 190. Symbol Frequency Analyzer
+    print("\n--- Symbol Frequency Analyzer ---")
+    sfa = SymbolFrequencyAnalyzer()
+    sfa.feed(synth_sessions)  # from v52 demo
+    print(format_frequency_analysis(sfa))
+
+    # 191. N-Gram Model
+    print("\n--- N-Gram Model ---")
+    bigram = NGramModel(n=2)
+    bigram.train(synth_sessions)
+    print(format_ngram_model(bigram))
+
+    trigram = NGramModel(n=3)
+    trigram.train(synth_sessions)
+    print(format_ngram_model(trigram))
+
+    # Predict next
+    if synth_sessions:
+        test_ctx = synth_sessions[0].get('sequence', [])[:2]
+        preds = bigram.predict_next(test_ctx, n=3)
+        if preds and test_ctx:
+            ctx_str = '→'.join(f"S{s:02d}" for s in test_ctx[-1:])
+            pred_str = ', '.join(f"S{s:02d}({p:.2f})" for s, p in preds)
+            print(f"After {ctx_str}: {pred_str}")
+
+    # Score a sequence
+    if synth_sessions:
+        test_seq = synth_sessions[0].get('sequence', [])
+        score_result = bigram.score_sequence(test_seq)
+        print(f"Sequence score: perplexity={score_result['perplexity']}")
+
+    # 192. Sequence Scorer
+    print("\n--- Sequence Scorer ---")
+    ss = SequenceScorer()
+    for i, sess in enumerate(synth_sessions[:3]):
+        seq = sess.get('sequence', [])
+        result = ss.score(seq)
+        print(f"Session {i+1}: {format_sequence_score(result)}")
+
+    print("\n" + "=" * 60)
+    print("v57: Symbol frequency, n-gram model, sequence scorer.")
