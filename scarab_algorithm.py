@@ -21326,6 +21326,340 @@ def format_peer_recommendations(recs, student_name=''):
     return '\n'.join(lines)
 
 
+# ── v59: Config Validator, Migration Tool, Backup Manager ──
+
+
+class ConfigValidator:
+    """Validates system configuration and settings.
+
+    Checks all configurable parameters for type correctness,
+    range validity, and cross-parameter consistency.
+    """
+
+    SCHEMA = {
+        'n_symbols': {'type': int, 'min': 1, 'max': 128, 'default': 64},
+        'n_groups': {'type': int, 'min': 1, 'max': 14, 'default': 7},
+        'n_zones': {'type': int, 'min': 1, 'max': 10, 'default': 5},
+        'session_length': {'type': int, 'min': 4, 'max': 64, 'default': 16},
+        'mastery_max': {'type': int, 'min': 1, 'max': 10, 'default': 7},
+        'score_min': {'type': float, 'min': 0, 'max': 0, 'default': 0.0},
+        'score_max': {'type': float, 'min': 100, 'max': 100, 'default': 100.0},
+        'sm2_initial_ef': {'type': float, 'min': 1.3, 'max': 3.0, 'default': 2.5},
+        'irt_theta_range': {'type': float, 'min': -3, 'max': 3, 'default': 0.0},
+        'plugin_max': {'type': int, 'min': 1, 'max': 100, 'default': 50},
+    }
+
+    def __init__(self, config=None):
+        self.config = config or {}
+        self.errors = []
+        self.warnings = []
+
+    def validate(self):
+        """Run all validation checks."""
+        self.errors = []
+        self.warnings = []
+
+        for key, schema in self.SCHEMA.items():
+            value = self.config.get(key, schema['default'])
+            self._check_type(key, value, schema)
+            self._check_range(key, value, schema)
+
+        self._check_cross_params()
+        return {
+            'valid': len(self.errors) == 0,
+            'errors': self.errors,
+            'warnings': self.warnings,
+            'checked': len(self.SCHEMA)
+        }
+
+    def _check_type(self, key, value, schema):
+        """Check type of a config value."""
+        if not isinstance(value, (schema['type'], int, float)):
+            self.errors.append(
+                f"{key}: expected {schema['type'].__name__}, "
+                f"got {type(value).__name__}")
+
+    def _check_range(self, key, value, schema):
+        """Check range of a config value."""
+        if isinstance(value, (int, float)):
+            if 'min' in schema and value < schema['min']:
+                self.errors.append(
+                    f"{key}: {value} < min({schema['min']})")
+            if 'max' in schema and value > schema['max']:
+                self.errors.append(
+                    f"{key}: {value} > max({schema['max']})")
+
+    def _check_cross_params(self):
+        """Check cross-parameter consistency."""
+        n_sym = self.config.get('n_symbols', 64)
+        n_grp = self.config.get('n_groups', 7)
+        if n_sym < n_grp:
+            self.errors.append(
+                f"n_symbols({n_sym}) < n_groups({n_grp}): "
+                f"cannot distribute symbols")
+
+        mastery = self.config.get('mastery_max', 7)
+        if mastery > n_grp:
+            self.warnings.append(
+                f"mastery_max({mastery}) > n_groups({n_grp})")
+
+    def get_defaults(self):
+        """Get all default values."""
+        return {k: v['default'] for k, v in self.SCHEMA.items()}
+
+    def merge_with_defaults(self):
+        """Merge config with defaults for missing values."""
+        merged = self.get_defaults()
+        merged.update(self.config)
+        return merged
+
+
+def format_config_validation(result):
+    """Format config validation result."""
+    lines = ["=== Config Validation ==="]
+    status = "VALID" if result['valid'] else "INVALID"
+    lines.append(f"Status: {status} "
+                 f"({result['checked']} parameters checked)")
+
+    if result['errors']:
+        lines.append("\nErrors:")
+        for e in result['errors']:
+            lines.append(f"  ✗ {e}")
+    if result['warnings']:
+        lines.append("\nWarnings:")
+        for w in result['warnings']:
+            lines.append(f"  ⚠ {w}")
+    if not result['errors'] and not result['warnings']:
+        lines.append("  All parameters valid!")
+    return '\n'.join(lines)
+
+
+class MigrationTool:
+    """Manages data migrations between system versions.
+
+    Provides upgrade/downgrade paths for data structures
+    when the system evolves between versions.
+    """
+
+    def __init__(self):
+        self.migrations = []
+        self._registered = {}
+
+    def register_migration(self, from_ver, to_ver, up_fn, down_fn=None,
+                           description=''):
+        """Register a migration between versions."""
+        migration = {
+            'from': from_ver,
+            'to': to_ver,
+            'up': up_fn,
+            'down': down_fn,
+            'description': description
+        }
+        self.migrations.append(migration)
+        self._registered[(from_ver, to_ver)] = migration
+        return migration
+
+    def get_migration_path(self, from_ver, to_ver):
+        """Find migration path between versions."""
+        # Simple linear path finding
+        path = []
+        current = from_ver
+        visited = set()
+
+        while current != to_ver:
+            if current in visited:
+                return None  # Cycle detected
+            visited.add(current)
+
+            found = False
+            for m in self.migrations:
+                if m['from'] == current:
+                    path.append(m)
+                    current = m['to']
+                    found = True
+                    break
+            if not found:
+                return None  # No path
+
+        return path
+
+    def migrate(self, data, from_ver, to_ver):
+        """Execute migration on data."""
+        path = self.get_migration_path(from_ver, to_ver)
+        if path is None:
+            return {
+                'success': False,
+                'error': f'No migration path from {from_ver} to {to_ver}'
+            }
+
+        current_data = data
+        applied = []
+        for m in path:
+            try:
+                current_data = m['up'](current_data)
+                applied.append(f"{m['from']} → {m['to']}")
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': f"Migration {m['from']}→{m['to']} failed: {e}",
+                    'applied': applied
+                }
+
+        return {
+            'success': True,
+            'data': current_data,
+            'applied': applied,
+            'steps': len(applied)
+        }
+
+    def list_migrations(self):
+        """List all registered migrations."""
+        return [
+            {
+                'from': m['from'],
+                'to': m['to'],
+                'description': m['description'],
+                'reversible': m['down'] is not None
+            }
+            for m in self.migrations
+        ]
+
+
+def format_migration_tool(mt):
+    """Format migration tool status."""
+    lines = ["=== Migration Tool ==="]
+    lines.append(f"Registered migrations: {len(mt.migrations)}")
+    for m in mt.list_migrations():
+        rev = '↔' if m['reversible'] else '→'
+        lines.append(f"  {m['from']} {rev} {m['to']}: "
+                     f"{m['description']}")
+    return '\n'.join(lines)
+
+
+class BackupManager:
+    """Manages data backups for the Scarab system.
+
+    Creates snapshots of school data, registry, and configuration
+    that can be restored later.
+    """
+
+    def __init__(self):
+        self.backups = []
+        self._counter = 0
+
+    def create_backup(self, school=None, registry=None,
+                      config=None, label=''):
+        """Create a backup snapshot."""
+        self._counter += 1
+        backup = {
+            'id': self._counter,
+            'label': label or f'backup_{self._counter}',
+            'school_data': None,
+            'registry_data': None,
+            'config_data': None
+        }
+
+        if school:
+            backup['school_data'] = {
+                'student_count': len(school.students),
+                'students': {
+                    name: {
+                        'mastery': getattr(st, 'mastery_level', 1),
+                        'sessions': len(st.sessions),
+                        'session_data': [
+                            {'pct': s.get('pct', 0)}
+                            for s in st.sessions
+                        ]
+                    }
+                    for name, st in school.students.items()
+                }
+            }
+
+        if registry:
+            backup['registry_data'] = {
+                'component_count': len(registry._components),
+                'components': list(registry._components.keys())
+            }
+
+        if config:
+            backup['config_data'] = dict(config)
+
+        self.backups.append(backup)
+        return backup
+
+    def list_backups(self):
+        """List all backups."""
+        return [
+            {
+                'id': b['id'],
+                'label': b['label'],
+                'has_school': b['school_data'] is not None,
+                'has_registry': b['registry_data'] is not None,
+                'has_config': b['config_data'] is not None
+            }
+            for b in self.backups
+        ]
+
+    def get_backup(self, backup_id):
+        """Get a specific backup."""
+        for b in self.backups:
+            if b['id'] == backup_id:
+                return b
+        return None
+
+    def restore_school(self, backup_id):
+        """Restore school data from a backup."""
+        backup = self.get_backup(backup_id)
+        if not backup or not backup['school_data']:
+            return None
+
+        school = School('Restored School')
+        for name, data in backup['school_data']['students'].items():
+            st = StudentProfile(name)
+            st.mastery_level = data['mastery']
+            st.sessions = data['session_data']
+            school.students[name] = st
+        return school
+
+    def delete_backup(self, backup_id):
+        """Delete a backup."""
+        self.backups = [b for b in self.backups if b['id'] != backup_id]
+
+    def statistics(self):
+        """Get backup statistics."""
+        return {
+            'total_backups': len(self.backups),
+            'with_school': sum(1 for b in self.backups
+                               if b['school_data']),
+            'with_registry': sum(1 for b in self.backups
+                                 if b['registry_data']),
+            'with_config': sum(1 for b in self.backups
+                               if b['config_data'])
+        }
+
+
+def format_backup_manager(bm):
+    """Format backup manager status."""
+    stats = bm.statistics()
+    lines = ["=== Backup Manager ==="]
+    lines.append(f"Backups: {stats['total_backups']}")
+    lines.append(f"  With school: {stats['with_school']}")
+    lines.append(f"  With registry: {stats['with_registry']}")
+    lines.append(f"  With config: {stats['with_config']}")
+
+    for b in bm.list_backups():
+        parts = []
+        if b['has_school']:
+            parts.append('S')
+        if b['has_registry']:
+            parts.append('R')
+        if b['has_config']:
+            parts.append('C')
+        lines.append(f"  #{b['id']} {b['label']} [{'/'.join(parts)}]")
+
+    return '\n'.join(lines)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("SCARAB ALGORITHM v3 — Four-Sphere Movement Generator")
@@ -23680,3 +24014,98 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("v58: Student clustering, cohort analyzer, peer recommender.")
+
+    # ── v59: Config Validator, Migration Tool, Backup Manager ──
+
+    # 196. Config Validator
+    print("\n" + "=" * 60)
+    print("--- Config Validator ---")
+
+    # Valid default config
+    cv_default = ConfigValidator()
+    res_default = cv_default.validate()
+    print(format_config_validation(res_default))
+    print(f"Defaults: { {k: v for k, v in cv_default.get_defaults().items()} }")
+
+    # Config with errors
+    cv_bad = ConfigValidator({
+        'n_symbols': 3,
+        'n_groups': 7,
+        'session_length': 200,
+        'sm2_initial_ef': 0.5
+    })
+    res_bad = cv_bad.validate()
+    print(f"\nBad config:")
+    print(format_config_validation(res_bad))
+
+    # Merge with defaults
+    cv_partial = ConfigValidator({'n_symbols': 32, 'n_groups': 4})
+    merged = cv_partial.merge_with_defaults()
+    print(f"\nMerged config: n_symbols={merged['n_symbols']}, "
+          f"n_groups={merged['n_groups']}, "
+          f"session_length={merged['session_length']}")
+
+    # 197. Migration Tool
+    print("\n--- Migration Tool ---")
+    mt = MigrationTool()
+
+    # Register sample migrations
+    mt.register_migration('v1', 'v2',
+        up_fn=lambda d: {**d, 'version': 'v2', 'mastery_max': 7},
+        down_fn=lambda d: {**d, 'version': 'v1'},
+        description='Add mastery_max field')
+    mt.register_migration('v2', 'v3',
+        up_fn=lambda d: {**d, 'version': 'v3',
+                         'groups': d.get('groups', 7)},
+        description='Add groups field')
+    mt.register_migration('v3', 'v4',
+        up_fn=lambda d: {**d, 'version': 'v4',
+                         'zones': 5},
+        down_fn=lambda d: {k: v for k, v in d.items()
+                           if k != 'zones'},
+        description='Add zone support')
+
+    print(format_migration_tool(mt))
+
+    # Execute migration
+    sample_data = {'name': 'test', 'version': 'v1', 'symbols': 64}
+    result = mt.migrate(sample_data, 'v1', 'v4')
+    print(f"\nMigration v1→v4: success={result['success']}, "
+          f"steps={result['steps']}")
+    print(f"  Applied: {result['applied']}")
+    print(f"  Final data: {result['data']}")
+
+    # No-path migration
+    result2 = mt.migrate(sample_data, 'v4', 'v1')
+    print(f"Migration v4→v1: success={result2['success']}, "
+          f"error={result2.get('error', 'none')}")
+
+    # 198. Backup Manager
+    print("\n--- Backup Manager ---")
+    bm = BackupManager()
+
+    # Create backups
+    registry = build_scarab_registry()
+    b1 = bm.create_backup(school=sim_school, label='pre-update')
+    b2 = bm.create_backup(school=sim_school, registry=registry,
+                           config={'n_symbols': 64},
+                           label='full-snapshot')
+    b3 = bm.create_backup(config={'n_symbols': 32},
+                           label='config-only')
+
+    print(format_backup_manager(bm))
+
+    # Restore school
+    restored = bm.restore_school(b1['id'])
+    print(f"\nRestored school: {len(restored.students)} students")
+    for name, st in restored.students.items():
+        print(f"  {name}: mastery={st.mastery_level}, "
+              f"sessions={len(st.sessions)}")
+
+    # Delete backup
+    bm.delete_backup(b3['id'])
+    stats = bm.statistics()
+    print(f"\nAfter delete: {stats['total_backups']} backups remain")
+
+    print("\n" + "=" * 60)
+    print("v59: Config validator, migration tool, backup manager.")

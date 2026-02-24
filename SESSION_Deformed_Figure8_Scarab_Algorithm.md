@@ -7563,3 +7563,266 @@ print(format_annotations(am))
   30,000+ Lines Achievement ★
 ══════════════════════════════════
 ```
+
+---
+
+## Часть 73: Версии v56-v59 — Расширенная аналитика и инфраструктура
+
+### v56: Система воспроизведения сессий
+
+#### SessionReplayEngine
+Движок пошагового воспроизведения тренировочных сессий.
+
+```python
+from scarab_algorithm import SessionReplayEngine
+
+engine = SessionReplayEngine(session)
+# Воспроизведение по шагам
+while engine.step():
+    state = engine.get_state()
+    print(f"Шаг {state['step']}: символ {state['current_symbol']}, "
+          f"счёт={state['running_score']:.1f}%")
+# Полный отчёт
+summary = engine.summary()
+```
+
+**Методы:**
+- `step()` — продвижение на один шаг
+- `get_state()` — текущее состояние (шаг, символ, группа, зона, текущий счёт)
+- `summary()` — итоговая статистика воспроизведения
+- `reset()` — перезапуск воспроизведения
+
+#### SessionDiffAnalyzer
+Сравнительный анализ двух сессий.
+
+```python
+diff = SessionDiffAnalyzer(session_a, session_b)
+result = diff.analyze()
+# result: score_delta, length_delta, group_coverage, improvement
+```
+
+#### AnnotationManager
+Система аннотаций и пометок для сессий.
+
+```python
+am = AnnotationManager()
+am.add('session_1', 'note', 'Отличный прогресс по группе 3')
+am.add('session_1', 'flag', 'Проблема с зоной R4')
+am.add('session_1', 'bookmark', 'Ключевая сессия')
+notes = am.get('session_1')
+# 6 типов: note, tag, flag, comment, highlight, bookmark
+```
+
+### v57: Частотный анализ и N-граммные модели
+
+#### SymbolFrequencyAnalyzer
+Анализ частот появления символов в последовательностях.
+
+```python
+from scarab_algorithm import SymbolFrequencyAnalyzer
+
+fa = SymbolFrequencyAnalyzer(sequences)
+freq = fa.frequency_table()       # Частотная таблица 64 символов
+chi2 = fa.chi_squared_test()      # Тест на равномерность
+entropy = fa.shannon_entropy()    # Энтропия распределения
+gfreq = fa.group_frequencies()    # Частоты по 7 группам
+```
+
+#### NGramModel
+Биграммная и триграммная модель последовательностей.
+
+```python
+ngram = NGramModel(n=2)           # Биграммы
+ngram.train(sequences)
+pred = ngram.predict(context=[5]) # Предсказание следующего символа
+prob = ngram.log_probability([3, 7, 12, 45])  # Логарифм вероятности
+perp = ngram.perplexity(test_sequence)         # Перплексия
+```
+
+#### SequenceScorer
+6-критериальная оценка качества последовательностей.
+
+```python
+scorer = SequenceScorer()
+result = scorer.score(sequence)
+# Критерии: zone_compliance, group_diversity, transition_smoothness,
+#           no_repetition, length_quality, pattern_richness
+# result['total'] — взвешенный итог
+```
+
+### v58: Кластеризация студентов и когортный анализ
+
+#### StudentClustering
+Кластерный анализ студентов методом k-средних.
+
+```python
+from scarab_algorithm import StudentClustering
+
+sc = StudentClustering(school)
+features = sc.extract_features()   # Извлечение признаков
+clusters = sc.cluster(k=2)         # Кластеризация
+# Для каждого кластера: members, centroid, avg_distance
+```
+
+**Признаки:** средний результат, количество сессий, уровень мастерства,
+консистентность, тренд улучшения.
+
+#### CohortAnalyzer
+Анализ когорт студентов по различным критериям.
+
+```python
+ca = CohortAnalyzer(school)
+mastery = ca.mastery_cohorts()       # По уровню мастерства
+tiers = ca.performance_tiers()       # По перцентилям (top/mid/low)
+retention = ca.retention_analysis()  # Анализ удержания
+```
+
+#### PeerRecommender
+Рекомендации партнёров для обучения.
+
+```python
+pr = PeerRecommender(school)
+# 3 режима: similar, complementary, mentor
+recs = pr.recommend_partner('Anna', mode='similar')
+groups = pr.recommend_study_groups(group_size=2)
+```
+
+### v59: Валидация конфигурации, миграции, резервное копирование
+
+#### ConfigValidator
+Валидатор конфигурации системы по схеме.
+
+```python
+from scarab_algorithm import ConfigValidator, format_config_validation
+
+# Проверка конфигурации
+cv = ConfigValidator({'n_symbols': 64, 'n_groups': 7,
+                      'session_length': 16})
+result = cv.validate()
+print(format_config_validation(result))
+# result: valid (bool), errors, warnings, checked
+
+# Получение значений по умолчанию
+defaults = cv.get_defaults()
+
+# Слияние с дефолтами
+merged = cv.merge_with_defaults()
+```
+
+**SCHEMA — 10 параметров:**
+| Параметр        | Тип   | Мин  | Макс | По умолчанию |
+|-----------------|-------|------|------|--------------|
+| n_symbols       | int   | 1    | 128  | 64           |
+| n_groups        | int   | 1    | 14   | 7            |
+| n_zones         | int   | 1    | 10   | 5            |
+| session_length  | int   | 4    | 64   | 16           |
+| mastery_max     | int   | 1    | 10   | 7            |
+| score_min       | float | 0    | 0    | 0.0          |
+| score_max       | float | 100  | 100  | 100.0        |
+| sm2_initial_ef  | float | 1.3  | 3.0  | 2.5          |
+| irt_theta_range | float | -3   | 3    | 0.0          |
+| plugin_max      | int   | 1    | 100  | 50           |
+
+**Проверки:**
+- Тип параметра (int/float)
+- Диапазон значений (min/max)
+- Кросс-параметрная валидация (n_symbols ≥ n_groups, mastery_max ≤ n_groups)
+
+#### MigrationTool
+Инструмент миграции данных между версиями.
+
+```python
+from scarab_algorithm import MigrationTool, format_migration_tool
+
+mt = MigrationTool()
+
+# Регистрация миграций
+mt.register_migration('v1', 'v2',
+    up_fn=lambda d: {**d, 'version': 'v2', 'mastery_max': 7},
+    down_fn=lambda d: {**d, 'version': 'v1'},
+    description='Add mastery_max')
+
+# Поиск пути миграции
+path = mt.get_migration_path('v1', 'v3')
+
+# Выполнение миграции
+result = mt.migrate(data, 'v1', 'v4')
+# result: success, data, applied (list), steps (count)
+
+# Список миграций
+print(format_migration_tool(mt))
+```
+
+**Возможности:**
+- Линейный поиск пути миграции с обнаружением циклов
+- Пошаговое выполнение с откатом при ошибках
+- Опциональные функции отката (reversible migrations)
+
+#### BackupManager
+Менеджер резервного копирования данных.
+
+```python
+from scarab_algorithm import BackupManager, format_backup_manager
+
+bm = BackupManager()
+
+# Создание резервной копии
+backup = bm.create_backup(
+    school=sim_school,
+    registry=registry,
+    config={'n_symbols': 64},
+    label='pre-update'
+)
+
+# Список и статистика
+print(format_backup_manager(bm))
+
+# Восстановление школы
+restored = bm.restore_school(backup['id'])
+
+# Удаление
+bm.delete_backup(backup_id)
+```
+
+**Возможности:**
+- Снимки school, registry, config (по отдельности или вместе)
+- Полное восстановление School с StudentProfile
+- Статистика резервных копий
+
+---
+
+## Приложение P: Статистика версий v56-v59
+
+| Версия | Компоненты                                              | Новых строк |
+|--------|---------------------------------------------------------|-------------|
+| v56    | SessionReplayEngine, SessionDiffAnalyzer, AnnotationManager | ~500    |
+| v57    | SymbolFrequencyAnalyzer, NGramModel, SequenceScorer      | ~500       |
+| v58    | StudentClustering, CohortAnalyzer, PeerRecommender       | ~500       |
+| v59    | ConfigValidator, MigrationTool, BackupManager            | ~430       |
+
+### Сводка демонстраций v56-v59
+
+| №   | Компонент              | Что проверяется                                |
+|-----|------------------------|------------------------------------------------|
+| 187 | SessionReplayEngine    | Пошаговое воспроизведение, итоговая статистика |
+| 188 | SessionDiffAnalyzer    | Сравнение сессий, дельты показателей           |
+| 189 | AnnotationManager      | 6 типов аннотаций, фильтрация, форматирование |
+| 190 | SymbolFrequencyAnalyzer | Частоты, χ², энтропия, групповые частоты     |
+| 191 | NGramModel             | Обучение, предсказание, перплексия             |
+| 192 | SequenceScorer         | 6 критериев оценки последовательностей         |
+| 193 | StudentClustering      | Извлечение признаков, k-means                  |
+| 194 | CohortAnalyzer         | Когорты мастерства, тиры, удержание            |
+| 195 | PeerRecommender        | 3 режима рекомендаций, учебные группы          |
+| 196 | ConfigValidator        | Валидация, ошибки, предупреждения, слияние     |
+| 197 | MigrationTool          | Миграции v1→v4, поиск пути, пошаговое выполнение |
+| 198 | BackupManager          | Создание, восстановление, удаление бэкапов     |
+
+### Текущие итоги
+
+```
+Строк Python:       ~24,100
+Строк документации:  ~7,900
+Общий объём:         ~32,000 строк
+Компонентов:         100+ классов и функций
+Демонстраций:        198 пронумерованных секций
+```
