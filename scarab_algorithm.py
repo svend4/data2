@@ -2105,8 +2105,8 @@ def kata_to_notation(kata, mode='single'):
     """
     Encode a kata as a compact string notation.
 
-    Single kata: "S:AcQhR"  (one char per symbol)
-    Dual kata:   "D:Ac.Qh|Bd.Re|..."  (L.R per tact, | separator)
+    Single kata: "S7/e:AQ0wKgA"  (one char per symbol)
+    Dual kata:   "D7/f:A01A.M00R..."  (L + chvs_L + chvs_R + R per tact)
 
     Includes header with mode, length, and checksum.
     """
@@ -2114,8 +2114,9 @@ def kata_to_notation(kata, mode='single'):
         parts = []
         for entry in kata:
             L, R = entry[0], entry[1]
-            chvs = entry[2] if len(entry) > 2 else 0
-            parts.append(f"{_B64[L]}{chvs}{_B64[R]}")
+            cL = entry[2] if len(entry) > 2 else 0
+            cR = entry[3] if len(entry) > 3 else 0
+            parts.append(f"{_B64[L]}{cL}{cR}{_B64[R]}")
         body = '.'.join(parts)
         checksum = sum(entry[0] ^ entry[1] for entry in kata) % 64
         return f"D{len(kata)}/{_B64[checksum]}:{body}"
@@ -2145,8 +2146,9 @@ def notation_to_kata(notation):
         for t in tacts:
             L = _B64_REV[t[0]]
             chvs_L = int(t[1])
-            R = _B64_REV[t[2]]
-            kata.append((L, R, chvs_L, CHVS_PALM))
+            chvs_R = int(t[2])
+            R = _B64_REV[t[3]]
+            kata.append((L, R, chvs_L, chvs_R))
         return ('dual', kata)
     else:
         raise ValueError(f"Unknown notation mode: {mode}")
@@ -2542,60 +2544,6 @@ def symbol_to_ascii(sym, size=5):
         grid[last][last] = '┘'
 
     return '\n'.join(''.join(row) for row in grid)
-
-
-def generate_kata(length=7, start_symbol=None, seed=None):
-    """
-    Generate a movement sequence (kata) using alphabet transitions.
-
-    Rules:
-    - Change ≤ 2 lines per step
-    - Anti-circle: no return to same symbol within 4 steps
-    - Odd series lengths: {1, 3, 5, 7}
-    - Camouflage/threat: alternate dominant side
-    """
-    if seed is not None:
-        random.seed(seed)
-
-    if start_symbol is None:
-        start_symbol = 0b000000  # empty / ready position
-
-    sequence = [start_symbol]
-    recent = [start_symbol]
-
-    for step in range(length - 1):
-        neighbors = get_neighbors(sequence[-1], max_changes=2)
-
-        # Filter: anti-circle (no return to recent 4)
-        candidates = [n for n in neighbors if n not in recent[-4:]]
-
-        if not candidates:
-            candidates = neighbors  # fallback
-
-        # Preference: alternate symmetry (camouflage/threat)
-        current = sequence[-1]
-        current_left = bool(current & LEFT) or bool(current & DIAG2)
-
-        # Prefer symbols that shift dominance to other side
-        preferred = []
-        for c in candidates:
-            c_right = bool(c & RIGHT) or bool(c & DIAG1)
-            if current_left and c_right:
-                preferred.append(c)
-            elif not current_left and not c_right:
-                preferred.append(c)
-
-        if preferred:
-            next_sym = random.choice(preferred)
-        else:
-            next_sym = random.choice(candidates)
-
-        sequence.append(next_sym)
-        recent.append(next_sym)
-        if len(recent) > 7:
-            recent.pop(0)
-
-    return sequence
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3779,11 +3727,12 @@ if __name__ == '__main__':
 
     # 38. Graph statistics (summary)
     print("\n--- Graph Statistics (Summary) ---")
-    all_64 = list(range(64))
-    total_edges = 0
-    for sym in all_64:
-        total_edges += len(get_neighbors(sym, max_changes=2))
-    total_edges //= 2
+    # 64 base (6-bit) + 12 half-line = 76 total symbols
+    all_76 = list(range(64)) + list(HALF_SYMBOLS.keys())
+    total_edges_64 = 0
+    for sym in range(64):
+        total_edges_64 += len(get_neighbors(sym, max_changes=2))
+    total_edges_64 //= 2
     from collections import deque as _deque
     visited = {0: 0}
     queue = _deque([0])
@@ -3794,7 +3743,8 @@ if __name__ == '__main__':
                 visited[nb] = visited[node] + 1
                 queue.append(nb)
     max_dist = max(visited.values())
-    print(f"  Single hand: 76 nodes, {total_edges} edges, diameter={max_dist}")
+    print(f"  Base graph: 64 nodes, {total_edges_64} edges, diameter={max_dist}")
+    print(f"  Full alphabet: 76 nodes (64 base + 12 half-line)")
     print(f"  Single + ChVS(4):  76 x 4  = 304 states")
     print(f"  Single + mudra(8): 76 x 8  = 608 states")
     print(f"  Dual + ChVS(4):    304^2   = 92,416 (raw), ~30K valid")
