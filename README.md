@@ -47,10 +47,8 @@
 ├── training_session_dual_L3.txt
 ├── totalnaya_sistema_boya.pdf
 ├── 2cb3bf_61b7a782b1794b6a800f7e0e4dbb1714.pdf
-└── Zelendinov_Edinyy-yazyk-fehtovaniya-Vvedenie-v-fehtovaniya* (.rtf, .txt, .html.zip, .txt.zip)
+└── Zelendinov_Edinyy-yazyk-fehtovaniya-Vvedenie-v-fehtovanie-Ponyatiynyy-apparat_RuLit_Me* (.rtf, .txt, .html.zip, .txt.zip)
 ```
-
-*(Примечание: точное имя файлов Зелендинова в корне — `Zelendinov_Edinyy-yazyk-fehtovaniya-Vvedenie-v-fehtovanie-Ponyatiynyy-apparat_RuLit_Me*`.)*
 
 ---
 
